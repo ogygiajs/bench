@@ -80,6 +80,65 @@
 					"spa": true
 				}
 			]
+		},
+		"dashboard": {
+			"apps": [
+				{
+					"id": "ogygia",
+					"approach": "server-rendered per request, islands",
+					"dir": "scenarios/dashboard/apps/ogygia",
+					"start": ["node", "build/index.js"],
+					"out": "build",
+					"client": ["build/client"],
+					"public": "static",
+					"fast": true
+				},
+				{
+					"id": "sveltekit",
+					"approach": "server-rendered per request, hydrated",
+					"dir": "scenarios/dashboard/apps/sveltekit",
+					"start": ["node", "build/index.js"],
+					"out": "build",
+					"client": ["build/client"],
+					"public": "static",
+					"fast": true
+				},
+				{
+					"id": "astro",
+					"approach": "server-rendered per request, islands",
+					"dir": "scenarios/dashboard/apps/astro",
+					"start": ["node", "dist/server/entry.mjs"],
+					"out": "dist",
+					"client": ["dist/client"],
+					"shared": "src/shared"
+				},
+				{
+					"id": "mochi",
+					"approach": "server-rendered per request, islands",
+					"dir": "scenarios/dashboard/apps/mochi",
+					"start": ["bun", "src/index.ts"],
+					"out": ".mochi",
+					"client": [".mochi/svelte-client", ".mochi/svelte-css"],
+					"shared": "src/shared",
+					"install": "bun"
+				},
+				{
+					"id": "vike",
+					"approach": "server-rendered per request, hydrated",
+					"dir": "scenarios/dashboard/apps/vike",
+					"start": ["node", "dist/server/index.mjs"],
+					"out": "dist",
+					"client": ["dist/client"]
+				},
+				{
+					"id": "svelte-spa",
+					"approach": "client-rendered SPA, JSON endpoint",
+					"dir": "scenarios/dashboard/apps/svelte-spa",
+					"dist": "dist",
+					"out": "dist",
+					"spa": true
+				}
+			]
 		}
 	}
 }

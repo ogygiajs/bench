@@ -97,6 +97,9 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 	const steps = [];
 
 	async function quiet(maxMs = 8000) {
+		// The quiet window starts now: whatever the last action set off (a scroll that wakes a
+		// lazy island) gets the time to start its requests.
+		lastActivity = Math.max(lastActivity, Date.now());
 		const until = Date.now() + maxMs;
 		while (Date.now() < until) {
 			if (inflight === 0 && Date.now() - lastActivity >= BROWSER.quietMs) break;
