@@ -17,7 +17,8 @@ buttons. The prose is static; the counters are the only interactive parts. For e
 - **JS size**: every script the page loads, raw and brotli.
 - **HTML size**: raw and brotli.
 - **Lighthouse** (mobile, simulated throttling, performance only): score, LCP, CLS, TBT.
-- **JS eval time** (`bootup-time`) and **DOM element count**.
+- **JS eval time** (script evaluation + parse/compile on the main thread during the page load, from
+  Lighthouse's trace, scaled by its CPU slowdown) and **DOM element count**.
 
 Islands should ship about the same JS on all three posts. Whole-page hydration ships more as the post
 grows. Before measuring, a fidelity check makes sure every app rendered the same prose, headings and
