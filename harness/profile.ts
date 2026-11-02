@@ -24,7 +24,7 @@ export const SERVER = {
 	// Sequential requests for TTFB and render time (median).
 	samples: 25,
 	// Sequential requests for a stream's time to first chunk (median).
-	streamSamples: 10
+	streamSamples: 5
 };
 
 /** Event Timing only reports interactions of at least this many ms; shorter ones read as this. */

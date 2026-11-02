@@ -2,14 +2,14 @@
 
 Every app of a scenario must render the same thing on its check pages (the scenario defines what is compared).
 
-## dashboard
+## ai-chat
 
-- **ogygia**: matches · `Operations|Revenue today,Orders today,Average order,Active users|5|Order,Customer,Region,Product,Status,Amount,Date ↓|1000|ORD-10066FrancesLovelaceSouthStarterp`
-- **sveltekit**: matches · `Operations|Revenue today,Orders today,Average order,Active users|5|Order,Customer,Region,Product,Status,Amount,Date ↓|1000|ORD-10066FrancesLovelaceSouthStarterp`
-- **astro**: matches · `Operations|Revenue today,Orders today,Average order,Active users|5|Order,Customer,Region,Product,Status,Amount,Date ↓|1000|ORD-10066FrancesLovelaceSouthStarterp`
-- **mochi**: matches · `Operations|Revenue today,Orders today,Average order,Active users|5|Order,Customer,Region,Product,Status,Amount,Date ↓|1000|ORD-10066FrancesLovelaceSouthStarterp`
-- **vike**: matches · `Operations|Revenue today,Orders today,Average order,Active users|5|Order,Customer,Region,Product,Status,Amount,Date ↓|1000|ORD-10066FrancesLovelaceSouthStarterp`
-- **svelte-spa**: matches · `Operations|Revenue today,Orders today,Average order,Active users|5|Order,Customer,Region,Product,Status,Amount,Date ↓|1000|ORD-10066FrancesLovelaceSouthStarterp`
+- **ogygia**: matches · `Assistant|120|15|27|996|1`
+- **sveltekit**: matches · `Assistant|120|15|27|996|1`
+- **astro**: matches · `Assistant|120|15|27|996|1`
+- **mochi**: matches · `Assistant|120|15|27|996|1`
+- **vike**: matches · `Assistant|120|15|27|996|1`
+- **svelte-spa**: matches · `Assistant|120|15|27|996|1`
 
 **PASS**
 
