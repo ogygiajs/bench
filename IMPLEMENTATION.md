@@ -117,7 +117,9 @@ Steps (per the upstream spec):
    - **HTML size**: fetch the post URL with `identity`; record raw + gz.
    - **Lighthouse** (mobile emulation + simulated throttling, `categories: ['performance']`,
      `output: 'json'`): extract performance score (0–100), LCP (ms), CLS, TBT (ms), script eval time
-     (`bootup-time` audit: Σ scripting + scriptParseCompile), DOM element count (`dom-size`).
+     (Σ scriptEvaluation + scriptParseCompile self time of the main-thread tasks that start at or
+     after navigationStart, from the trace, × the CPU slowdown; not `bootup-time`, which also counts
+     tasks from before the navigation and drops URLs under 50 ms), DOM element count (`dom-size`).
 4. Average LCP/CLS/TBT/eval/DOM across posts per framework.
 5. Emit a markdown table (condensed + full) to `--out` and JSON when `--json`. Warn if content-encoding
    differed across targets (it skews LCP comparability).

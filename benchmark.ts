@@ -45,6 +45,8 @@ import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { join, resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import lighthouse from 'lighthouse';
+import { TraceProcessor } from 'lighthouse/core/lib/tracehouse/trace-processor.js';
+import { MainThreadTasks } from 'lighthouse/core/lib/tracehouse/main-thread-tasks.js';
 import { launch } from 'chrome-launcher';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -179,11 +181,7 @@ async function runLighthouse(url, chromePort, acceptEncoding) {
 		.filter((i) => i.resourceType === 'Script')
 		.map((i) => i.url);
 
-	// Time the main thread spends on JS (evaluation + parse/compile), summed over all scripts.
-	// Unlike TBT this isn't windowed between FCP and TTI, so it stays meaningful when the two
-	// coincide — which they do here, leaving TBT at 0 for most rows despite real hydration work.
-	const boot = a['bootup-time']?.details?.items ?? [];
-	const evalMs = boot.reduce((s, i) => s + (i.scripting ?? 0) + (i.scriptParseCompile ?? 0), 0);
+	const evalMs = scriptTime(runner.artifacts.Trace, runner.lhr.configSettings);
 
 	return {
 		score: Math.round((runner.lhr.categories.performance.score ?? 0) * 100),
@@ -196,6 +194,42 @@ async function runLighthouse(url, chromePort, acceptEncoding) {
 		evalMs,
 		scripts: [...new Set(scripts)]
 	};
+}
+
+// Time the main thread spends on JS (evaluation + parse/compile) for the measured page load,
+// scaled by the CPU slowdown like Lighthouse's own numbers. Unlike TBT this isn't windowed
+// between FCP and TTI, so it stays meaningful when the two coincide, which they do here.
+//
+// This reads the trace rather than the `bootup-time` audit, which gets it wrong twice:
+//   - it sums every main-thread task in the trace, including ones from before the navigation.
+//     Chrome sometimes hands back the renderer's events from before tracing started, and then
+//     Lighthouse's own ~1 s CPU benchmark on about:blank lands in the trace and is charged to
+//     the page's document (x4 for throttling, ~3.9 s). It happens on the second Lighthouse run
+//     in a Chrome session, whichever page that is.
+//   - it drops every URL whose total is under 50 ms, so the scripts of a light page don't count.
+// Here only top-level tasks that start at or after navigationStart count, and every one does,
+// except Lighthouse's own page evaluations (tagged `_lighthouse-eval.js`).
+const LIGHTHOUSE_EVAL = /(^|\/)_lighthouse-eval\.js$/;
+function scriptTime(trace, settings) {
+	const { mainThreadEvents, frames, timestamps } = TraceProcessor.processTrace(trace);
+	const tasks = MainThreadTasks.getMainThreadTasks(
+		mainThreadEvents,
+		frames,
+		timestamps.traceEnd,
+		timestamps.timeOrigin
+	);
+	const sum = (task) =>
+		task.attributableURLs.some((url) => LIGHTHOUSE_EVAL.test(url))
+			? 0
+			: (task.group.id === 'scriptEvaluation' || task.group.id === 'scriptParseCompile'
+					? task.selfTime
+					: 0) + task.children.reduce((s, c) => s + sum(c), 0);
+	const ms = tasks
+		.filter((task) => !task.parent && task.startTime >= 0)
+		.reduce((s, task) => s + sum(task), 0);
+	const slowdown =
+		settings.throttlingMethod === 'simulate' ? settings.throttling.cpuSlowdownMultiplier : 1;
+	return ms * slowdown;
 }
 
 const avg = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
