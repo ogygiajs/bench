@@ -12,7 +12,7 @@
 //     package.json (a dependency list), node_modules and build output;
 //   - a comment line is one that is only a comment (`//`, `/* … */`, `<!-- … -->`).
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const SOURCE = /\.(svelte|ts|js|astro|html)$/;
@@ -26,10 +26,24 @@ const BLOG_GENERATED = [
 	/(^|\/)(public|static)\//
 ];
 
+// Without git (the Docker image has no .git): walk the app, skipping what .gitignore leaves out.
+const UNTRACKED = new Set(['node_modules', 'build', 'dist', '.svelte-kit', '.astro', '.mochi', 'public', 'static']);
+const UNTRACKED_PATHS = ['src/lib/shared', 'src/shared'];
+
+function walk(root, dir, rel = '', out = []) {
+	for (const e of readdirSync(join(root, dir, rel), { withFileTypes: true })) {
+		const r = rel ? `${rel}/${e.name}` : e.name;
+		if (e.isDirectory()) {
+			if (!UNTRACKED.has(e.name) && !UNTRACKED_PATHS.includes(r)) walk(root, dir, r, out);
+		} else if (e.isFile() && !e.name.startsWith('.')) out.push(`${dir}/${r}`);
+	}
+	return out;
+}
+
 function tracked(root, dir) {
 	const r = spawnSync('git', ['-C', root, 'ls-files', '--', dir], { encoding: 'utf8' });
-	if (r.status !== 0) return null;
-	return r.stdout.split('\n').filter(Boolean);
+	if (r.status === 0 && r.stdout.trim()) return r.stdout.split('\n').filter(Boolean);
+	return existsSync(join(root, dir)) ? walk(root, dir.replace(/\/$/, '')) : null;
 }
 
 /** Non-blank, non-comment lines of one file's text. */

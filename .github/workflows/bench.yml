@@ -9,8 +9,13 @@ name: bench
 #   schedule (weekly)                  FULL run against ogygia@latest; also becomes the baseline.
 #   workflow_dispatch                  any mode and spec by hand; result kept as an artifact only.
 #
-# GitHub-hosted ubuntu-latest ships Google Chrome, and Lighthouse's chrome-launcher uses it as is
-# (no Docker image, no `playwright install`). Frameworks build on Node 22, plus bun for mochi.
+# Every run measures the blog and every scenario (docs, dashboard, ai-chat, shop). FAST builds
+# and measures only the apps marked `fast` (ogygia + sveltekit) and stays within about 30
+# minutes; FULL runs every app of every scenario (about 75 minutes).
+#
+# GitHub-hosted ubuntu-latest ships Google Chrome; Lighthouse's chrome-launcher and Playwright
+# both use it as is (no Docker image, no `playwright install`). Frameworks build on Node 22, plus
+# bun for mochi.
 
 on:
   repository_dispatch:
@@ -27,9 +32,13 @@ on:
         type: string
         default: latest
       passes:
-        description: 'Lighthouse passes per page (the median is reported)'
+        description: 'Lighthouse passes per page and browser-session passes per scenario (the median is reported)'
         type: string
         default: '3'
+      scenarios:
+        description: 'scenarios to run: all, none, or a comma list (docs,dashboard,ai-chat,shop,blog)'
+        type: string
+        default: all
   schedule:
     - cron: '17 4 * * 1'
 
@@ -52,7 +61,8 @@ env:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # FAST (a PR) fits in 30 minutes; FULL builds and measures every app of every scenario.
+    timeout-minutes: ${{ github.event.action == 'ogygia-pr' && 45 || 120 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,24 +77,28 @@ jobs:
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SPEC: ${{ inputs.spec }}
           INPUT_PASSES: ${{ inputs.passes }}
+          INPUT_SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -euo pipefail
-          pr=''; sha=''; base_sha=''; spec=''
+          pr=''; sha=''; base_sha=''; spec=''; scenarios=all
+          # passes = Lighthouse passes on the blog; scenario_passes = passes of every scenario.
           case "$EVENT/$ACTION" in
             repository_dispatch/ogygia-pr)
-              kind=pr; scope=fast; passes=5
+              kind=pr; scope=fast; passes=5; scenario_passes=3
               pr="$PAYLOAD_PR"; sha="$PAYLOAD_SHA"; base_sha="${PAYLOAD_BASE_SHA:-}"
               [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad pr in payload: $pr"; exit 1; }
               ;;
             repository_dispatch/ogygia-main)
-              kind=main; scope=full; passes=3; sha="$PAYLOAD_SHA"
+              kind=main; scope=full; passes=3; scenario_passes=3; sha="$PAYLOAD_SHA"
               ;;
             schedule/*)
-              kind=main; scope=full; passes=3; spec=latest
+              kind=main; scope=full; passes=3; scenario_passes=3; spec=latest
               ;;
             *)
               kind=manual; scope="${INPUT_MODE:-fast}"; passes="${INPUT_PASSES:-3}"; spec="${INPUT_SPEC:-latest}"
+              scenario_passes="$passes"; scenarios="${INPUT_SCENARIOS:-all}"
               [[ "$passes" =~ ^[1-9][0-9]?$ ]] || { echo "::error::passes must be 1-99"; exit 1; }
+              [[ "$scenarios" =~ ^[a-z,-]+$ ]] || { echo "::error::scenarios must be all, none or a comma list"; exit 1; }
               ;;
           esac
           if [ -n "$sha" ]; then
@@ -97,8 +111,9 @@ jobs:
           {
             echo "kind=$kind"; echo "scope=$scope"; echo "passes=$passes"; echo "spec=$spec"
             echo "pr=$pr"; echo "sha=$sha"; echo "base_sha=$base_sha"
+            echo "scenario_passes=$scenario_passes"; echo "scenarios=$scenarios"
           } >> "$GITHUB_OUTPUT"
-          echo "### $kind run, $scope, $passes passes, ogygia \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### $kind run, $scope, $passes blog passes, $scenario_passes scenario passes ($scenarios), ogygia \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: pnpm/action-setup@v4
 
@@ -130,14 +145,17 @@ jobs:
           echo "::error::$SPEC is not available"
           exit 1
 
-      # Only the harness's own deps; the router benchmark's (playwright, rolldown) are dev-only.
+      # Only the harness's own deps (Lighthouse, Playwright, autocannon); rolldown is the router
+      # benchmark's and dev-only.
       - name: Install harness deps
         run: pnpm install --prod --no-lockfile --config.confirmModulesPurge=false
 
+      # The blog apps and every scenario's apps (FAST: only those marked `fast`).
       - name: Build frameworks
         env:
           OGYGIA_SPEC: ${{ steps.plan.outputs.spec }}
           SCOPE: ${{ steps.plan.outputs.scope }}
+          BENCH_SCENARIOS: ${{ steps.plan.outputs.scenarios }}
         run: node build-all.ts $([ "$SCOPE" = fast ] && echo --fast || echo --full)
 
       - name: Start mochi
@@ -149,10 +167,14 @@ jobs:
           echo "::error::mochi did not start"
           exit 1
 
+      # The blog's Lighthouse run, then each scenario: its apps start themselves (a static build
+      # served by the harness, or the app's own server on a free port).
       - name: Run benchmark
         env:
           SCOPE: ${{ steps.plan.outputs.scope }}
           BENCH_PASSES: ${{ steps.plan.outputs.passes }}
+          BENCH_SCENARIO_PASSES: ${{ steps.plan.outputs.scenario_passes }}
+          BENCH_SCENARIOS: ${{ steps.plan.outputs.scenarios }}
           BENCH_KIND: ${{ steps.plan.outputs.kind }}
           BENCH_SHA: ${{ steps.plan.outputs.sha }}
         run: |
@@ -283,5 +305,6 @@ jobs:
           path: |
             results/scratch/
             results/fidelity.md
+            results/fidelity-scenarios.md
             comment.md
           if-no-files-found: ignore

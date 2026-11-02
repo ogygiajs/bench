@@ -16,6 +16,9 @@ export const METRICS = {
 	tbt: { label: 'TBT', fmt: ms, better: 'lower' },
 	cls: { label: 'CLS', fmt: (n) => n.toFixed(3), better: 'lower' },
 	evalMs: { label: 'JS eval', fmt: ms, better: 'lower' },
+	dom: { label: 'DOM elements', fmt: int, better: 'lower' },
+	// The blog's sizes per post (benchmark.ts top level): every script the page loads, raw.
+	jsRaw: { label: 'JS raw', fmt: kb, better: 'lower' },
 	// Bytes a route loads cold, before any interaction or scroll (brotli). Bare = average of routes.
 	jsBr: { label: 'JS per route (brotli)', fmt: kb, better: 'lower' },
 	htmlBr: { label: 'HTML per route (brotli)', fmt: kb, better: 'lower' },

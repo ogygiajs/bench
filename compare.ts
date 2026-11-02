@@ -6,7 +6,11 @@
 // Both files are benchmark.ts JSON. A missing or unreadable --base is not an error: the comment
 // then says there is no baseline yet and shows the PR's numbers alone. The verdict lives in the
 // text, so the exit code is 0 either way; CI never fails on a slower run.
+//
+// The comment is grouped by scenario: one short summary table (a row per scenario, a few headline
+// metrics), then every metric of each scenario in its own <details>.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { METRICS, kb, kindOf, labelOf } from './harness/metrics.ts';
 
 // The workflow finds the existing comment by this line and edits it in place.
 const MARKER = '<!-- ogygia-benchmarks -->';
@@ -16,7 +20,7 @@ const OGYGIA_REPO = 'ogygiajs/ogygia';
 // the baseline by more than BOTH `pct` percent of the baseline AND `abs` (in the metric's own
 // unit). Lighthouse timings on a shared runner wobble by a few percent even with medians, so they
 // get wide floors; sizes come out the same on every run, so their floors only skip rounding-level
-// changes.
+// changes. A scenario key `<metric>:<detail>` uses its metric's floor.
 const NOISE = {
 	score: { pct: 0, abs: 3 },
 	lcp: { pct: 5, abs: 100 },
@@ -55,51 +59,34 @@ const NOISE = {
 	locConfig: { pct: 0, abs: 0 }
 };
 
-const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
-const ms = (n) => `${Math.round(n).toLocaleString('en-US')} ms`;
-const UNITS = {
-	score: { fmt: (n) => String(Math.round(n)), better: 'higher' },
-	lcp: { fmt: ms, better: 'lower' },
-	tbt: { fmt: ms, better: 'lower' },
-	cls: { fmt: (n) => n.toFixed(3), better: 'lower' },
-	evalMs: { fmt: ms, better: 'lower' },
-	dom: { fmt: (n) => String(Math.round(n)), better: 'lower' },
-	jsBr: { fmt: kb, better: 'lower' },
-	jsRaw: { fmt: kb, better: 'lower' },
-	htmlBr: { fmt: kb, better: 'lower' }
-};
-
-/** The rows of the comment's table: a label, the metric's key, and how to read it from a framework. */
-function metrics(posts) {
-	const avg = (key) => (fw) => fw?.avg?.[key];
-	const row = (post, key) => (fw) => fw?.rows?.find((r) => r.post === post)?.[key];
-	return [
-		{ label: 'Lighthouse score (avg)', key: 'score', get: avg('score') },
-		{ label: 'LCP (avg)', key: 'lcp', get: avg('lcp') },
-		{ label: 'TBT (avg)', key: 'tbt', get: avg('tbt') },
-		{ label: 'CLS (avg)', key: 'cls', get: avg('cls') },
-		{ label: 'JS eval (avg)', key: 'evalMs', get: avg('evalMs') },
-		{ label: 'DOM elements (avg)', key: 'dom', get: avg('dom') },
-		...posts.map((p) => ({ label: `JS brotli (${p})`, key: 'jsBr', get: row(p, 'jsBr') })),
-		...posts.map((p) => ({ label: `JS raw (${p})`, key: 'jsRaw', get: row(p, 'jsRaw') })),
-		...posts.map((p) => ({ label: `HTML brotli (${p})`, key: 'htmlBr', get: row(p, 'htmlBr') }))
-	];
-}
+// The summary table's columns: the first key a scenario has from each list.
+const SUMMARY = [
+	{ head: 'Load', keys: ['lcp'] },
+	{ head: 'JS', keys: ['jsBr'] },
+	{ head: 'INP', keys: ['inp'] },
+	{ head: 'Nav / token / tick', keys: ['navMs', 'ttft', 'updateMs'] },
+	{ head: 'Server p99', keys: ['p99'] },
+	{ head: 'Lines of code', keys: ['loc'] }
+];
 
 /** How a PR value sits against the baseline: the change, and whether it is a regression. */
 function judge(key, pr, base) {
+	const kind = kindOf(key);
 	const diff = pr - base;
-	const worse = UNITS[key].better === 'lower' ? diff : -diff;
-	const { pct, abs } = NOISE[key];
+	const worse = METRICS[kind].better === 'lower' ? diff : -diff;
+	const { pct, abs } = NOISE[kind] ?? { pct: 0, abs: 0 };
 	const floor = Math.max(abs, (Math.abs(base) * pct) / 100);
 	return { diff, regressed: worse > floor };
 }
 
+const fmt = (key, n) => METRICS[kindOf(key)].fmt(n);
+
 function signed(key, diff, base) {
+	const def = METRICS[kindOf(key)];
 	const sign = diff > 0 ? '+' : diff < 0 ? '−' : '±';
 	// Byte changes under a kilobyte read better in bytes than as "+0.0 KB".
-	const small = UNITS[key].fmt === kb && Math.abs(diff) < 1024;
-	const mag = small ? `${Math.abs(diff)} B` : UNITS[key].fmt(Math.abs(diff));
+	const small = def.fmt === kb && Math.abs(diff) < 1024;
+	const mag = small ? `${Math.round(Math.abs(diff))} B` : def.fmt(Math.abs(diff));
 	const rel = base ? ` (${sign}${((Math.abs(diff) / Math.abs(base)) * 100).toFixed(1)}%)` : '';
 	return `${sign}${mag}${rel}`;
 }
@@ -124,34 +111,95 @@ function describe(run) {
 	return parts.join(' @ ');
 }
 
+/**
+ * Every group's metrics for one framework: `{ blog: {key: n}, docs: {...}, ... }`. The blog
+ * merges the top-level Lighthouse result (averages and per-post sizes) with its scenario's
+ * browser-session metrics; the top level wins where both have a key.
+ */
+function groups(run, id) {
+	const out = {};
+	const fw = run?.frameworks?.find((f) => f.id === id);
+	if (fw) {
+		const blog = {};
+		for (const k of ['score', 'lcp', 'tbt', 'cls', 'evalMs', 'dom']) if (fw.avg?.[k] != null) blog[k] = fw.avg[k];
+		for (const r of fw.rows ?? [])
+			for (const k of ['jsBr', 'jsRaw', 'htmlBr']) if (r[k] != null) blog[`${k}:${r.post}`] = r[k];
+		out.blog = blog;
+	}
+	for (const [name, s] of Object.entries(run?.scenarios ?? {})) {
+		const m = s.frameworks?.find((f) => f.id === id)?.metrics;
+		if (!m) continue;
+		out[name] = name === 'blog' ? { ...m, ...(out.blog ?? {}) } : { ...m };
+	}
+	// The blog's per-post JS replaces the per-route average for the blog's summary cell.
+	if (out.blog && out.blog.jsBr == null) {
+		const posts = Object.keys(out.blog).filter((k) => k.startsWith('jsBr:'));
+		if (posts.length) out.blog.jsBr = posts.reduce((s, k) => s + out.blog[k], 0) / posts.length;
+	}
+	return out;
+}
+
+const ORDER = Object.keys(METRICS);
+const byMetric = (a, b) =>
+	ORDER.indexOf(kindOf(a)) - ORDER.indexOf(kindOf(b)) ||
+	(a.includes(':') ? 1 : 0) - (b.includes(':') ? 1 : 0) ||
+	a.localeCompare(b);
+
 function compare(pr, base, runUrl) {
-	const prOgygia = pr.frameworks.find((f) => f.id === 'ogygia');
-	if (!prOgygia) throw new Error('the PR result has no ogygia row');
-	const baseOgygia = base?.frameworks?.find((f) => f.id === 'ogygia') ?? null;
-	const posts = pr.posts.map((p) => p.id);
-	const rows = metrics(posts);
+	const prG = groups(pr, 'ogygia');
+	if (!Object.keys(prG).length) throw new Error('the PR result has no ogygia numbers');
+	const baseG = base ? groups(base, 'ogygia') : null;
 	const passes = pr.meta?.passes;
+	const scenarioPasses = pr.meta?.scenarioPasses ?? passes;
+
+	const regressions = [];
+	const summary = [];
+	const details = [];
+	for (const [name, metrics] of Object.entries(prG)) {
+		const b = baseG?.[name] ?? null;
+		const keys = Object.keys(metrics).filter((k) => METRICS[kindOf(k)]).sort(byMetric);
+		const worse = [];
+		const rows = [];
+		for (const key of keys) {
+			const p = metrics[key];
+			const bv = b?.[key];
+			if (b && bv != null) {
+				const { diff, regressed } = judge(key, p, bv);
+				if (regressed) worse.push(labelOf(key));
+				rows.push(`| ${labelOf(key)} | ${fmt(key, p)} | ${fmt(key, bv)} | ${signed(key, diff, bv)} | ${regressed ? '⚠️' : '✅'} |`);
+			} else rows.push(b ? `| ${labelOf(key)} | ${fmt(key, p)} | n/a | | |` : `| ${labelOf(key)} | ${fmt(key, p)} |`);
+		}
+		regressions.push(...worse.map((w) => `${name}: ${w}`));
+
+		const cells = SUMMARY.map(({ keys: ks }) => {
+			const key = ks.find((k) => metrics[k] != null);
+			if (!key) return '–';
+			const bv = b?.[key];
+			if (bv == null) return fmt(key, metrics[key]);
+			const { diff, regressed } = judge(key, metrics[key], bv);
+			const pct = bv ? Math.round((Math.abs(diff) / Math.abs(bv)) * 100) : 0;
+			const rel = pct ? ` (${diff > 0 ? '+' : '−'}${pct}%)` : '';
+			return `${fmt(key, metrics[key])}${rel}${regressed ? ' ⚠️' : ''}`;
+		});
+		const status = !b ? '' : worse.length ? `⚠️ ${worse.length}` : '✅';
+		summary.push(`| ${name} | ${cells.join(' | ')} | ${status} |`);
+
+		const head = b
+			? ['| Metric | This PR | main | Change | |', '|---|---:|---:|---:|:-:|']
+			: ['| Metric | This PR |', '|---|---:|'];
+		details.push(
+			`<details><summary><b>${name}</b>${worse.length ? `: ⚠️ ${worse.join(', ')}` : ''}</summary>`,
+			'',
+			...head,
+			...rows,
+			'',
+			'</details>',
+			''
+		);
+	}
 
 	const lines = [MARKER, '### ogygia benchmarks', ''];
-	const tableRows = [];
-	const regressions = [];
-
-	if (baseOgygia) {
-		tableRows.push('| Metric | This PR | main | Change | |', '|---|---:|---:|---:|:-:|');
-		for (const m of rows) {
-			const p = m.get(prOgygia);
-			const b = m.get(baseOgygia);
-			if (p == null) continue;
-			if (b == null) {
-				tableRows.push(`| ${m.label} | ${UNITS[m.key].fmt(p)} | n/a | | |`);
-				continue;
-			}
-			const { diff, regressed } = judge(m.key, p, b);
-			if (regressed) regressions.push(m.label);
-			tableRows.push(
-				`| ${m.label} | ${UNITS[m.key].fmt(p)} | ${UNITS[m.key].fmt(b)} | ${signed(m.key, diff, b)} | ${regressed ? '⚠️' : '✅'} |`
-			);
-		}
+	if (baseG) {
 		lines.push(
 			regressions.length
 				? `⚠️ **${regressions.length} metric${regressions.length === 1 ? '' : 's'} got worse beyond noise:** ${regressions.join(', ')}.`
@@ -160,48 +208,58 @@ function compare(pr, base, runUrl) {
 			`This PR: ogygia ${describe(pr)}. Baseline: \`main\`, ogygia ${describe(base)}.`
 		);
 	} else {
-		tableRows.push('| Metric | This PR |', '|---|---:|');
-		for (const m of rows) {
-			const p = m.get(prOgygia);
-			if (p != null) tableRows.push(`| ${m.label} | ${UNITS[m.key].fmt(p)} |`);
-		}
 		lines.push(
 			'No `main` baseline yet, so there is nothing to compare against. These are the absolute numbers.',
 			'',
 			`This PR: ogygia ${describe(pr)}.`
 		);
 	}
-	lines.push('', ...tableRows, '');
+	lines.push(
+		'',
+		`| Scenario | ${SUMMARY.map((c) => c.head).join(' | ')} | |`,
+		`|---|${SUMMARY.map(() => '---:').join('|')}|:-:|`,
+		...summary,
+		'',
+		'<sub>ogygia only. Load = Lighthouse LCP; JS = brotli JS per route; INP = worst scripted step; Nav / token / tick = client navigation (blog, docs, shop), send to first token on screen (ai-chat), one live update (dashboard). Every metric of a scenario is in its row below.</sub>',
+		'',
+		...details
+	);
 
-	// The plain-SvelteKit app never changes between the two runs, so a big move there means the
+	// The plain-SvelteKit apps never change between the two runs, so a big move there means the
 	// runner itself was faster or slower, and the ogygia timings above moved with it.
-	const prKit = pr.frameworks.find((f) => f.id === 'sveltekit');
-	const baseKit = base?.frameworks?.find((f) => f.id === 'sveltekit');
-	if (prKit && baseKit) {
-		const drift = ['score', 'lcp', 'evalMs']
-			.map((key) => {
-				const { diff } = judge(key, prKit.avg[key], baseKit.avg[key]);
-				return `${key === 'evalMs' ? 'JS eval' : key === 'lcp' ? 'LCP' : 'score'} ${signed(key, diff, baseKit.avg[key])}`;
-			})
-			.join(', ');
-		lines.push(
-			`Runner check: the plain SvelteKit app (same code in both runs) moved by ${drift}. If that is large, the timing rows above are runner noise.`,
-			''
-		);
+	if (base) {
+		const prKit = groups(pr, 'sveltekit');
+		const baseKit = groups(base, 'sveltekit');
+		const drift = [];
+		for (const [name, m] of Object.entries(prKit)) {
+			const bm = baseKit[name];
+			if (!bm) continue;
+			const parts = ['lcp', 'inp', 'navMs', 'p99']
+				.filter((k) => m[k] != null && bm[k] != null)
+				.map((k) => `${METRICS[k].label.replace(/ \(.*\)$/, '')} ${signed(k, m[k] - bm[k], bm[k])}`);
+			if (parts.length) drift.push(`${name}: ${parts.join(', ')}`);
+		}
+		if (drift.length)
+			lines.push(
+				`Runner check: the plain SvelteKit apps (same code in both runs) moved by ${drift.join('; ')}. If that is large, the timing rows above are runner noise.`,
+				''
+			);
 	}
 
 	const noise = Object.entries(NOISE)
+		.filter(([key]) => Object.values(prG).some((m) => Object.keys(m).some((k) => kindOf(k) === key)))
 		.map(([key, { pct, abs }]) => {
+			if (!pct && !abs) return `\`${key}\` any change`;
 			const parts = [];
 			if (pct) parts.push(`${pct}%`);
-			parts.push(UNITS[key].fmt === kb ? `${abs} B` : UNITS[key].fmt(abs));
+			parts.push(METRICS[key].fmt === kb ? `${abs} B` : METRICS[key].fmt(abs));
 			return `\`${key}\` ${parts.join(' and ')}`;
 		})
 		.join(', ');
 	lines.push(
 		'<details><summary>How to read this</summary>',
 		'',
-		`Lighthouse mobile with simulated throttling on a GitHub-hosted runner${passes ? `, median of ${passes} pass${passes === 1 ? '' : 'es'}` : ''}, over three synthetic blog posts (small, medium, large) with five interactive counters each. Sizes are exact and the same on every run; timings are not.`,
+		`Lighthouse (mobile, simulated throttling${passes ? `, median of ${passes} pass${passes === 1 ? '' : 'es'}` : ''}) on the blog's three posts and on one page per scenario; browser sessions in Chrome with 4× CPU throttling and a 40 ms / 10 Mbps network${scenarioPasses ? `, median of ${scenarioPasses} pass${scenarioPasses === 1 ? '' : 'es'}` : ''}; server apps loaded by 10 connections replaying one page view. All on a GitHub-hosted runner. Sizes and lines of code are exact; timings are not. The README defines every metric.`,
 		'',
 		`⚠️ marks a metric that got worse by more than its noise floor (both the percentage and the absolute amount): ${noise}.`,
 		'',
