@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // Build the framework apps for the benchmark: generate posts, sync the shared Counter/posts into
-// each app, install it on its own and build it.
+// each blog app, then each scenario's data and shared UI into its apps; install every app on its
+// own and build it (timed, with its client output measured).
 //
 //   node build-all.ts                                   # every framework, ogygia@latest
 //   node build-all.ts --fast                            # only the apps marked `fast` in the config
+//   node build-all.ts --no-blog --scenarios docs        # one scenario's apps only
 //   OGYGIA_SPEC=0.11.4 node build-all.ts                # an npm version or dist-tag
 //   OGYGIA_SPEC=https://pkg.pr.new/ogygia@<sha7> node build-all.ts   # one commit's preview build
 //
 // `--spec <s>` is the same as OGYGIA_SPEC. The spec is the ONE input that changes between runs;
 // every other framework keeps the exact pins in its own package.json.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,12 +23,22 @@ const OGYGIA_APP = join(ROOT, 'frameworks', 'ogygia');
 const OGYGIA_PACKAGES = ['ogygia', '@ogygia/core', '@ogygia/content'];
 
 function parseArgs(argv) {
-	const args = { fast: process.env.BENCH_FAST === '1', spec: process.env.OGYGIA_SPEC || 'latest' };
+	const args = {
+		fast: process.env.BENCH_FAST === '1',
+		spec: process.env.OGYGIA_SPEC || 'latest',
+		scenarios: process.env.BENCH_SCENARIOS || 'all',
+		blog: true
+	};
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === '--fast') args.fast = true;
 		else if (argv[i] === '--full') args.fast = false;
 		else if (argv[i] === '--spec') args.spec = argv[++i];
+		else if (argv[i] === '--scenarios') args.scenarios = argv[++i];
+		else if (argv[i] === '--no-blog') args.blog = false;
 	}
+	// `all` (default), `none`, or a comma list. The blog apps in frameworks/ build unless --no-blog.
+	args.scenarios =
+		args.scenarios === 'none' ? [] : args.scenarios === 'all' ? null : args.scenarios.split(',');
 	return args;
 }
 
@@ -118,49 +130,119 @@ function installAndBuild(fw) {
 	const cwd = join(ROOT, 'frameworks', fw.id);
 	console.log(`\n▸ ${fw.id}`);
 	run('node', [join(ROOT, 'shared', 'sync.ts'), fw.id]);
+	installAndBuildIn(cwd, fw.install, fw.out ?? (fw.install === 'bun' ? null : 'build'));
+}
+
+/** Bytes of every file under `dir`. */
+function dirBytes(dir) {
+	let total = 0;
+	for (const e of readdirSync(dir, { withFileTypes: true })) {
+		const p = join(dir, e.name);
+		total += e.isDirectory() ? dirBytes(p) : e.isFile() ? statSync(p).size : 0;
+	}
+	return total;
+}
+
+/**
+ * Install an app on its own and build it. The `build` command is timed, and the app's client
+ * output (`out`, relative to the app) is measured, into `.bench-build.json` for benchmark.ts.
+ */
+function installAndBuildIn(cwd, install, out) {
 	const env = { ...process.env, ASTRO_TELEMETRY_DISABLED: '1' };
-	if (fw.install === 'bun') {
+	rmSync(join(cwd, '.bench-build.json'), { force: true });
+	if (out) rmSync(join(cwd, out), { recursive: true, force: true });
+	let t0;
+	if (install === 'bun') {
 		run('bun', ['install'], { cwd, env });
+		t0 = performance.now();
 		run('bun', ['run', 'build'], { cwd, env });
 	} else {
 		pnpmInstall(cwd, env, existsSync(join(cwd, 'pnpm-workspace.yaml')));
+		t0 = performance.now();
 		// pnpm 11 re-checks deps before `run` and would install again, this time with a lockfile.
 		run('pnpm', ['--config.verify-deps-before-run=false', 'run', 'build'], { cwd, env });
 	}
+	const buildMs = Math.round(performance.now() - t0);
+	const outBytes = out && existsSync(join(cwd, out)) ? dirBytes(join(cwd, out)) : null;
+	writeFileSync(join(cwd, '.bench-build.json'), JSON.stringify({ buildMs, outBytes }) + '\n');
+	console.log(`  build ${(buildMs / 1000).toFixed(1)} s${outBytes ? `, client output ${(outBytes / 1024).toFixed(0)} KB` : ''}`);
 }
 
-const args = parseArgs(process.argv.slice(2));
-const cfg = JSON.parse(readFileSync(join(ROOT, 'frameworks.config.json'), 'utf8'));
-const frameworks = cfg.frameworks.filter((fw) => !args.fast || fw.fast);
-
-console.log('▸ generate posts');
-run('node', [join(ROOT, 'generate-posts.ts')]);
-
-if (frameworks.some((fw) => fw.id === 'ogygia')) {
-	console.log(`\n▸ resolve ogygia (${args.spec})`);
-	const packages = resolveOgygia(args.spec);
-	for (const [name, at] of Object.entries(packages)) console.log(`  ${name} → ${at}`);
-	// The app's package.json asks for `latest`; overrides in its own (gitignored) workspace file
-	// swap every copy of the three packages, direct or nested, for the resolved ones. That also
-	// collapses content's `@ogygia/core` peer onto the same core ogygia uses.
-	// `minimumReleaseAge: 0`: pnpm 11 refuses packages younger than a day by default, and a run
-	// right after a release (the weekly `latest` run, a manual one) wants exactly that release.
-	// `blockExoticSubdeps: false`: a pkg.pr.new `ogygia` depends on its core by URL, which pnpm 11
-	// blocks in subdependencies by default. These URLs are the ones this script chose.
+/**
+ * The ogygia apps ask for `latest`; overrides in each one's own (gitignored) workspace file swap
+ * every copy of the three packages, direct or nested, for the resolved ones. That also collapses
+ * content's `@ogygia/core` peer onto the same core ogygia uses.
+ * `minimumReleaseAge: 0`: pnpm 11 refuses packages younger than a day by default, and a run right
+ * after a release (the weekly `latest` run, a manual one) wants exactly that release.
+ * `blockExoticSubdeps: false`: a pkg.pr.new `ogygia` depends on its core by URL, which pnpm 11
+ * blocks in subdependencies by default. These URLs are the ones this script chose.
+ */
+function pinOgygia(appDir, packages, spec) {
 	const yaml = Object.entries(packages)
 		.map(([name, at]) => `  '${name}': '${at}'`)
 		.join('\n');
 	writeFileSync(
-		join(OGYGIA_APP, 'pnpm-workspace.yaml'),
+		join(appDir, 'pnpm-workspace.yaml'),
 		`minimumReleaseAge: 0\nblockExoticSubdeps: false\noverrides:\n${yaml}\n`
 	);
 	// benchmark.ts reads this back for the result's `meta` block.
-	writeFileSync(
-		join(OGYGIA_APP, '.ogygia-spec.json'),
-		JSON.stringify({ spec: args.spec, packages }, null, '\t') + '\n'
-	);
+	writeFileSync(join(appDir, '.ogygia-spec.json'), JSON.stringify({ spec, packages }, null, '\t') + '\n');
+}
+
+const args = parseArgs(process.argv.slice(2));
+const cfg = JSON.parse(readFileSync(join(ROOT, 'frameworks.config.json'), 'utf8'));
+const frameworks = args.blog ? cfg.frameworks.filter((fw) => !args.fast || fw.fast) : [];
+const scenarioNames = Object.keys(cfg.scenarios ?? {}).filter(
+	(name) => !args.scenarios || args.scenarios.includes(name)
+);
+const scenarioApps = scenarioNames.flatMap((name) =>
+	cfg.scenarios[name].apps
+		.filter((app) => !args.fast || app.fast)
+		.map((app) => ({ ...app, scenario: name }))
+);
+
+if (frameworks.length) {
+	console.log('▸ generate posts');
+	run('node', [join(ROOT, 'generate-posts.ts')]);
+}
+
+let packages = null;
+if ([...frameworks, ...scenarioApps].some((fw) => fw.id === 'ogygia')) {
+	console.log(`\n▸ resolve ogygia (${args.spec})`);
+	packages = resolveOgygia(args.spec);
+	for (const [name, at] of Object.entries(packages)) console.log(`  ${name} → ${at}`);
+	pinOgygia(OGYGIA_APP, packages, args.spec);
 }
 
 for (const fw of frameworks) installAndBuild(fw);
 
-console.log(`\n✓ built ${frameworks.map((fw) => fw.id).join(', ')}`);
+// Scenario apps: generate the scenario's data once, copy its shared UI into each app, build. A
+// scenario app that fails to build is reported and left out; the benchmark skips unbuilt apps.
+const failed = [];
+for (const name of scenarioNames) {
+	const apps = scenarioApps.filter((a) => a.scenario === name);
+	if (!apps.length) continue;
+	const generator = join(ROOT, 'scenarios', name, 'generate.ts');
+	if (existsSync(generator)) {
+		console.log(`\n▸ ${name}: generate data`);
+		run('node', [generator]);
+	}
+	for (const app of apps) {
+		const cwd = join(ROOT, app.dir);
+		console.log(`\n▸ ${name}/${app.id}`);
+		try {
+			run('node', [join(ROOT, 'scenarios', 'sync.ts'), name, app.dir, app.shared ?? 'src/lib/shared']);
+			if (app.id === 'ogygia') pinOgygia(cwd, packages, args.spec);
+			installAndBuildIn(cwd, app.install, app.out);
+		} catch (e) {
+			failed.push(`${name}/${app.id}`);
+			console.log(`::warning title=build failed::${name}/${app.id}: ${e.message}`);
+		}
+	}
+}
+
+const built = [
+	...frameworks.map((fw) => fw.id),
+	...scenarioApps.map((a) => `${a.scenario}/${a.id}`).filter((id) => !failed.includes(id))
+];
+console.log(`\n✓ built ${built.join(', ')}${failed.length ? `\n✗ failed ${failed.join(', ')}` : ''}`);

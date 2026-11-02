@@ -515,8 +515,11 @@ function runMeta(args, frameworks) {
 		}
 	};
 	const measured = frameworks.some((f) => f.id === 'ogygia');
-	const installed = measured ? read(join(app, 'node_modules', 'ogygia', 'package.json')) : null;
-	const chosen = measured ? read(join(app, '.ogygia-spec.json')) : null;
+	// The blog's ogygia app, else the first scenario's (a `--no-blog` run); all install the same spec.
+	const apps = [app, ...Object.values(args.cfg?.scenarios ?? {}).flatMap((s) => s.apps.filter((a) => a.id === 'ogygia').map((a) => join(ROOT, a.dir)))];
+	const pick = (rel) => apps.map((dir) => read(join(dir, rel))).find(Boolean) ?? null;
+	const installed = measured ? pick('node_modules/ogygia/package.json') : null;
+	const chosen = measured ? pick('.ogygia-spec.json') : null;
 	return {
 		ogygia: installed?.version ?? null,
 		spec: chosen?.spec ?? null,
@@ -606,7 +609,7 @@ async function main() {
 	}
 
 	const meta = runMeta(
-		args,
+		{ ...args, cfg },
 		measuredIds.map((id) => ({ id }))
 	);
 	meta.scenarioPasses = args.scenarioPasses;

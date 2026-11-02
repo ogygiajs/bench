@@ -26,7 +26,28 @@ const NOISE = {
 	dom: { pct: 2, abs: 5 },
 	jsBr: { pct: 1, abs: 256 },
 	jsRaw: { pct: 1, abs: 512 },
-	htmlBr: { pct: 2, abs: 256 }
+	htmlBr: { pct: 2, abs: 256 },
+	// Scenario metrics (harness/metrics.ts defines each one). Browser-session timings run with real
+	// CPU throttling on a shared runner, so they get wide floors; Event Timing rounds to 8 ms.
+	inp: { pct: 15, abs: 16 },
+	resp: { pct: 15, abs: 30 },
+	navMs: { pct: 10, abs: 60 },
+	visitBr: { pct: 2, abs: 1024 },
+	heapMb: { pct: 10, abs: 0.5 },
+	ttfb: { pct: 25, abs: 2 },
+	htmlMs: { pct: 25, abs: 3 },
+	p50: { pct: 25, abs: 3 },
+	p99: { pct: 30, abs: 10 },
+	vps: { pct: 20, abs: 50 },
+	reqsPerView: { pct: 0, abs: 0 },
+	ttft: { pct: 15, abs: 40 },
+	streamMs: { pct: 10, abs: 100 },
+	ttfc: { pct: 30, abs: 5 },
+	streamTotal: { pct: 10, abs: 100 },
+	updateMs: { pct: 20, abs: 1 },
+	cacheable: { pct: 0, abs: 0 },
+	buildMs: { pct: 25, abs: 3000 },
+	outBytes: { pct: 1, abs: 1024 }
 };
 
 const kb = (n) => `${(n / 1024).toFixed(1)} KB`;

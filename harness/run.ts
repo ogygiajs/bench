@@ -248,7 +248,7 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 
 /** Run the named scenarios; returns `{ [name]: result }` and writes the fidelity report. */
 export async function runScenarios(root, cfg, opts) {
-	const names = opts.names.filter((n) => SCENARIOS.includes(n) && existsSync(join(root, 'scenarios', n, 'scenario.ts')));
+	const names = (opts.names ?? SCENARIOS).filter((n) => SCENARIOS.includes(n) && existsSync(join(root, 'scenarios', n, 'scenario.ts')));
 	const lines = [
 		'# Scenario fidelity',
 		'',
