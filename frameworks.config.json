@@ -24,5 +24,62 @@
 			"url": "http://127.0.0.1:3335",
 			"install": "bun"
 		}
-	]
+	],
+	"scenarios": {
+		"docs": {
+			"apps": [
+				{
+					"id": "ogygia",
+					"approach": "prerendered, islands, ogygia router",
+					"dir": "scenarios/docs/apps/ogygia",
+					"dist": "build",
+					"out": "build",
+					"public": "static",
+					"fast": true
+				},
+				{
+					"id": "sveltekit",
+					"approach": "prerendered, hydrated, Kit router",
+					"dir": "scenarios/docs/apps/sveltekit",
+					"dist": "build",
+					"out": "build",
+					"public": "static",
+					"fast": true
+				},
+				{
+					"id": "astro",
+					"approach": "static, islands, full page loads",
+					"dir": "scenarios/docs/apps/astro",
+					"dist": "dist",
+					"out": "dist",
+					"shared": "src/shared"
+				},
+				{
+					"id": "mochi",
+					"approach": "server-rendered per request, islands, full page loads",
+					"dir": "scenarios/docs/apps/mochi",
+					"start": ["bun", "src/index.ts"],
+					"out": ".mochi",
+					"client": [".mochi/svelte-client", ".mochi/svelte-css"],
+					"shared": "src/shared",
+					"install": "bun"
+				},
+				{
+					"id": "vike",
+					"approach": "prerendered, hydrated, Vike client routing",
+					"dir": "scenarios/docs/apps/vike",
+					"dist": "dist/client",
+					"out": "dist/client"
+				},
+				{
+					"id": "svelte-spa",
+					"approach": "client-rendered SPA, page JSON",
+					"dir": "scenarios/docs/apps/svelte-spa",
+					"dist": "dist",
+					"out": "dist",
+					"spa": true
+				}
+			]
+		}
+	}
 }

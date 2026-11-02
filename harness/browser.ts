@@ -129,7 +129,10 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 				return await h.jsonValue();
 			} catch (e) {
 				if (Date.now() < deadline && DESTROYED.test(String(e?.message))) continue;
-				throw e;
+				const url = page.url().replace(base, '');
+				throw new Error(
+					`timed out on ${url} waiting for ${check.replace(/\s+/g, ' ').slice(0, 140)} (${String(e?.message).split('\n')[0]})`
+				);
 			}
 		}
 	}
@@ -151,13 +154,17 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 		/**
 		 * One interaction: `action` drives the page, `done` (runs in the page) says the result is on
 		 * screen. Records `inp:<name>` (worst Event Timing duration of the interactions it caused)
-		 * and `resp:<name>` (action start to result on screen, ms).
+		 * and `resp:<name>` (last input of the action to result on screen, ms).
 		 */
 		async interact(name, action, done) {
 			await page.evaluate(() => (window.__bench_events = [])).catch(() => {});
-			const t0 = await now();
+			const start = await now();
 			await action(page);
-			const t1 = await until(done);
+			// `resp` counts from the last input the action dispatched (the click, the final key).
+			const t0 = await now();
+			const t1 = await until(done).catch((e) => {
+				throw new Error(`step ${name}: ${e.message}`);
+			});
 			// Event Timing entries are queued after the next paint; give them two frames to arrive.
 			await page
 				.evaluate(
@@ -169,7 +176,7 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 				.catch(() => {});
 			const events = await page.evaluate(() => window.__bench_events ?? []).catch(() => []);
 			const origin = await page.evaluate(() => performance.timeOrigin);
-			const inWindow = events.filter((e) => origin + e.t >= t0 - 1);
+			const inWindow = events.filter((e) => origin + e.t >= start - 1);
 			const worst = inWindow.reduce((m, e) => Math.max(m, e.d), 0);
 			const inp = Math.max(INP_FLOOR, worst);
 			metrics[`inp:${name}`] = Math.max(metrics[`inp:${name}`] ?? 0, inp);
@@ -180,7 +187,9 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 		async nav(name, action, done) {
 			const t0 = await now();
 			await action(page);
-			const t1 = await until(done);
+			const t1 = await until(done).catch((e) => {
+				throw new Error(`nav ${name}: ${e.message}`);
+			});
 			steps.push({ kind: 'nav', name, ms: t1 - t0 });
 			await quiet();
 		},

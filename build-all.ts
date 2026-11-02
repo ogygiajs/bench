@@ -133,21 +133,37 @@ function installAndBuild(fw) {
 	installAndBuildIn(cwd, fw.install, fw.out ?? (fw.install === 'bun' ? null : 'build'));
 }
 
-/** Bytes of every file under `dir`. */
-function dirBytes(dir) {
+/** Bytes of every file under `dir`, leaving out paths (relative to `dir`) in `skip`. */
+function dirBytes(dir, skip = new Set(), rel = '') {
 	let total = 0;
 	for (const e of readdirSync(dir, { withFileTypes: true })) {
+		const r = rel ? `${rel}/${e.name}` : e.name;
+		if (skip.has(r)) continue;
 		const p = join(dir, e.name);
-		total += e.isDirectory() ? dirBytes(p) : e.isFile() ? statSync(p).size : 0;
+		total += e.isDirectory() ? dirBytes(p, skip, r) : e.isFile() ? statSync(p).size : 0;
 	}
 	return total;
 }
 
+/** Every file path under `dir`, relative to it. */
+function listFiles(dir, rel = '', out = new Set()) {
+	if (!existsSync(dir)) return out;
+	for (const e of readdirSync(dir, { withFileTypes: true })) {
+		const r = rel ? `${rel}/${e.name}` : e.name;
+		if (e.isDirectory()) listFiles(join(dir, e.name), r, out);
+		else out.add(r);
+	}
+	return out;
+}
+
 /**
  * Install an app on its own and build it. The `build` command is timed, and the app's client
- * output (`out`, relative to the app) is measured, into `.bench-build.json` for benchmark.ts.
+ * output is measured, into `.bench-build.json` for benchmark.ts. `out` is the build output
+ * (removed before the build), `client` the parts of it a browser can fetch (default: all of
+ * `out`). Files the build copied from the app's public dir are left out of the size: they are the
+ * scenario's shared static files, the same for every app.
  */
-function installAndBuildIn(cwd, install, out) {
+function installAndBuildIn(cwd, install, out, client = out ? [out] : [], publicDir = null) {
 	const env = { ...process.env, ASTRO_TELEMETRY_DISABLED: '1' };
 	rmSync(join(cwd, '.bench-build.json'), { force: true });
 	if (out) rmSync(join(cwd, out), { recursive: true, force: true });
@@ -163,7 +179,9 @@ function installAndBuildIn(cwd, install, out) {
 		run('pnpm', ['--config.verify-deps-before-run=false', 'run', 'build'], { cwd, env });
 	}
 	const buildMs = Math.round(performance.now() - t0);
-	const outBytes = out && existsSync(join(cwd, out)) ? dirBytes(join(cwd, out)) : null;
+	const shared = publicDir ? listFiles(join(cwd, publicDir)) : new Set();
+	const dirs = client.filter((d) => existsSync(join(cwd, d)));
+	const outBytes = dirs.length ? dirs.reduce((s, d) => s + dirBytes(join(cwd, d), shared), 0) : null;
 	writeFileSync(join(cwd, '.bench-build.json'), JSON.stringify({ buildMs, outBytes }) + '\n');
 	console.log(`  build ${(buildMs / 1000).toFixed(1)} s${outBytes ? `, client output ${(outBytes / 1024).toFixed(0)} KB` : ''}`);
 }
@@ -231,9 +249,15 @@ for (const name of scenarioNames) {
 		const cwd = join(ROOT, app.dir);
 		console.log(`\n▸ ${name}/${app.id}`);
 		try {
-			run('node', [join(ROOT, 'scenarios', 'sync.ts'), name, app.dir, app.shared ?? 'src/lib/shared']);
+			run('node', [
+				join(ROOT, 'scenarios', 'sync.ts'),
+				name,
+				app.dir,
+				app.shared ?? 'src/lib/shared',
+				app.public ?? 'public'
+			]);
 			if (app.id === 'ogygia') pinOgygia(cwd, packages, args.spec);
-			installAndBuildIn(cwd, app.install, app.out);
+			installAndBuildIn(cwd, app.install, app.out, app.client ?? [app.out], app.public ?? 'public');
 		} catch (e) {
 			failed.push(`${name}/${app.id}`);
 			console.log(`::warning title=build failed::${name}/${app.id}: ${e.message}`);
