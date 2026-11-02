@@ -24,6 +24,9 @@
 // of each metric. Passes go round-robin over every target, so a slow stretch on the machine lands
 // on all of them instead of on whichever framework happened to be running.
 // --kind / --sha (or BENCH_KIND / BENCH_SHA) only label the JSON's `meta` block.
+// --scenarios all|none|docs,dashboard,… (or BENCH_SCENARIOS, default all) then runs the scenarios
+// (harness/run.ts) with --scenario-passes N passes (or BENCH_SCENARIO_PASSES, default --passes);
+// --skip and --fast apply to their apps too. --no-blog skips the blog's Lighthouse run above.
 // Requires: Chrome/Chromium (set CHROME_PATH if not auto-detected), and `pnpm install`.
 //
 // --gzip makes the run use Content-Encoding: gzip; without it, everything is served

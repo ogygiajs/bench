@@ -32,7 +32,9 @@ its own normal tools.
 
 ## Where each one runs
 
-The blog keeps its four apps (`ogygia`, `sveltekit`, `astro`, `mochi`) unchanged. The new scenarios
-use all six where the framework can do it; each scenario's README row and `frameworks.config.json`
-say which apps it has. When a framework cannot build a scenario the way it is meant to be built, it
-is left out of that scenario and the reason is written next to it, rather than faked.
+The blog keeps its four apps (`ogygia`, `sveltekit`, `astro`, `mochi`) unchanged. The four new
+scenarios (docs, dashboard, ai-chat, shop) have all six; `frameworks.config.json` lists them. Every
+framework could build every scenario its own way, so none is left out. Two things needed care and
+are written in the apps: `vike-svelte` is pinned to 1.0.1 (above), and Astro's server-island
+fallback in the shop is written as plain HTML, because Astro's swap stops at the first comment node
+and a Svelte component's output starts with one.

@@ -166,7 +166,16 @@ export async function spawnServer(cwd, start, { ready = '/', env = {} } = {}) {
 
 /** Boot one app of a scenario from its config entry. */
 export async function bootApp(root, app, ready) {
-	if (app.url) return { base: app.url.replace(/\/$/, ''), kind: 'server', stop: async () => {} };
+	if (app.url) {
+		// An already-running server (the blog's mochi); skipped like an unbuilt app when it is down.
+		const base = app.url.replace(/\/$/, '');
+		try {
+			await (await fetch(base + ready, { signal: AbortSignal.timeout(3000) })).arrayBuffer();
+		} catch {
+			return null;
+		}
+		return { base, kind: 'server', stop: async () => {} };
+	}
 	// `out` is the app's client output; no output means the app was not built in this run.
 	if (app.out && !existsSync(resolve(root, app.dir, app.out))) return null;
 	if (app.start) return spawnServer(resolve(root, app.dir), app.start, { ready, env: app.env });
