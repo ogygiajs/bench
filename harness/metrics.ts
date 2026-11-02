@@ -47,7 +47,12 @@ export const METRICS = {
 	cacheable: { label: 'HTML cacheable for everyone', fmt: (n) => (n ? 'yes' : 'no'), better: 'higher' },
 	// From build-all.ts: the app's `build` command, and every file in its client output.
 	buildMs: { label: 'Build time', fmt: (n) => `${(n / 1000).toFixed(1)} s`, better: 'lower' },
-	outBytes: { label: 'Client output size', fmt: kb, better: 'lower' }
+	outBytes: { label: 'Client output size', fmt: kb, better: 'lower' },
+	// harness/loc.ts: non-blank, non-comment lines the app's author wrote (its own tracked source
+	// and config; shared scenario code and generated content left out).
+	loc: { label: 'Lines of code (total)', fmt: int, better: 'lower' },
+	locCode: { label: 'Lines of code: source', fmt: int, better: 'lower' },
+	locConfig: { label: 'Lines of code: config', fmt: int, better: 'lower' }
 };
 
 /** The metric definition of a result key (`inp:sort` → `inp`). */
@@ -65,4 +70,4 @@ export function labelOf(key) {
 }
 
 /** The headline keys of each scenario, in the order the summary tables show them. */
-export const HEADLINE = ['score', 'lcp', 'inp', 'resp', 'navMs', 'jsBr', 'heapMb', 'ttft', 'updateMs', 'ttfb', 'p99', 'vps', 'cacheable'];
+export const HEADLINE = ['score', 'lcp', 'inp', 'resp', 'navMs', 'jsBr', 'heapMb', 'ttft', 'updateMs', 'ttfb', 'p99', 'vps', 'cacheable', 'loc'];

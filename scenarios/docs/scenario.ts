@@ -20,6 +20,7 @@ export default {
 	ready: `/docs/${flat[0].slug}`,
 	lighthouse: ['mid'],
 	stepNames: ['tabs', 'search'],
+	composition: 'components/DocPage.svelte',
 	fidelity: {
 		paths: [`/docs/${START.slug}`],
 		print: () => {

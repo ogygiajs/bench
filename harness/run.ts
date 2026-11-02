@@ -7,6 +7,7 @@ import { launchBrowser, openSession, routeWeight } from './browser.ts';
 import { runLighthouse, startChrome } from './lighthouse.ts';
 import { cacheability, loadTest, renderTime, streamTiming } from './server.ts';
 import { BROWSER, SERVER } from './profile.ts';
+import { linesOfCode } from './loc.ts';
 
 export const SCENARIOS = ['blog', 'docs', 'dashboard', 'ai-chat', 'shop'];
 
@@ -230,6 +231,8 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				metrics.buildMs = build.buildMs;
 				metrics.outBytes = build.outBytes;
 			}
+			const composition = scenario.composition ? `scenarios/${name}/shared/${scenario.composition}` : null;
+			Object.assign(metrics, linesOfCode(root, t.app.buildDir, composition) ?? {});
 			const clean = {};
 			for (const [k, v] of Object.entries(metrics)) if (v != null) clean[k] = round(v, k === 'cls' || k === 'heapMb' ? 3 : k.startsWith('inp') ? 0 : 1);
 			result.frameworks.push({

@@ -47,7 +47,11 @@ const NOISE = {
 	updateMs: { pct: 20, abs: 1 },
 	cacheable: { pct: 0, abs: 0 },
 	buildMs: { pct: 25, abs: 3000 },
-	outBytes: { pct: 1, abs: 1024 }
+	outBytes: { pct: 1, abs: 1024 },
+	// Lines of code only change when an app's source does; any change is shown, none is noise.
+	loc: { pct: 0, abs: 0 },
+	locCode: { pct: 0, abs: 0 },
+	locConfig: { pct: 0, abs: 0 }
 };
 
 const kb = (n) => `${(n / 1024).toFixed(1)} KB`;

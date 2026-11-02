@@ -24,6 +24,7 @@ export default {
 	ready: '/',
 	lighthouse: ['home'],
 	stepNames: ['sort', 'sort-toggle', 'filter', 'status'],
+	composition: 'components/Dashboard.svelte',
 	server: { route: 'home' },
 	fidelity: {
 		paths: ['/'],
