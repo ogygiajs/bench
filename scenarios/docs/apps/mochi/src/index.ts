@@ -9,6 +9,7 @@ await Mochi.serve({
 	development: process.env.MODE === 'development',
 	htmlShell: './src/shell.html',
 	trailingSlash: 'never',
+	proxy: { origin: process.env.ORIGIN },
 	routes: {
 		'/docs/:section/:page': Mochi.page('./src/DocPage.svelte', {
 			serverProps: (_req, params) => {

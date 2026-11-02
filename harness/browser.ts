@@ -215,19 +215,28 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 			const used = m.find((x) => x.name === 'JSHeapUsedSize')?.value ?? 0;
 			return used / (1024 * 1024);
 		},
-		/** The same-origin GET requests that hit the app (not static assets), for the load test. */
+		/**
+		 * The same-origin requests that hit the app rather than a static file (the document, data
+		 * and fragment fetches, a batched POST of server islands), for the load test to replay:
+		 * `{ method, path, body?, contentType? }`.
+		 */
 		serverRequests() {
 			const origin = new URL(base).origin;
 			const seen = new Set();
 			const out = [];
 			for (const r of requests) {
 				const u = new URL(r.url());
-				if (u.origin !== origin || r.method() !== 'GET') continue;
-				if (!['document', 'fetch', 'xhr', 'eventsource'].includes(r.resourceType())) continue;
+				if (u.origin !== origin || !['GET', 'POST'].includes(r.method())) continue;
+				const type = r.resourceType();
+				// A fetch an inline script starts while the page parses can be typed `other`.
+				const dynamic = ['document', 'fetch', 'xhr', 'eventsource'].includes(type) || (type === 'other' && !/\.[a-z0-9]+$/i.test(u.pathname));
+				if (!dynamic) continue;
 				const path = u.pathname + u.search;
-				if (seen.has(path)) continue;
-				seen.add(path);
-				out.push(path);
+				const body = r.method() === 'POST' ? (r.postData() ?? '') : undefined;
+				const key = `${r.method()} ${path} ${body ?? ''}`;
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push({ method: r.method(), path, body, contentType: r.headers()['content-type'] });
 			}
 			return out;
 		},

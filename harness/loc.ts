@@ -43,20 +43,21 @@ export function countLines(text) {
 
 /**
  * `{ locCode, locConfig, loc }` for the app in `dir` (relative to the repo root), or null.
- * `composition` is the scenario's shared whole-page component (DocPage.svelte, ...): the apps that
+ * `composition` lists the scenario's shared whole-page components (DocPage.svelte, ...): the apps that
  * hydrate the whole page render it instead of writing the page's markup themselves, as the
  * islands apps do, so an app that imports it is charged its lines too.
  */
-export function linesOfCode(root, dir, composition = null) {
+export function linesOfCode(root, dir, composition = []) {
 	const files = tracked(root, dir);
 	if (!files?.length) return null;
 	let code = 0;
 	let config = 0;
-	if (composition) {
+	const sources = files.filter((f) => SOURCE.test(f)).map((f) => readFileSync(join(root, f), 'utf8'));
+	for (const shared of composition) {
 		// Imported from the app's copy of the shared dir: `…/shared/components/DocPage.svelte'`.
-		const tail = composition.slice(composition.indexOf('/shared/'));
-		const uses = files.some((f) => SOURCE.test(f) && readFileSync(join(root, f), 'utf8').includes(`${tail}'`));
-		if (uses) code += countLines(readFileSync(join(root, composition), 'utf8'));
+		const tail = shared.slice(shared.indexOf('/shared/'));
+		if (sources.some((text) => text.includes(`${tail}'`)))
+			code += countLines(readFileSync(join(root, shared), 'utf8'));
 	}
 	for (const file of files) {
 		const rel = file.slice(dir.length).replace(/^\//, '');

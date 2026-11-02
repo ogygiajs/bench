@@ -2,14 +2,14 @@
 
 Every app of a scenario must render the same thing on its check pages (the scenario defines what is compared).
 
-## ai-chat
+## shop
 
-- **ogygia**: matches · `Assistant|120|15|27|996|1`
-- **sveltekit**: matches · `Assistant|120|15|27|996|1`
-- **astro**: matches · `Assistant|120|15|27|996|1`
-- **mochi**: matches · `Assistant|120|15|27|996|1`
-- **vike**: matches · `Assistant|120|15|27|996|1`
-- **svelte-spa**: matches · `Assistant|120|15|27|996|1`
+- **ogygia**: matches · `All products|48|Hello, Ada|Cart (3)|0|0 Compact Backpack|4|Hello, Ada|Cart (3)|1|4`
+- **sveltekit**: matches · `All products|48|Hello, Ada|Cart (3)|0|0 Compact Backpack|4|Hello, Ada|Cart (3)|1|4`
+- **astro**: matches · `All products|48|Hello, Ada|Cart (3)|0|0 Compact Backpack|4|Hello, Ada|Cart (3)|1|4`
+- **mochi**: matches · `All products|48|Hello, Ada|Cart (3)|0|0 Compact Backpack|4|Hello, Ada|Cart (3)|1|4`
+- **vike**: matches · `All products|48|Hello, Ada|Cart (3)|0|0 Compact Backpack|4|Hello, Ada|Cart (3)|1|4`
+- **svelte-spa**: matches · `All products|48|Hello, Ada|Cart (3)|0|0 Compact Backpack|4|Hello, Ada|Cart (3)|1|4`
 
 **PASS**
 

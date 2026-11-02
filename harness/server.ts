@@ -38,23 +38,35 @@ export async function renderTime(base, path, { cookies = [], samples = SERVER.sa
  * `p99` is request latency under that load; `vps` is page views per second (requests per second
  * divided by requests per view).
  */
-export async function loadTest(base, paths, { cookies = [], duration = SERVER.duration.full } = {}) {
+export async function loadTest(base, view, { cookies = [], duration = SERVER.duration.full } = {}) {
 	const headers = { 'accept-encoding': 'identity' };
 	if (cookies.length) headers.cookie = cookieHeader(cookies);
+	// `view` holds paths (GET) or recorded requests ({ method, path, body, contentType }).
+	const requests = view.map((r) =>
+		typeof r === 'string'
+			? { method: 'GET', path: r }
+			: {
+					method: r.method,
+					path: r.path,
+					...(r.method === 'POST'
+						? { body: r.body, headers: { ...headers, origin: base, 'content-type': r.contentType ?? 'text/plain' } }
+						: {})
+				}
+	);
 	const result = await autocannon({
 		url: base,
 		connections: SERVER.connections,
 		duration,
 		headers,
-		requests: paths.map((path) => ({ method: 'GET', path })),
+		requests,
 		timeout: 10
 	});
 	const ok = result.non2xx === 0 && result.errors === 0 && result.timeouts === 0;
 	return {
 		p50: result.latency.p50,
 		p99: result.latency.p99,
-		vps: result.requests.average / paths.length,
-		reqsPerView: paths.length,
+		vps: result.requests.average / view.length,
+		reqsPerView: view.length,
 		ok,
 		non2xx: result.non2xx,
 		errors: result.errors + result.timeouts
@@ -94,20 +106,22 @@ export async function streamTiming(base, { path, method = 'POST', body, cookies 
 }
 
 /**
- * Can a shared cache (a CDN) serve this page to everyone? Yes when two different visitors get the
- * same bytes and the response does not forbid sharing (private / no-store) or set a cookie.
+ * Can a shared cache (a CDN) serve this page's HTML to everyone? Yes when no visitor's document
+ * carries that visitor's personal content (`markers`, e.g. "Hello, Ada") and the response does not
+ * forbid sharing (private / no-store) or set a cookie. Byte equality would be too strict: a page
+ * may carry per-render tokens that are the same for anyone who gets them.
  */
 export async function cacheability(base, path, visitors) {
-	const bodies = [];
-	let shareable = true;
-	for (const cookies of visitors) {
+	const reasons = [];
+	for (const { cookies, markers } of visitors) {
 		const res = await fetch(base + path, {
 			headers: { 'accept-encoding': 'identity', cookie: cookieHeader(cookies) }
 		});
 		const cc = res.headers.get('cache-control') ?? '';
-		if (/private|no-store/i.test(cc) || res.headers.get('set-cookie')) shareable = false;
-		bodies.push(await res.text());
+		if (/private|no-store/i.test(cc)) reasons.push(`cache-control: ${cc}`);
+		if (res.headers.get('set-cookie')) reasons.push('sets a cookie');
+		const html = await res.text();
+		for (const m of markers) if (html.includes(m)) reasons.push(`HTML contains "${m}"`);
 	}
-	const same = bodies.every((b) => b === bodies[0]);
-	return { cacheable: same && shareable ? 1 : 0, sameBytes: same, shareable };
+	return { cacheable: reasons.length ? 0 : 1, reasons: [...new Set(reasons)] };
 }

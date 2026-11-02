@@ -45,6 +45,7 @@ const NOISE = {
 	ttfc: { pct: 30, abs: 5 },
 	streamTotal: { pct: 10, abs: 100 },
 	updateMs: { pct: 20, abs: 1 },
+	personalMs: { pct: 15, abs: 60 },
 	cacheable: { pct: 0, abs: 0 },
 	buildMs: { pct: 25, abs: 3000 },
 	outBytes: { pct: 1, abs: 1024 },

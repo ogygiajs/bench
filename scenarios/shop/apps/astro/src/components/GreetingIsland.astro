@@ -1,0 +1,9 @@
+---
+// A server island: rendered per visitor with their cookies.
+import Greeting from '../shared/components/Greeting.svelte';
+import { visitorFrom } from '../shared/visitor.ts';
+
+const visitor = visitorFrom((name) => Astro.cookies.get(name)?.value);
+---
+
+<Greeting name={visitor?.name ?? null} />

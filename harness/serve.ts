@@ -20,6 +20,16 @@ const MIME = {
 };
 const COMPRESSIBLE = /^(text\/|application\/json|image\/svg)|javascript/;
 
+/**
+ * Fixed dummy values the apps need to build and start; not secrets. The same at build and run
+ * time: a prerendered page's server islands are signed with OGYGIA_SECRET when it is built.
+ */
+export const APP_ENV = {
+	OGYGIA_SECRET: 'bench-secret-bench-secret-bench-secret-0123456789',
+	// 32 bytes, base64url (Mochi warns about shorter keys).
+	MOCHI_KEY: 'YmVuY2gtbW9jaGkta2V5LTMyLWJ5dGVzLWxvbmchISE'
+};
+
 /** A free TCP port on 127.0.0.1. */
 export function freePort() {
 	return new Promise((res, rej) => {
@@ -125,9 +135,7 @@ export async function spawnServer(cwd, start, { ready = '/', env = {} } = {}) {
 			PORT: String(port),
 			HOST: '127.0.0.1',
 			ORIGIN: base,
-			// Fixed dummy values the apps need to start; not secrets.
-			OGYGIA_SECRET: 'bench-secret-bench-secret-bench-secret-0123456789',
-			MOCHI_KEY: 'dGVzdC1rZXktMzItYnl0ZXMtYmFzZTY0dXJsISEh',
+			...APP_ENV,
 			...env
 		}
 	});

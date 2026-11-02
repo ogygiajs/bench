@@ -7,6 +7,7 @@ await Mochi.serve({
 	port: Number(process.env.PORT) || 3337,
 	development: process.env.MODE === 'development',
 	htmlShell: './src/shell.html',
+	proxy: { origin: process.env.ORIGIN },
 	routes: {
 		'/': Mochi.page('./src/Dashboard.svelte', { serverProps: () => ({ data: dashboard }) })
 	}

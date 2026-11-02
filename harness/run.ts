@@ -48,7 +48,7 @@ function mergePasses(runs) {
 }
 
 /** One pass of the scenario's browser session; returns its metrics. */
-async function sessionPass(browser, scenario, target, first) {
+async function sessionPass(browser, scenario, target) {
 	const s = await openSession(browser, target.base, { cookies: scenario.cookies ?? [] });
 	try {
 		await scenario.session(s);
@@ -67,8 +67,18 @@ async function sessionPass(browser, scenario, target, first) {
 			await scenario.long(s);
 			m.heapMb = await s.heap();
 		}
-		if (first) target.serverRequests = s.serverRequests();
 		return m;
+	} finally {
+		await s.close();
+	}
+}
+
+/** The requests one cold view of `path` makes to the app's server (document, data, fragments). */
+async function viewRequests(browser, scenario, target, path) {
+	const s = await openSession(browser, target.base, { cookies: scenario.cookies ?? [], throttle: false });
+	try {
+		await s.goto(path);
+		return s.serverRequests();
 	} finally {
 		await s.close();
 	}
@@ -166,7 +176,7 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 			for (const t of targets) {
 				const slot = per.get(t.app.id);
 				try {
-					const m = await sessionPass(browser, scenario, t, pass === 1);
+					const m = await sessionPass(browser, scenario, t);
 					slot.passes.push(m);
 					log(
 						`  ${t.app.id}: ${['inp', 'resp', 'navMs', 'heapMb', 'ttft']
@@ -199,7 +209,9 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 					const path = scenario.routes[scenario.server.route];
 					const cookies = scenario.cookies ?? [];
 					Object.assign(metrics, await renderTime(t.base, path, { cookies }));
-					const view = t.serverRequests?.length ? t.serverRequests : [path];
+					const recorded = await viewRequests(browser, scenario, t, path);
+					const view = recorded.length ? recorded : [{ method: 'GET', path }];
+					metrics.reqsPerView = view.length;
 					const load = await loadTest(t.base, view, {
 						cookies,
 						duration: opts.fast ? SERVER.duration.fast : SERVER.duration.full
@@ -218,6 +230,7 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				try {
 					const c = await cacheability(t.base, scenario.routes[scenario.cacheability.route], scenario.cacheability.visitors);
 					metrics.cacheable = c.cacheable;
+					if (c.reasons.length) slot.notes = c.reasons;
 				} catch (e) {
 					slot.errors.push(`cacheability: ${e.message}`);
 				}
@@ -231,7 +244,7 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				metrics.buildMs = build.buildMs;
 				metrics.outBytes = build.outBytes;
 			}
-			const composition = scenario.composition ? `scenarios/${name}/shared/${scenario.composition}` : null;
+			const composition = [scenario.composition ?? []].flat().map((f) => `scenarios/${name}/shared/${f}`);
 			Object.assign(metrics, linesOfCode(root, t.app.buildDir, composition) ?? {});
 			const clean = {};
 			for (const [k, v] of Object.entries(metrics)) if (v != null) clean[k] = round(v, k === 'cls' || k === 'heapMb' ? 3 : k.startsWith('inp') ? 0 : 1);
@@ -240,6 +253,7 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				approach: t.app.approach,
 				served: t.kind,
 				metrics: clean,
+				...(slot.notes ? { notes: slot.notes } : {}),
 				...(slot.errors.length ? { errors: slot.errors } : {})
 			});
 		}

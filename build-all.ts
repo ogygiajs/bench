@@ -15,6 +15,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { APP_ENV } from './harness/serve.ts';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const OGYGIA_APP = join(ROOT, 'frameworks', 'ogygia');
@@ -164,7 +165,7 @@ function listFiles(dir, rel = '', out = new Set()) {
  * scenario's shared static files, the same for every app.
  */
 function installAndBuildIn(cwd, install, out, client = out ? [out] : [], publicDir = null) {
-	const env = { ...process.env, ASTRO_TELEMETRY_DISABLED: '1' };
+	const env = { ...process.env, ...APP_ENV, ASTRO_TELEMETRY_DISABLED: '1' };
 	rmSync(join(cwd, '.bench-build.json'), { force: true });
 	if (out) rmSync(join(cwd, out), { recursive: true, force: true });
 	let t0;

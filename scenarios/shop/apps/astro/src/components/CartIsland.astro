@@ -1,0 +1,9 @@
+---
+// A server island: rendered per visitor with their cookies.
+import CartBadge from '../shared/components/CartBadge.svelte';
+import { visitorFrom } from '../shared/visitor.ts';
+
+const visitor = visitorFrom((name) => Astro.cookies.get(name)?.value);
+---
+
+<CartBadge count={visitor?.cart ?? 0} />

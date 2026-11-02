@@ -8,6 +8,7 @@ await Mochi.serve({
 	port: Number(process.env.PORT) || 3338,
 	development: process.env.MODE === 'development',
 	htmlShell: './src/shell.html',
+	proxy: { origin: process.env.ORIGIN },
 	routes: {
 		'/chat': Mochi.page('./src/ChatPage.svelte', { serverProps: () => ({ messages: history }) }),
 		'/api/chat': Mochi.api(({ request }) => handleChat(request))

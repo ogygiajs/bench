@@ -1,0 +1,29 @@
+---
+// The markup of the shared ShopHeader.svelte, with the two personal parts as server islands.
+// Their fallback is the anonymous markup, which is what the prerendered page holds. It is written
+// as plain HTML (the anonymous Greeting / CartBadge output): Astro's swap stops at the first
+// comment node, and a Svelte component's output starts with one, so the fallback would stay.
+import GreetingIsland from '../components/GreetingIsland.astro';
+import CartIsland from '../components/CartIsland.astro';
+
+const { title } = Astro.props;
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="/shop.css" />
+		<title>{title}</title>
+	</head>
+	<body>
+		<header class="shop-head">
+			<a class="brand" href="/">Bench Shop</a>
+			<div class="account">
+				<GreetingIsland server:defer><a slot="fallback" class="greeting" href="/">Sign in</a></GreetingIsland>
+				<CartIsland server:defer><a slot="fallback" class="cart" href="/">Cart (0)</a></CartIsland>
+			</div>
+		</header>
+		<slot />
+	</body>
+</html>
