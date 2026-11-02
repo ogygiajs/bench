@@ -1,0 +1,31 @@
+{
+	"name": "ogygia-benchmarks",
+	"private": true,
+	"description": "ogygia against SvelteKit, Astro and Mochi on khromov's interactive-blogs benchmark.",
+	"license": "MIT",
+	"type": "module",
+	"packageManager": "pnpm@11.17.0",
+	"engines": {
+		"node": ">=22.18"
+	},
+	"scripts": {
+		"posts": "node generate-posts.ts",
+		"sync": "node shared/sync.ts",
+		"build:all": "node build-all.ts",
+		"build:fast": "node build-all.ts --fast",
+		"benchmark": "node benchmark.ts --config frameworks.config.json --out results/latest.md --json",
+		"benchmark:fast": "node benchmark.ts --fast --passes 3 --out results/scratch/fast.md --json",
+		"benchmark:gzip": "node benchmark.ts --config frameworks.config.json --out results/latest.md --json --gzip",
+		"compare": "node compare.ts",
+		"router": "node router/run.ts",
+		"ops": "node router/ops.ts"
+	},
+	"dependencies": {
+		"chrome-launcher": "1.2.1",
+		"lighthouse": "13.6.0"
+	},
+	"devDependencies": {
+		"playwright": "1.62.1",
+		"rolldown": "1.2.2"
+	}
+}

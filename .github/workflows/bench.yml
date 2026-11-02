@@ -1,0 +1,287 @@
+name: bench
+
+# Measures one ogygia build and keeps the result on the orphan `results` branch.
+#
+#   repository_dispatch `ogygia-pr`    ogygia's CI, after pkg.pr.new published a PR commit. FAST run
+#                                      (ogygia + the sveltekit reference), compared with main's
+#                                      baseline, summarised in ONE comment on the ogygia PR.
+#   repository_dispatch `ogygia-main`  a push to ogygia's main. FULL run; the new baseline.
+#   schedule (weekly)                  FULL run against ogygia@latest; also becomes the baseline.
+#   workflow_dispatch                  any mode and spec by hand; result kept as an artifact only.
+#
+# GitHub-hosted ubuntu-latest ships Google Chrome, and Lighthouse's chrome-launcher uses it as is
+# (no Docker image, no `playwright install`). Frameworks build on Node 22, plus bun for mochi.
+
+on:
+  repository_dispatch:
+    types: [ogygia-pr, ogygia-main]
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'fast = ogygia + sveltekit, full = every framework'
+        type: choice
+        options: [fast, full]
+        default: fast
+      spec:
+        description: 'ogygia to install: an npm version or dist-tag, or a pkg.pr.new URL (https://pkg.pr.new/ogygia@<sha7>)'
+        type: string
+        default: latest
+      passes:
+        description: 'Lighthouse passes per page (the median is reported)'
+        type: string
+        default: '3'
+  schedule:
+    - cron: '17 4 * * 1'
+
+# A newer push to the same PR cancels the older run. Baseline runs queue instead, so every main
+# push that gets to run lands its result.
+concurrency:
+  group: >-
+    bench-${{ github.event.action == 'ogygia-pr' && format('pr-{0}', github.event.client_payload.pr)
+    || (github.event.action == 'ogygia-main' || github.event_name == 'schedule') && 'main'
+    || github.run_id }}
+  cancel-in-progress: ${{ github.event.action == 'ogygia-pr' }}
+
+permissions:
+  contents: write
+
+env:
+  UPSTREAM: ogygiajs/ogygia
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Plan the run
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          PAYLOAD_PR: ${{ github.event.client_payload.pr }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+          PAYLOAD_BASE_SHA: ${{ github.event.client_payload.base_sha }}
+          INPUT_MODE: ${{ inputs.mode }}
+          INPUT_SPEC: ${{ inputs.spec }}
+          INPUT_PASSES: ${{ inputs.passes }}
+        run: |
+          set -euo pipefail
+          pr=''; sha=''; base_sha=''; spec=''
+          case "$EVENT/$ACTION" in
+            repository_dispatch/ogygia-pr)
+              kind=pr; scope=fast; passes=5
+              pr="$PAYLOAD_PR"; sha="$PAYLOAD_SHA"; base_sha="${PAYLOAD_BASE_SHA:-}"
+              [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad pr in payload: $pr"; exit 1; }
+              ;;
+            repository_dispatch/ogygia-main)
+              kind=main; scope=full; passes=3; sha="$PAYLOAD_SHA"
+              ;;
+            schedule/*)
+              kind=main; scope=full; passes=3; spec=latest
+              ;;
+            *)
+              kind=manual; scope="${INPUT_MODE:-fast}"; passes="${INPUT_PASSES:-3}"; spec="${INPUT_SPEC:-latest}"
+              [[ "$passes" =~ ^[1-9][0-9]?$ ]] || { echo "::error::passes must be 1-99"; exit 1; }
+              ;;
+          esac
+          if [ -n "$sha" ]; then
+            [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad sha in payload: $sha"; exit 1; }
+            # pkg.pr.new serves each package of a commit at https://pkg.pr.new/<name>@<sha7>.
+            spec="https://pkg.pr.new/ogygia@${sha:0:7}"
+          fi
+          if [ -n "$base_sha" ] && ! [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then base_sha=''; fi
+          [ -n "$spec" ] || { echo "::error::no ogygia spec (a dispatch needs client_payload.sha)"; exit 1; }
+          {
+            echo "kind=$kind"; echo "scope=$scope"; echo "passes=$passes"; echo "spec=$spec"
+            echo "pr=$pr"; echo "sha=$sha"; echo "base_sha=$base_sha"
+          } >> "$GITHUB_OUTPUT"
+          echo "### $kind run, $scope, $passes passes, ogygia \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: oven-sh/setup-bun@v2
+        if: steps.plan.outputs.scope == 'full'
+        with:
+          bun-version: latest
+
+      - name: Locate the runner's pre-installed Chrome
+        run: |
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium)"
+          echo "Using Chrome at: $CHROME"
+          echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
+
+      # The dispatch is sent once pkg.pr.new reported success, but its CDN can lag a little.
+      - name: Wait for the pkg.pr.new build
+        if: startsWith(steps.plan.outputs.spec, 'https://pkg.pr.new/')
+        env:
+          SPEC: ${{ steps.plan.outputs.spec }}
+        run: |
+          for i in $(seq 1 30); do
+            curl -sfIL -o /dev/null "$SPEC" && exit 0
+            sleep 10
+          done
+          echo "::error::$SPEC is not available"
+          exit 1
+
+      # Only the harness's own deps; the router benchmark's (playwright, rolldown) are dev-only.
+      - name: Install harness deps
+        run: pnpm install --prod --no-lockfile --config.confirmModulesPurge=false
+
+      - name: Build frameworks
+        env:
+          OGYGIA_SPEC: ${{ steps.plan.outputs.spec }}
+          SCOPE: ${{ steps.plan.outputs.scope }}
+        run: node build-all.ts $([ "$SCOPE" = fast ] && echo --fast || echo --full)
+
+      - name: Start mochi
+        if: steps.plan.outputs.scope == 'full'
+        working-directory: frameworks/mochi
+        run: |
+          PORT=3335 MOCHI_KEY=dGVzdC1rZXktMzItYnl0ZXMtYmFzZTY0dXJsISEh bun run start &
+          for i in $(seq 1 60); do curl -sf http://127.0.0.1:3335/posts/small >/dev/null && exit 0; sleep 1; done
+          echo "::error::mochi did not start"
+          exit 1
+
+      - name: Run benchmark
+        env:
+          SCOPE: ${{ steps.plan.outputs.scope }}
+          BENCH_PASSES: ${{ steps.plan.outputs.passes }}
+          BENCH_KIND: ${{ steps.plan.outputs.kind }}
+          BENCH_SHA: ${{ steps.plan.outputs.sha }}
+        run: |
+          node benchmark.ts $([ "$SCOPE" = fast ] && echo --fast) \
+            --config frameworks.config.json --out results/scratch/run.md --json
+          cat results/scratch/run.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out the results branch
+        if: steps.plan.outputs.kind != 'manual'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$url" results >/dev/null; then
+            git clone --quiet --branch results "$url" _results
+          else
+            # First run: start the orphan branch with a note on what it holds.
+            git init --quiet -b results _results
+            git -C _results remote add origin "$url"
+            printf '%s\n' \
+              '# results' '' \
+              'Written by the `bench` workflow; nothing here is edited by hand.' '' \
+              '- `main/latest.json`: the newest baseline run (a push to ogygia main, or the weekly `ogygia@latest` run)' \
+              '- `main/<sha>.json`: every run for an ogygia main commit (`main/v<version>.json` for the weekly run)' \
+              '- `pr/<number>.json`: the newest run for that ogygia PR' \
+              > _results/README.md
+          fi
+          git -C _results config user.name 'github-actions[bot]'
+          git -C _results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      - name: Compare with the main baseline
+        if: steps.plan.outputs.kind == 'pr'
+        env:
+          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # The run for the PR's exact base commit when there is one, else the newest baseline.
+          base=_results/main/latest.json
+          if [ -n "$BASE_SHA" ] && [ -f "_results/main/$BASE_SHA.json" ]; then base="_results/main/$BASE_SHA.json"; fi
+          node compare.ts --pr results/scratch/run.json --base "$base" --run-url "$RUN_URL" --out comment.md
+          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Store the result
+        if: steps.plan.outputs.kind != 'manual'
+        env:
+          KIND: ${{ steps.plan.outputs.kind }}
+          PR: ${{ steps.plan.outputs.pr }}
+          SHA: ${{ steps.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$KIND" = pr ]; then
+            mkdir -p _results/pr
+            cp results/scratch/run.json "_results/pr/$PR.json"
+            msg="pr #$PR @ ${SHA:0:7}"
+          else
+            mkdir -p _results/main
+            # The weekly run installs a release, which has no commit sha: name it by version.
+            name="$SHA"
+            if [ -z "$name" ]; then
+              name="v$(node -p "require('./results/scratch/run.json').meta.ogygia")"
+            fi
+            cp results/scratch/run.json "_results/main/$name.json"
+            cp results/scratch/run.json _results/main/latest.json
+            msg="main $name"
+          fi
+          cd _results
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit --quiet -m "$msg"
+          # Other runs (other PRs, a main push) push here too; their files never overlap, so a
+          # rebase onto theirs is always clean.
+          for i in 1 2 3 4 5; do
+            git push --quiet origin HEAD:results && exit 0
+            sleep $((i * 3))
+            git pull --quiet --rebase origin results || true
+          done
+          echo "::error::could not push to the results branch"
+          exit 1
+
+      - name: Comment on the ogygia PR
+        if: steps.plan.outputs.kind == 'pr'
+        env:
+          GH_TOKEN: ${{ secrets.BENCH_TOKEN }}
+          PR: ${{ steps.plan.outputs.pr }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the result was not posted to $UPSTREAM#$PR."
+            exit 0
+          fi
+          id=$(gh api --paginate "repos/$UPSTREAM/issues/$PR/comments" \
+            --jq '.[] | select(.body | contains("<!-- ogygia-benchmarks -->")) | .id' | sed -n 1p)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$UPSTREAM/issues/comments/$id" -F body=@comment.md >/dev/null
+          else
+            gh api -X POST "repos/$UPSTREAM/issues/$PR/comments" -F body=@comment.md >/dev/null
+          fi
+
+      # A failed run still updates the comment, so the PR never shows numbers for an older commit
+      # as if they were current.
+      - name: Report a failed run on the ogygia PR
+        if: failure() && steps.plan.outputs.kind == 'pr'
+        env:
+          GH_TOKEN: ${{ secrets.BENCH_TOKEN }}
+          PR: ${{ steps.plan.outputs.pr }}
+          SHA: ${{ steps.plan.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the failure was not posted."
+            exit 0
+          fi
+          printf '%s\n' '<!-- ogygia-benchmarks -->' '### ogygia benchmarks' '' \
+            "⚠️ The benchmark run for \`${SHA:0:7}\` failed before it produced numbers. [Benchmark run]($RUN_URL)" \
+            > failed.md
+          id=$(gh api --paginate "repos/$UPSTREAM/issues/$PR/comments" \
+            --jq '.[] | select(.body | contains("<!-- ogygia-benchmarks -->")) | .id' | sed -n 1p)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$UPSTREAM/issues/comments/$id" -F body=@failed.md >/dev/null
+          else
+            gh api -X POST "repos/$UPSTREAM/issues/$PR/comments" -F body=@failed.md >/dev/null
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: |
+            results/scratch/
+            results/fidelity.md
+            comment.md
+          if-no-files-found: ignore
