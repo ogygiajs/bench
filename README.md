@@ -102,7 +102,7 @@ Results are kept on the orphan `results` branch:
 - `pr/<number>.json`: the newest run for that ogygia PR
 
 The ogygia docs read
-`https://raw.githubusercontent.com/ogygiajs/benchmarks/results/main/latest.json`. The JSON is what
+`https://raw.githubusercontent.com/ogygiajs/bench/results/main/latest.json`. The JSON is what
 `benchmark.ts --json` writes, with a `meta` block (`ogygia`, `spec`, `sha`, `mode`, `passes`,
 `runAt`).
 
