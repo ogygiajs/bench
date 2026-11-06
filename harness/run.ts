@@ -330,7 +330,7 @@ export async function runScenarios(root, cfg, opts) {
 	} finally {
 		await browser.close();
 		await chrome.kill();
-		const file = resolve(root, 'results/fidelity-scenarios.md');
+		const file = resolve(root, opts.fidelityFile ?? 'results/fidelity-scenarios.md');
 		mkdirSync(dirname(file), { recursive: true });
 		writeFileSync(file, lines.join('\n') + '\n');
 	}

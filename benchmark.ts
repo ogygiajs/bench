@@ -564,6 +564,10 @@ function runMeta(args, frameworks) {
 	};
 }
 
+// The committed fidelity reports are a full run's; an A/B run's (the two ogygia builds only) goes
+// with the run's other scratch output.
+const fidelityFile = (args, name) => (args.ab ? `results/scratch/${name}` : `results/${name}`);
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
 	const config = JSON.parse(readFileSync(resolve(ROOT, args.config), 'utf8'));
@@ -583,7 +587,7 @@ async function main() {
 	if (!args.noBlog) {
 		if (!args.skipFidelity) {
 			console.error('▸ fidelity preflight');
-			const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, 'results/fidelity.md'));
+			const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, fidelityFile(args, 'fidelity.md')));
 			if (!fidelityOk) {
 				console.error(
 					'\nFidelity failed — not publishing numbers. Fix apps or pass --skip-fidelity.'
@@ -623,7 +627,8 @@ async function main() {
 		ab: args.ab,
 		passes: args.scenarioPasses,
 		skip,
-		skipFidelity: args.skipFidelity
+		skipFidelity: args.skipFidelity,
+		fidelityFile: fidelityFile(args, 'fidelity-scenarios.md')
 	});
 	const measuredIds = [
 		...new Set([...results, ...Object.values(scenarios).flatMap((s) => s.frameworks)].map((f) => f.id))

@@ -87,29 +87,36 @@ const median = (xs) => {
 const spreadOf = (xs) => Math.max(...xs) - Math.min(...xs);
 
 /**
- * How the PR sits against the base. With repeats of both builds, a metric regressed only when
- *   1. every PR repeat is worse than every base repeat (the two sets of repeats do not overlap:
- *      with 5 and 5 that happens by chance once in 252 for two builds that perform the same),
+ * How the PR sits against the base. With repeats of both builds, a metric changed (for the worse
+ * or the better) only when
+ *   1. the two sets of repeats do not overlap: every PR repeat is on the same side of every base
+ *      repeat (with 5 and 5 that happens by chance once in 126 for two builds that perform the
+ *      same, either way),
  *   2. the medians differ by more than the larger spread (max − min) of the two builds' repeats,
- *      the noise the runner showed for the same build within this job,
+ *      the noise the runner showed for one build within this job,
  *   3. and the difference is above the metric's floor.
- * A metric measured once is judged by its floor; a timing without enough repeats is not judged.
+ * Anything else is within noise, and the comment says so rather than showing a percent. A metric
+ * measured once is judged by its floor; a timing without enough repeats is not judged.
  */
 function judge(key, pr, base, prS, baseS) {
 	const kind = kindOf(key);
 	const sign = METRICS[kind].better === 'lower' ? 1 : -1;
 	const { pct = 0, abs = 0 } = FLOOR[kind] ?? {};
 	const floorOf = (b) => Math.max(abs, (Math.abs(b) * pct) / 100);
-	if (prS?.length >= MIN_REPEATS && baseS?.length >= MIN_REPEATS) {
+	const verdict = (changed, p, b) => ({
+		regressed: changed && sign * (p - b) > 0,
+		improved: changed && sign * (p - b) < 0
+	});
+	if (!ONCE.has(kind) && prS?.length >= MIN_REPEATS && baseS?.length >= MIN_REPEATS) {
 		const p = median(prS);
 		const b = median(baseS);
-		const worse = sign * (p - b);
 		const spread = [spreadOf(prS), spreadOf(baseS)];
-		const apart = sign > 0 ? Math.min(...prS) > Math.max(...baseS) : Math.max(...prS) < Math.min(...baseS);
-		return { pr: p, base: b, diff: p - b, spread, regressed: apart && worse > Math.max(...spread) && worse > floorOf(b) };
+		const apart = Math.min(...prS) > Math.max(...baseS) || Math.max(...prS) < Math.min(...baseS);
+		const changed = apart && Math.abs(p - b) > Math.max(...spread) && Math.abs(p - b) > floorOf(b);
+		return { pr: p, base: b, diff: p - b, spread, prS, baseS, ...verdict(changed, p, b) };
 	}
-	if (ONCE.has(kind)) return { pr, base, diff: pr - base, once: true, regressed: sign * (pr - base) > floorOf(base) };
-	return { pr, base, diff: pr - base, unjudged: true, regressed: false };
+	if (ONCE.has(kind)) return { pr, base, diff: pr - base, once: true, ...verdict(Math.abs(pr - base) > floorOf(base), pr, base) };
+	return { pr, base, diff: pr - base, unjudged: true, regressed: false, improved: false };
 }
 
 const fmt = (key, n) => METRICS[kindOf(key)].fmt(n);
@@ -122,10 +129,27 @@ function signed(key, diff, base) {
 	return `${sign}${mag(key, diff)}${rel}`;
 }
 
-function spreadCell(key, j) {
-	if (j.spread) return `${mag(key, j.spread[0])} / ${mag(key, j.spread[1])}`;
+/** `lo–hi` of a build's repeats, the unit written once (`69–73`, `15.1–16.0 ms`). */
+function range(key, xs) {
+	const lo = fmt(key, Math.min(...xs));
+	const hi = fmt(key, Math.max(...xs));
+	if (lo === hi) return lo;
+	const unit = / [^\d\s.,]+$/.exec(hi)?.[0];
+	return `${unit && lo.endsWith(unit) ? lo.slice(0, -unit.length) : lo}–${hi}`;
+}
+
+function repeatsCell(key, j) {
+	if (j.prS) return `${range(key, j.prS)} / ${range(key, j.baseS)}`;
 	if (j.once) return kindOf(key) === 'buildMs' ? 'one build' : 'exact';
 	return 'too few repeats';
+}
+
+// ⚠️ worse beyond noise; better: better beyond noise; ≈ within noise; = the same (exact); · not judged.
+function markOf(j) {
+	if (j.regressed) return '⚠️';
+	if (j.improved) return 'better';
+	if (j.unjudged) return '·';
+	return j.once && j.diff === 0 ? '=' : '≈';
 }
 
 const readJson = (file) => {
@@ -196,6 +220,7 @@ function compare(run, runUrl) {
 	const scenarioPasses = meta.scenarioPasses ?? passes;
 
 	const regressions = [];
+	const improvements = [];
 	const summary = [];
 	const details = [];
 	for (const [name, { metrics, samples }] of Object.entries(prG)) {
@@ -204,32 +229,39 @@ function compare(run, runUrl) {
 		const worse = [];
 		const rows = [];
 		const judged = {};
+		// Every repeat of each metric that changed beyond noise, so the verdict can be checked.
+		const evidence = [];
 		for (const key of keys) {
 			const bv = b?.metrics[key];
 			if (b && bv != null) {
 				const j = judge(key, metrics[key], bv, samples[key], b.samples[key]);
 				judged[key] = j;
 				if (j.regressed) worse.push(labelOf(key));
-				const mark = j.regressed ? '⚠️' : j.unjudged ? '·' : '✅';
-				rows.push(`| ${labelOf(key)} | ${fmt(key, j.pr)} | ${fmt(key, j.base)} | ${signed(key, j.diff, j.base)} | ${spreadCell(key, j)} | ${mark} |`);
+				if (j.improved) improvements.push(`${name}: ${labelOf(key)}`);
+				if ((j.regressed || j.improved) && j.prS)
+					evidence.push(`- ${labelOf(key)}: this PR ${j.prS.map((x) => fmt(key, x)).join(', ')}; base ${j.baseS.map((x) => fmt(key, x)).join(', ')}`);
+				rows.push(`| ${labelOf(key)} | ${fmt(key, j.pr)} | ${fmt(key, j.base)} | ${signed(key, j.diff, j.base)} | ${repeatsCell(key, j)} | ${markOf(j)} |`);
 			} else rows.push(b ? `| ${labelOf(key)} | ${fmt(key, metrics[key])} | n/a | | | |` : `| ${labelOf(key)} | ${fmt(key, metrics[key])} |`);
 		}
 		regressions.push(...worse.map((w) => `${name}: ${w}`));
 
+		// A change within noise is shown as ≈, never as a percent that only reflects the noise.
 		const cells = SUMMARY.map(({ keys: ks }) => {
 			const key = ks.find((k) => metrics[k] != null);
 			if (!key) return '–';
 			const j = judged[key];
 			if (!j) return fmt(key, metrics[key]);
-			const pct = j.base ? Math.round((Math.abs(j.diff) / Math.abs(j.base)) * 100) : 0;
-			const rel = pct ? ` (${j.diff > 0 ? '+' : '−'}${pct}%)` : '';
-			return `${fmt(key, j.pr)}${rel}${j.regressed ? ' ⚠️' : ''}`;
+			if (j.unjudged) return fmt(key, j.pr);
+			if (!j.regressed && !j.improved) return `${fmt(key, j.pr)} (${j.once && j.diff === 0 ? '=' : '≈'})`;
+			const pct = j.base ? ((Math.abs(j.diff) / Math.abs(j.base)) * 100).toFixed(1) : null;
+			const rel = pct ? `${j.diff > 0 ? '+' : '−'}${pct}%` : signed(key, j.diff, 0);
+			return `${fmt(key, j.pr)} (${rel})${j.regressed ? ' ⚠️' : ''}`;
 		});
 		const status = !b ? '' : worse.length ? `⚠️ ${worse.length}` : '✅';
 		summary.push(`| ${name} | ${cells.join(' | ')} | ${status} |`);
 
 		const head = b
-			? ['| Metric | This PR | Base | Change | Spread (PR / base) | |', '|---|---:|---:|---:|---:|:-:|']
+			? ['| Metric | This PR | Base | Change | Repeats, min–max (PR / base) | |', '|---|---:|---:|---:|---:|:-:|']
 			: ['| Metric | This PR |', '|---|---:|'];
 		details.push(
 			`<details><summary><b>${name}</b>${worse.length ? `: ⚠️ ${worse.join(', ')}` : ''}</summary>`,
@@ -237,20 +269,22 @@ function compare(run, runUrl) {
 			...head,
 			...rows,
 			'',
+			...(evidence.length ? ['Every repeat, in pass order, of what changed beyond noise:', '', ...evidence, ''] : []),
 			'</details>',
 			''
 		);
 	}
 
 	const lines = [MARKER, '### ogygia benchmarks', ''];
-	const repeats = scenarioPasses === passes ? `${passes}` : `${scenarioPasses} (the blog's Lighthouse: ${passes})`;
+	const repeats = scenarioPasses === passes ? `${passes} repeats of each` : `${scenarioPasses} repeats of each (the blog's Lighthouse: ${passes})`;
 	if (hasBase) {
 		lines.push(
 			regressions.length
 				? `⚠️ **${regressions.length} metric${regressions.length === 1 ? '' : 's'} got worse beyond noise:** ${regressions.join(', ')}.`
 				: '✅ **No regressions beyond noise.**',
+			...(improvements.length ? ['', `Better beyond noise: ${improvements.join(', ')}.`] : []),
 			'',
-			`This PR: ogygia ${describe(meta)}. Base: ogygia ${describe(meta.base)}. Both built and measured in this run, on one runner${meta.runner?.cpu ? ` (${meta.runner.cpu}, ${meta.runner.cores} cores)` : ''}, taking turns: ${repeats} repeats of each.`
+			`This PR: ogygia ${describe(meta)}. Base: ogygia ${describe(meta.base)}. Both built and measured in this run, on one runner${meta.runner?.cpu ? ` (${meta.runner.cpu}, ${meta.runner.cores} cores)` : ''}, taking turns: ${repeats}.`
 		);
 	} else {
 		lines.push(
@@ -283,9 +317,9 @@ function compare(run, runUrl) {
 	lines.push(
 		'<details><summary>How to read this</summary>',
 		'',
-		`The PR's ogygia and its base commit's ogygia are built from the same app sources and measured in this one job, on one GitHub-hosted runner, taking turns: every pass measures both, in the order PR then base, then base then PR, and so on. Each timing is the median of its repeats; Spread is max − min of each build's repeats, the noise this runner showed for one build. Lighthouse runs mobile with simulated throttling on the blog's three posts and on one page per scenario; browser sessions run in Chrome with 4× CPU throttling and a 40 ms / 10 Mbps network; server apps are loaded by 10 connections replaying one page view. The README defines every metric.`,
+		`The PR's ogygia and its base commit's ogygia are built from the same app sources and measured in this one job, on one GitHub-hosted runner, taking turns: every pass measures both, in the order PR then base, then base then PR, and so on. Each timing is the median of its repeats; Repeats shows the lowest and highest of each build's repeats, and its width (the spread) is the noise this runner showed for one build. Lighthouse runs mobile with simulated throttling on the blog's three posts and on one page per scenario; browser sessions run in Chrome with 4× CPU throttling and a 40 ms / 10 Mbps network; server apps are loaded by 10 connections replaying one page view. The README defines every metric.`,
 		'',
-		`A timing gets ⚠️ only when every one of the PR's repeats is worse than every one of the base's, the medians differ by more than the larger Spread, and the change is above its floor. Sizes and lines of code are exact (measured once): ⚠️ when worse by more than the floor. A metric with fewer than ${MIN_REPEATS} repeats is not judged (·). Floors (the change has to exceed both parts): ${floors}.`,
+		`A timing changed only when the two builds' repeats do not overlap (every one of the PR's is on the same side of every one of the base's), the medians differ by more than the wider of the two spreads, and the change is above its floor: ⚠️ when worse, *better* when better. Anything else is within noise (≈), and the summary shows no percent for it. Sizes and lines of code are exact (measured once): ⚠️ when worse by more than the floor, = when the same. A metric with fewer than ${MIN_REPEATS} repeats is not judged (·). Floors (the change has to exceed both parts): ${floors}.`,
 		'',
 		'</details>',
 		''
