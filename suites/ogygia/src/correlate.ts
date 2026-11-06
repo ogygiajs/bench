@@ -38,11 +38,11 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { loadPrices, recount } from '@bench/abax';
 import type { Report, TimeComparison } from '@bench/abax';
-import { changed_files, clone, prepare_tree, rev_parse } from './checkout.ts';
+import { changed_files, clone, prepare_tree, remove_tree, rev_parse } from './checkout.ts';
 import type { Tree } from './checkout.ts';
 import { import_graphs } from './graph.ts';
 import { ABAX_DIR, run_time, run_tree } from './run.ts';
-import { select_changed } from './select.ts';
+import { is_shared, select_changed } from './select.ts';
 
 /** The time rule's floor (packages/abax TIME_RULES.p50_ns): a smaller step change is "unchanged". */
 export const STEPS_FLOOR_PCT = 3;
@@ -171,17 +171,13 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 	const bench_rev = rev_parse(repo, String(values.bench ?? to));
 	const packages = bench_packages(repo, bench_rev);
 	const src = packages.map((p) => `packages/${p}/src`);
-	const commits = git(repo, [
-		'rev-list',
-		'--first-parent',
-		'--reverse',
-		`${from}..${to}`,
-		'--',
-		...src
-	])
-		.split('\n')
-		.filter(Boolean)
-		.slice(-Number(values.max ?? 40));
+	const commits = last_commits(
+		git(repo, ['rev-list', '--first-parent', '--reverse', `${from}..${to}`, '--', ...src])
+			.split('\n')
+			.filter(Boolean),
+		parse_max(values.max)
+	);
+	const pairs = commits.map((commit) => ({ commit, parent: rev_parse(repo, `${commit}^1`) }));
 	const log = (l: string) => console.log(`[correlate] ${l}`);
 	log(
 		`${commits.length} commits touch ${src.join(', ')}; bench files of ${bench_rev.slice(0, 12)}`
@@ -209,13 +205,12 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			'\t'
 		) + '\n'
 	);
-	for (const commit of commits) {
+	for (const [i, { commit, parent }] of pairs.entries()) {
 		const dir = join(out, 'pairs', commit.slice(0, 12));
 		if (existsSync(join(dir, 'pair.json'))) {
 			log(`${commit.slice(0, 12)} done before`);
 			continue;
 		}
-		const parent = rev_parse(repo, `${commit}^1`);
 		const subject = git(repo, ['log', '-1', '--format=%s', commit]);
 		log(`${commit.slice(0, 12)} ${subject}`);
 		const base = overlay(
@@ -230,16 +225,16 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			prepare_tree(repo, work, commit, ABAX_DIR, log),
 			packages
 		);
-		const b = run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
-		const h = run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
-		const changed = changed_files(repo, parent, commit).filter(
-			(f) => f !== 'pnpm-lock.yaml' && f !== 'pnpm-workspace.yaml'
-		);
+		const b = await run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
+		const h = await run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
+		// What every bench file shares does not pick the timed ones here: the bench files and the
+		// harness are laid over both trees, and a lockfile change times nothing in particular.
+		const changed = changed_files(repo, parent, commit).filter((f) => !is_shared(f));
 		const loaded = (r: Report | null) => new Set((r?.cases ?? []).map((c) => c.file));
 		const both = [...loaded(b.report)].filter((f) => loaded(h.report).has(f));
 		const selection = select_changed(import_graphs(head.dir, both), changed);
 		const timed = selection.selected;
-		const t = run_time(head, base, timed, join(dir, 'time'), log, {
+		const t = await run_time(head, base, timed, join(dir, 'time'), log, {
 			repeats: Number(values.repeats ?? 8),
 			time_ms: Number(values['time-ms'] ?? 150),
 			limit_min: 90
@@ -259,7 +254,32 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			time_error: t?.error ?? null
 		};
 		writeFileSync(join(dir, 'pair.json'), JSON.stringify(meta, null, '\t') + '\n');
+		// Each tree is a full install: keep only what the next pair measures.
+		for (const sha of trees_to_drop(pairs[i], pairs[i + 1])) remove_tree(work, sha);
 	}
+}
+
+/** `--max`: how many of the newest commits to measure (default 40). */
+export function parse_max(v: string | boolean | undefined): number {
+	if (v === undefined) return 40;
+	const n = Number(v);
+	if (typeof v !== 'string' || !/^\d+$/.test(v) || !Number.isSafeInteger(n))
+		throw new Error(`--max takes a whole number of commits, not ${JSON.stringify(v)}`);
+	return n;
+}
+
+/** The newest `max` commits of an oldest-first list (none for 0: `slice(-0)` would be all). */
+export function last_commits(commits: readonly string[], max: number): string[] {
+	return max === 0 ? [] : commits.slice(-max);
+}
+
+/** The trees of a measured pair that the next pair does not use. */
+export function trees_to_drop(
+	pair: { commit: string; parent: string },
+	next: { commit: string; parent: string } | undefined
+): string[] {
+	const keep = new Set(next ? [next.commit, next.parent] : []);
+	return [...new Set([pair.parent, pair.commit])].filter((sha) => !keep.has(sha));
 }
 
 // ---- summarizing

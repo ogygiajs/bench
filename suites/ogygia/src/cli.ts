@@ -8,7 +8,10 @@
  * Options: --repo <url or path> (default the ogygia repository), --work <dir> (clones and trees,
  * default .work), --out <dir> (default out), --run-url <url> (linked from the comment),
  * --measure <layers> (the plain-build layers every `abax run` adds: `time,bytes,leaks`, `all` or
- * `none`; default none for a PR, all for a full run), --time on|off (a PR's time layer, default on).
+ * `none`; default none for a PR, all for a full run), --time on|off (a PR's time layer, default on),
+ * --weights <app-weights.json> (a PR: rank the changed functions by main's real-app weights; a
+ * missing file is said in one line), --search-budget <seconds> (a PR's worst-case search over the
+ * changed cases that declare an input, both sides; default 240, 0 turns it off).
  *
  * A PR: both commits are checked out and installed, the PR is measured against the merge base of
  * the two, and only the bench files whose import graph reaches a changed file run: counted, health
@@ -23,7 +26,7 @@
  *   head/, base/  the per-file reports and Abax's log; time/ the time comparison (the artifact)
  */
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { diffReports, diffSections, gitDiff } from '@bench/abax';
@@ -38,7 +41,9 @@ import { import_graphs } from './graph.ts';
 import { ABAX_DIR, empty_report, run_time, run_tree } from './run.ts';
 import { RESULT_SCHEMA, render_full_summary, render_pr_section } from './section.ts';
 import type { Meta, Result } from './section.ts';
+import { SEARCH_BUDGET_MS, cases_with_inputs, pick_cases, run_searches } from './search.ts';
 import { select_all, select_changed } from './select.ts';
+import { rank_by_weights } from './weights.ts';
 
 const { values } = parseArgs({
 	options: {
@@ -51,7 +56,9 @@ const { values } = parseArgs({
 		out: { type: 'string', default: 'out' },
 		'run-url': { type: 'string' },
 		measure: { type: 'string' },
-		time: { type: 'string', default: 'on' }
+		time: { type: 'string', default: 'on' },
+		weights: { type: 'string' },
+		'search-budget': { type: 'string', default: String(SEARCH_BUDGET_MS / 1000) }
 	}
 });
 
@@ -85,6 +92,9 @@ async function main(): Promise<void> {
 	const layers = values.measure ?? (mb ? 'none' : 'all');
 	if (!LAYERS.test(layers)) throw new Error('--measure takes time,bytes,leaks, all or none');
 	const measure = layers === 'none' ? null : layers;
+	const search_s = Number(values['search-budget']);
+	if (!(Number.isFinite(search_s) && search_s >= 0)) throw new Error('bad --search-budget');
+	const search_ms = Math.round(search_s * 1000);
 	const meta: Meta = {
 		kind,
 		pr,
@@ -122,14 +132,14 @@ async function main(): Promise<void> {
 	};
 
 	if (selection.selected.length > 0) {
-		const head_run = run_tree(head, selection.selected, join(out, 'head'), log, measure);
+		const head_run = await run_tree(head, selection.selected, join(out, 'head'), log, measure);
 		result.head = head_run.report;
 		result.load_errors.head = head_run.load_errors;
 		if (mb) {
 			const base_tree = prepare_tree(repo, work, mb, ABAX_DIR, log);
 			const present = new Set(base_tree.benches);
 			const base_files = selection.selected.filter((f) => present.has(f));
-			const base_run = run_tree(base_tree, base_files, join(out, 'base'), log, measure);
+			const base_run = await run_tree(base_tree, base_files, join(out, 'base'), log, measure);
 			result.load_errors.base = base_run.load_errors;
 			result.base = base_run.report;
 			if (result.head) {
@@ -142,7 +152,28 @@ async function main(): Promise<void> {
 				};
 			}
 			if (values.time !== 'off') {
-				result.time = run_time(head, base_tree, base_files, join(out, 'time'), log);
+				result.time = await run_time(head, base_tree, base_files, join(out, 'time'), log);
+			}
+			if (result.diff && result.head && values.weights !== undefined) {
+				result.weights = rank_by_weights(resolve(values.weights), result.diff, result.head);
+				log(
+					`real-app weight: ${result.weights.status}${result.weights.note ? ` (${result.weights.note})` : ''}`
+				);
+			}
+			if (result.diff && result.head && search_ms > 0) {
+				const pick = pick_cases(result.diff, result.head, (file) =>
+					cases_with_inputs(file, readFileSync(join(head.dir, file), 'utf8'))
+				);
+				const base_cases = new Set(result.base?.cases.map((c) => c.name) ?? []);
+				result.search = await run_searches(
+					head,
+					base_tree,
+					pick,
+					join(out, 'search'),
+					log,
+					search_ms,
+					base_cases
+				);
 			}
 		}
 	}

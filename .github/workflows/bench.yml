@@ -24,6 +24,19 @@ name: bench
 # The app benchmark lives in suites/apps; its run output lands in suites/apps/results/scratch. The
 # comment is upserted by packages/compare/src/upsert-comment.ts, which rewrites only the `apps`
 # section and keeps every other section (Abax's) as it is.
+#
+# Three jobs, because measuring installs and runs the ogygia build under test (a PR's, from
+# pkg.pr.new) and every framework's dependencies:
+#
+#   plan     reads the event and decides kind, scope and specs. Nothing else runs here.
+#   measure  read-only: no secrets, no write token, no credentials left in .git/config. Uploads
+#            run.json and comment.md as the `bench-publish` artifact (and everything as
+#            `bench-results`, for people).
+#   publish  the write token and BENCH_TOKEN. A fresh checkout of this repository's own scripts;
+#            the artifact is read as data and checked against the plan (packages/compare's
+#            validate-artifact.ts) before it is stored or posted. Nothing from the measure job or
+#            from ogygia runs here. A failed measure job still updates the PR's section. A manual
+#            run has nothing to publish.
 
 on:
   repository_dispatch:
@@ -54,31 +67,41 @@ on:
   schedule:
     - cron: '17 4 * * 1'
 
-# A newer push to the same PR cancels the older run. Baseline runs queue instead, so every main
-# push that gets to run lands its result.
+# A newer push to the same PR cancels the older run. Main pushes run one at a time, never
+# cancelled once running; GitHub keeps one pending run per group, so of the pushes that arrive
+# during a run only the newest waits and the ones between are skipped. The weekly run has its own
+# group, so it never takes a waiting push's place.
 concurrency:
   group: >-
     bench-${{ github.event.action == 'ogygia-pr' && format('pr-{0}', github.event.client_payload.pr)
-    || (github.event.action == 'ogygia-main' || github.event_name == 'schedule') && 'main'
+    || github.event.action == 'ogygia-main' && 'main'
+    || github.event_name == 'schedule' && 'weekly'
     || github.run_id }}
   cancel-in-progress: ${{ github.event.action == 'ogygia-pr' }}
 
-permissions:
-  contents: write
+# Each job asks for what it needs.
+permissions: {}
 
 env:
   UPSTREAM: ogygiajs/ogygia
   NODE_OPTIONS: --experimental-strip-types
 
 jobs:
-  bench:
+  plan:
     runs-on: ubuntu-latest
-    # A PR (A/B, five repeats of both builds) takes about 25 minutes; FULL builds and measures every
-    # app of every scenario.
-    timeout-minutes: ${{ github.event.action == 'ogygia-pr' && 60 || 120 }}
+    timeout-minutes: 5
+    outputs:
+      kind: ${{ steps.plan.outputs.kind }}
+      scope: ${{ steps.plan.outputs.scope }}
+      passes: ${{ steps.plan.outputs.passes }}
+      spec: ${{ steps.plan.outputs.spec }}
+      pr: ${{ steps.plan.outputs.pr }}
+      sha: ${{ steps.plan.outputs.sha }}
+      base_sha: ${{ steps.plan.outputs.base_sha }}
+      base_spec: ${{ steps.plan.outputs.base_spec }}
+      scenario_passes: ${{ steps.plan.outputs.scenario_passes }}
+      scenarios: ${{ steps.plan.outputs.scenarios }}
     steps:
-      - uses: actions/checkout@v4
-
       - name: Plan the run
         id: plan
         env:
@@ -101,7 +124,7 @@ jobs:
           # builds that perform the same.
           case "$EVENT/$ACTION" in
             repository_dispatch/ogygia-pr)
-              kind=pr; scope=fast; passes=5; scenario_passes=5
+              kind='pr'; scope=fast; passes=5; scenario_passes=5
               pr="$PAYLOAD_PR"; sha="$PAYLOAD_SHA"; base_sha="${PAYLOAD_BASE_SHA:-}"
               [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad pr in payload: $pr"; exit 1; }
               ;;
@@ -134,6 +157,20 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "### $kind run, $scope, $passes blog passes, $scenario_passes scenario passes ($scenarios), ogygia \`$spec\`${base_spec:+ against \`$base_spec\`}" >> "$GITHUB_STEP_SUMMARY"
 
+  measure:
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # A PR (A/B, five repeats of both builds) takes about 25 minutes; FULL builds and measures every
+    # app of every scenario.
+    timeout-minutes: ${{ github.event.action == 'ogygia-pr' && 60 || 120 }}
+    steps:
+      # No token in .git/config: the steps below install and run the builds under test.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -141,7 +178,7 @@ jobs:
           node-version: 22
 
       - uses: oven-sh/setup-bun@v2
-        if: steps.plan.outputs.scope == 'full'
+        if: needs.plan.outputs.scope == 'full'
         with:
           bun-version: latest
 
@@ -156,12 +193,12 @@ jobs:
       - name: Wait for the pkg.pr.new builds
         id: builds
         env:
-          SPEC: ${{ steps.plan.outputs.spec }}
-          BASE_SPEC: ${{ steps.plan.outputs.base_spec }}
+          SPEC: ${{ needs.plan.outputs.spec }}
+          BASE_SPEC: ${{ needs.plan.outputs.base_spec }}
         run: |
           ready() {
             case "$1" in https://pkg.pr.new/*) ;; *) return 0 ;; esac
-            for i in $(seq 1 30); do
+            for _ in $(seq 1 30); do
               curl -sfIL -o /dev/null "$1" && return 0
               sleep 10
             done
@@ -184,19 +221,19 @@ jobs:
       - name: Build frameworks
         working-directory: suites/apps
         env:
-          OGYGIA_SPEC: ${{ steps.plan.outputs.spec }}
+          OGYGIA_SPEC: ${{ needs.plan.outputs.spec }}
           # An A/B run: every ogygia app a second time, with the base build (ogygia apps only).
           OGYGIA_BASE_SPEC: ${{ steps.builds.outputs.base_spec }}
-          SCOPE: ${{ steps.plan.outputs.scope }}
-          BENCH_SCENARIOS: ${{ steps.plan.outputs.scenarios }}
-        run: node build-all.ts $([ "$SCOPE" = fast ] && echo --fast || echo --full)
+          SCOPE: ${{ needs.plan.outputs.scope }}
+          BENCH_SCENARIOS: ${{ needs.plan.outputs.scenarios }}
+        run: node build-all.ts "$([ "$SCOPE" = fast ] && echo --fast || echo --full)"
 
       - name: Start mochi
-        if: steps.plan.outputs.scope == 'full' && steps.builds.outputs.base_spec == ''
+        if: needs.plan.outputs.scope == 'full' && steps.builds.outputs.base_spec == ''
         working-directory: suites/apps/frameworks/mochi
         run: |
           PORT=3335 MOCHI_KEY=dGVzdC1rZXktMzItYnl0ZXMtYmFzZTY0dXJsISEh bun run start &
-          for i in $(seq 1 60); do curl -sf http://127.0.0.1:3335/posts/small >/dev/null && exit 0; sleep 1; done
+          for _ in $(seq 1 60); do curl -sf http://127.0.0.1:3335/posts/small >/dev/null && exit 0; sleep 1; done
           echo "::error::mochi did not start"
           exit 1
 
@@ -206,35 +243,112 @@ jobs:
       - name: Run benchmark
         working-directory: suites/apps
         env:
-          SCOPE: ${{ steps.plan.outputs.scope }}
+          SCOPE: ${{ needs.plan.outputs.scope }}
           BENCH_AB: ${{ steps.builds.outputs.base_spec != '' && '1' || '' }}
-          BENCH_PASSES: ${{ steps.plan.outputs.passes }}
-          BENCH_SCENARIO_PASSES: ${{ steps.plan.outputs.scenario_passes }}
-          BENCH_SCENARIOS: ${{ steps.plan.outputs.scenarios }}
-          BENCH_KIND: ${{ steps.plan.outputs.kind }}
-          BENCH_SHA: ${{ steps.plan.outputs.sha }}
-          BENCH_BASE_SHA: ${{ steps.plan.outputs.base_sha }}
-          BENCH_PR: ${{ steps.plan.outputs.pr }}
+          BENCH_PASSES: ${{ needs.plan.outputs.passes }}
+          BENCH_SCENARIO_PASSES: ${{ needs.plan.outputs.scenario_passes }}
+          BENCH_SCENARIOS: ${{ needs.plan.outputs.scenarios }}
+          BENCH_KIND: ${{ needs.plan.outputs.kind }}
+          BENCH_SHA: ${{ needs.plan.outputs.sha }}
+          BENCH_BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          BENCH_PR: ${{ needs.plan.outputs.pr }}
         run: |
+          # shellcheck disable=SC2046 # --fast or nothing
           node benchmark.ts $([ "$SCOPE" = fast ] && echo --fast) \
             --config frameworks.config.json --out results/scratch/run.md --json
           cat results/scratch/run.md >> "$GITHUB_STEP_SUMMARY"
 
+      # The PR against its base, both from this run (never a stored result: another run is
+      # another machine). A manual A/B run gets the same comment, in its summary.
+      - name: Compare the PR with its base
+        if: needs.plan.outputs.kind == 'pr' || steps.builds.outputs.base_spec != ''
+        working-directory: suites/apps
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          node compare.ts --run results/scratch/run.json --run-url "$RUN_URL" --out results/scratch/comment.md
+          cat results/scratch/comment.md >> "$GITHUB_STEP_SUMMARY"
+
+      # What the publish job takes: the two files, at the artifact's top level.
+      - uses: actions/upload-artifact@v4
+        if: needs.plan.outputs.kind != 'manual'
+        with:
+          name: bench-publish
+          path: |
+            suites/apps/results/scratch/run.json
+            suites/apps/results/scratch/comment.md
+          if-no-files-found: ignore
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-results
+          path: |
+            suites/apps/results/scratch/
+            suites/apps/results/fidelity.md
+            suites/apps/results/fidelity-scenarios.md
+          if-no-files-found: ignore
+
+  publish:
+    needs: [plan, measure]
+    # Also after a failed measure job (to say so on the PR); not after a cancel (a newer push won).
+    if: ${{ !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.kind != 'manual' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      # This repository's own scripts, at the workflow's commit: the checker and the upsert script.
+      # Neither needs an install.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: packages/compare
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download the run
+        if: needs.measure.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: bench-publish
+          path: ${{ runner.temp }}/artifact
+
+      # Only run.json and comment.md, checked against the plan, are taken from the artifact; the
+      # steps below read the checked copies. `name` is what the run is kept under: its sha, or
+      # `v<version>` for the weekly run of a release.
+      - name: Check the run
+        id: check
+        if: needs.measure.result == 'success'
+        env:
+          KIND: ${{ needs.plan.outputs.kind }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          BASE_SHA: ${{ needs.plan.outputs.base_sha }}
+          PR: ${{ needs.plan.outputs.pr }}
+        run: |
+          set -euo pipefail
+          node packages/compare/src/validate-artifact.ts apps --dir "$RUNNER_TEMP/artifact" \
+            --out "$RUNNER_TEMP/checked" --kind "$KIND" --sha "$SHA" --base-sha "$BASE_SHA" --pr "$PR" \
+            >> "$GITHUB_OUTPUT"
+
       - name: Check out the results branch
-        if: steps.plan.outputs.kind != 'manual'
+        if: needs.measure.result == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           if git ls-remote --exit-code --heads "$url" results >/dev/null; then
-            git clone --quiet --branch results "$url" _results
+            git clone --quiet --branch results "$url" "$RUNNER_TEMP/results"
           else
             # First run: start the orphan branch.
-            git init --quiet -b results _results
-            git -C _results remote add origin "$url"
+            git init --quiet -b results "$RUNNER_TEMP/results"
+            git -C "$RUNNER_TEMP/results" remote add origin "$url"
           fi
           # A note on what the branch holds, rewritten every run so it follows the layout.
+          # shellcheck disable=SC2016 # the backticks are markdown
           printf '%s\n' \
             '# results' '' \
             'Written by the `bench` workflow; nothing here is edited by hand.' '' \
@@ -244,53 +358,41 @@ jobs:
             '- `commit/<sha>.json`: the newest run of that ogygia commit (full sha), from a PR run or a main run alike;' \
             '  `meta.sha` is the commit, `meta.pr` the PR of a PR run, `meta.base` the base commit measured beside it' \
             '- `abax/`: Abax step counts of ogygia'"'"'s bench files, from the `abax` workflow, in the same layout:' \
-            '  `abax/pr/<number>.json`, `abax/commit/<sha>.json`, `abax/main/<sha>.json`, `abax/main/latest.json`' \
-            > _results/README.md
-          git -C _results config user.name 'github-actions[bot]'
-          git -C _results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-
-      # The PR against its base, both from this run (never a stored result: another run is
-      # another machine). A manual A/B run gets the same comment, in its summary.
-      - name: Compare the PR with its base
-        if: steps.plan.outputs.kind == 'pr' || steps.builds.outputs.base_spec != ''
-        working-directory: suites/apps
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          node compare.ts --run results/scratch/run.json --run-url "$RUN_URL" --out results/scratch/comment.md
-          cat results/scratch/comment.md >> "$GITHUB_STEP_SUMMARY"
+            '  `abax/pr/<number>.json`, `abax/commit/<sha>.json`, `abax/main/<sha>.json`, `abax/main/latest.json`;' \
+            '  real-app weights from the counted app scenarios in `abax/main/app-weights.json` (the newest) and' \
+            '  `abax/main/app-weights/<sha>.json`' \
+            > "$RUNNER_TEMP/results/README.md"
+          git -C "$RUNNER_TEMP/results" config user.name 'github-actions[bot]'
+          git -C "$RUNNER_TEMP/results" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
       - name: Store the result
-        if: steps.plan.outputs.kind != 'manual'
+        if: needs.measure.result == 'success'
         env:
-          KIND: ${{ steps.plan.outputs.kind }}
-          PR: ${{ steps.plan.outputs.pr }}
-          SHA: ${{ steps.plan.outputs.sha }}
-          RUN: suites/apps/results/scratch/run.json
+          KIND: ${{ needs.plan.outputs.kind }}
+          PR: ${{ needs.plan.outputs.pr }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          # The run's sha, or `v<version>` for the weekly run (checked by the step above).
+          NAME: ${{ steps.check.outputs.name }}
+          RUN: ${{ runner.temp }}/checked/run.json
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP/results"
           if [ "$KIND" = pr ]; then
-            mkdir -p _results/pr
-            cp "$RUN" "_results/pr/$PR.json"
+            mkdir -p pr
+            cp "$RUN" "pr/$PR.json"
             msg="pr #$PR @ ${SHA:0:7}"
           else
-            mkdir -p _results/main
-            # The weekly run installs a release, which has no commit sha: name it by version.
-            name="$SHA"
-            if [ -z "$name" ]; then
-              name="v$(node -p "require('./$RUN').meta.ogygia")"
-            fi
-            cp "$RUN" "_results/main/$name.json"
-            cp "$RUN" _results/main/latest.json
-            msg="main $name"
+            mkdir -p main
+            cp "$RUN" "main/$NAME.json"
+            cp "$RUN" main/latest.json
+            msg="main $NAME"
           fi
           # The same file per measured commit, for walking main's history and a PR's commits. The
           # weekly run installs a release and has no sha, so it has no commit file.
           if [ -n "$SHA" ]; then
-            mkdir -p _results/commit
-            cp "$RUN" "_results/commit/$SHA.json"
+            mkdir -p commit
+            cp "$RUN" "commit/$SHA.json"
           fi
-          cd _results
           git add -A
           git diff --cached --quiet && exit 0
           git commit --quiet -m "$msg"
@@ -306,27 +408,33 @@ jobs:
           exit 1
 
       # The `apps` section of the PR's one benchmark comment; the other sections (Abax's) are kept.
+      # Only a comment by the token's own login is edited (BENCH_BOT_LOGIN names it when BENCH_TOKEN
+      # is a GitHub App's, `<app>[bot]`); a body past GitHub's size limit is cut, linking the run.
       - name: Comment on the ogygia PR
-        if: steps.plan.outputs.kind == 'pr'
+        if: needs.measure.result == 'success' && needs.plan.outputs.kind == 'pr'
         env:
           GH_TOKEN: ${{ secrets.BENCH_TOKEN }}
-          PR: ${{ steps.plan.outputs.pr }}
+          BENCH_BOT_LOGIN: ${{ vars.BENCH_BOT_LOGIN }}
+          PR: ${{ needs.plan.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the result was not posted to $UPSTREAM#$PR."
             exit 0
           fi
           node packages/compare/src/upsert-comment.ts --repo "$UPSTREAM" --pr "$PR" --section apps \
-            --file suites/apps/results/scratch/comment.md
+            --file "$RUNNER_TEMP/checked/comment.md" --run-url "$RUN_URL"
 
       # A failed run still updates its section, so the PR never shows numbers for an older commit
-      # as if they were current. The upsert script needs no install, so this works whatever failed.
+      # as if they were current: a measure job that failed, or an artifact this job did not accept.
       - name: Report a failed run on the ogygia PR
-        if: failure() && steps.plan.outputs.kind == 'pr'
+        if: ${{ !cancelled() && needs.plan.outputs.kind == 'pr' && (failure() || needs.measure.result != 'success') }}
         env:
           GH_TOKEN: ${{ secrets.BENCH_TOKEN }}
-          PR: ${{ steps.plan.outputs.pr }}
-          SHA: ${{ steps.plan.outputs.sha }}
+          BENCH_BOT_LOGIN: ${{ vars.BENCH_BOT_LOGIN }}
+          PR: ${{ needs.plan.outputs.pr }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          WHAT: ${{ needs.measure.result == 'success' && 'produced results this job did not accept' || 'failed before it produced numbers' }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
@@ -335,14 +443,4 @@ jobs:
           fi
           node packages/compare/src/upsert-comment.ts --repo "$UPSTREAM" --pr "$PR" --section apps \
             --body "$(printf '%s\n' '#### App benchmark' '' \
-              "⚠️ The app benchmark run for \`${SHA:0:7}\` failed before it produced numbers. [Benchmark run]($RUN_URL)")"
-
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: bench-results
-          path: |
-            suites/apps/results/scratch/
-            suites/apps/results/fidelity.md
-            suites/apps/results/fidelity-scenarios.md
-          if-no-files-found: ignore
+              "⚠️ The app benchmark run for \`${SHA:0:7}\` $WHAT. [Benchmark run]($RUN_URL)")"
