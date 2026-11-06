@@ -1,10 +1,11 @@
 services:
   bench:
+    # The image holds the whole workspace: build from the repository root.
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ../..
+      dockerfile: suites/apps/Dockerfile
     volumes:
-      - ./results:/bench/results
+      - ./results:/bench/suites/apps/results
     environment:
       - CHROME_PATH=/usr/local/bin/chrome
       - ASTRO_TELEMETRY_DISABLED=1

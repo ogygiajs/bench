@@ -1,4 +1,4 @@
-# ogygia benchmarks
+# App benchmark
 
 The same apps built with [ogygia](https://github.com/ogygiajs/ogygia) and other Svelte 5 frameworks,
 then measured the same way: page load, interaction latency, client navigation, memory, server cost,
@@ -102,10 +102,12 @@ instead of writing the page's markup themselves; they are charged that component
 ## Run it locally
 
 You need Node 22.18 or newer, pnpm, bun (for mochi only) and Chrome or Chromium. The scripts are
-TypeScript run by plain `node`.
+TypeScript run by plain `node`. Install once at the repository root, then work in `suites/apps`
+(the root's `pnpm build:fast`, `pnpm benchmark` and so on run the same scripts here).
 
 ```bash
-pnpm install
+pnpm install          # at the repository root
+cd suites/apps
 
 # build: every app of the blog and every scenario, or only ogygia + sveltekit with --fast
 node build-all.ts
@@ -129,7 +131,7 @@ node benchmark.ts --fast --passes 5 --scenario-passes 3 --out results/scratch/ru
 # one scenario, without the blog's Lighthouse run
 node benchmark.ts --no-blog --scenarios docs --out results/scratch/docs.md --json
 
-# A/B: two ogygia builds on this machine, taking turns, and the PR comment body for them
+# A/B: two ogygia builds on this machine, taking turns, and the PR comment's `apps` section for them
 node build-all.ts --fast --spec https://pkg.pr.new/ogygia@<pr sha7> --base-spec https://pkg.pr.new/ogygia@<base sha7>
 node benchmark.ts --fast --ab --passes 5 --scenario-passes 5 --out results/scratch/run.md --json
 node compare.ts --run results/scratch/run.json
@@ -151,26 +153,27 @@ docker compose up --build
 OGYGIA_SPEC=0.11.4 BENCH_FAST=1 docker compose up --build
 ```
 
-One image with Node, Chromium, pnpm and bun. Results land in `results/` on the host.
+Run it in `suites/apps`. One image with Node, Chromium, pnpm and bun, built from the whole
+workspace. Results land in `suites/apps/results/` on the host.
 
 ## ogygia PRs and main
 
 ogygia's CI sends a `repository_dispatch` here after pkg.pr.new has published a commit. The
-[`bench` workflow](.github/workflows/bench.yml) then:
+[`bench` workflow](../../.github/workflows/bench.yml) then:
 
 - **`ogygia-pr`**: an A/B run. It builds every ogygia app twice, from
   `https://pkg.pr.new/ogygia@<sha7>` (the PR) and from the PR's base commit (`ogygia-base`, a copy
   of the same app), and measures the two in the same job on the same runner, taking turns: every
   pass measures both, PR then base, then base then PR, five passes on the blog's Lighthouse and on
-  every scenario. It posts one comment on the PR and edits that same comment on later pushes. A
-  newer push cancels a run that is still going. **Time budget: about 25 minutes** (job timeout 60).
+  every scenario. It fills the `apps` section of the PR's one benchmark comment and edits that
+  same section on later pushes. A newer push cancels a run that is still going. **Time budget: about 25 minutes** (job timeout 60).
 - **`ogygia-main`**: runs every app of every scenario (about 75 minutes, timeout 120). The docs
   read this result; no PR is compared with it.
 - **Weekly**: the same full run against `ogygia@latest`.
 - **By hand** (`workflow_dispatch`): pick fast or full, any spec, the passes and which scenarios;
   give a base spec too for an A/B run. The result is an artifact only.
 
-The PR comment is grouped by scenario: one summary table (a row per scenario: load, JS, INP,
+The `apps` section is grouped by scenario: one summary table (a row per scenario: load, JS, INP,
 navigation or streaming, server page views per second, lines of code, and how many metrics
 regressed), then every metric of each scenario in its own collapsed `<details>`, with the PR's
 median, the base's, the change and the lowest and highest of each build's repeats; every metric
@@ -204,7 +207,8 @@ counts as changed (worse or better) only when the two builds' repeats do not ove
 each, a 1-in-126 chance either way for two builds that perform the same), the medians differ by
 more than the larger spread (max − min) of the two builds' repeats, and the change is above the
 metric's floor. Sizes and lines of code are measured once and exact: a regression when worse by
-more than the floor. Both rules and the floors are in `compare.ts`.
+more than the floor. Both rules are in `packages/compare` (`src/noise.ts`); the floors are in
+`compare.ts`.
 
 The PR comment needs a token in the `BENCH_TOKEN` secret that can write comments on ogygiajs/ogygia.
 Without it the run still happens and stores its result; it just skips the comment.
@@ -215,8 +219,8 @@ Without it the run still happens and stores its result; it just skips the commen
 core's hot functions) measure ogygia from source, so they need a local ogygia checkout:
 
 ```bash
-OGYGIA_REPO=../ogygia node router/run.ts --build
-OGYGIA_REPO=../ogygia node router/ops.ts
+OGYGIA_REPO=/path/to/ogygia node router/run.ts --build
+OGYGIA_REPO=/path/to/ogygia node router/ops.ts
 ```
 
 They are not part of CI. Their last results are in `results/router-latest.md` and
@@ -224,5 +228,5 @@ They are not part of CI. Their last results are in `results/router-latest.md` an
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The blog benchmark's design is Stanislav Khromov's; see his
+MIT. See [LICENSE](../../LICENSE). The blog benchmark's design is Stanislav Khromov's; see his
 [original repository](https://github.com/khromov/interactive-blogs-benchmark).

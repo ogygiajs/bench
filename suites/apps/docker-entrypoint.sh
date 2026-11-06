@@ -2,7 +2,7 @@
 # Build the frameworks, start mochi (full runs only), run the benchmark, write results/.
 # OGYGIA_SPEC, BENCH_FAST and BENCH_PASSES come from the environment (see docker-compose.yml).
 set -euo pipefail
-cd /bench
+cd /bench/suites/apps
 
 echo "▸ build frameworks"
 node build-all.ts

@@ -1,0 +1,26 @@
+{
+	"name": "ogygia-bench",
+	"private": true,
+	"description": "Benchmarks for ogygia: the app benchmark (suites/apps) and its shared PR comparison (packages/compare).",
+	"license": "MIT",
+	"type": "module",
+	"scripts": {
+		"build:all": "pnpm --filter @bench/apps build:all",
+		"build:fast": "pnpm --filter @bench/apps build:fast",
+		"benchmark": "pnpm --filter @bench/apps benchmark",
+		"benchmark:fast": "pnpm --filter @bench/apps benchmark:fast",
+		"compare": "pnpm --filter @bench/apps compare",
+		"test": "pnpm -r --if-present test",
+		"lint": "oxlint",
+		"format": "oxfmt .",
+		"format:check": "oxfmt --check ."
+	},
+	"devDependencies": {
+		"oxfmt": "catalog:",
+		"oxlint": "catalog:"
+	},
+	"engines": {
+		"node": ">=22.18"
+	},
+	"packageManager": "pnpm@12.16.1"
+}

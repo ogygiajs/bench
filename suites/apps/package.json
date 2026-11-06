@@ -1,13 +1,9 @@
 {
-	"name": "ogygia-benchmarks",
+	"name": "@bench/apps",
 	"private": true,
 	"description": "ogygia against other Svelte frameworks: khromov's interactive blog plus docs, dashboard, AI chat and shop scenarios.",
 	"license": "MIT",
 	"type": "module",
-	"packageManager": "pnpm@12.16.1",
-	"engines": {
-		"node": ">=22.18"
-	},
 	"scripts": {
 		"posts": "node generate-posts.ts",
 		"sync": "node shared/sync.ts",
@@ -21,12 +17,13 @@
 		"ops": "node router/ops.ts"
 	},
 	"dependencies": {
-		"autocannon": "8.0.0",
-		"chrome-launcher": "1.2.1",
-		"lighthouse": "13.6.0",
-		"playwright": "1.62.1"
+		"@bench/compare": "workspace:*",
+		"autocannon": "catalog:measure",
+		"chrome-launcher": "catalog:measure",
+		"lighthouse": "catalog:measure",
+		"playwright": "catalog:measure"
 	},
 	"devDependencies": {
-		"rolldown": "1.2.2"
+		"rolldown": "catalog:"
 	}
 }

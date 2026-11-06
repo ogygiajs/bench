@@ -4,8 +4,8 @@ name: bench
 #
 #   repository_dispatch `ogygia-pr`    ogygia's CI, after pkg.pr.new published a PR commit. A/B run:
 #                                      the PR's ogygia and its base commit's, built and measured
-#                                      in this one job, taking turns; summarised in ONE comment on
-#                                      the ogygia PR.
+#                                      in this one job, taking turns; summarised in the `apps`
+#                                      section of the ONE benchmark comment on the ogygia PR.
 #   repository_dispatch `ogygia-main`  a push to ogygia's main. FULL run (every framework).
 #   schedule (weekly)                  FULL run against ogygia@latest.
 #   workflow_dispatch                  any mode and spec by hand (A/B with a base spec); result
@@ -20,6 +20,10 @@ name: bench
 # GitHub-hosted ubuntu-latest ships Google Chrome; Lighthouse's chrome-launcher and Playwright
 # both use it as is (no Docker image, no `playwright install`). Frameworks build on Node 22, plus
 # bun for mochi.
+#
+# The app benchmark lives in suites/apps; its run output lands in suites/apps/results/scratch. The
+# comment is upserted by packages/compare/src/upsert-comment.ts, which rewrites only the `apps`
+# section and keeps every other section (Abax's) as it is.
 
 on:
   repository_dispatch:
@@ -171,13 +175,14 @@ jobs:
           fi
           echo "base_spec=$base" >> "$GITHUB_OUTPUT"
 
-      # Only the harness's own deps (Lighthouse, Playwright, autocannon); rolldown is the router
-      # benchmark's and dev-only.
+      # The workspace's runtime deps only (Lighthouse, Playwright, autocannon, @bench/compare);
+      # rolldown is the router benchmark's and dev-only, oxlint/oxfmt are the check workflow's.
       - name: Install harness deps
-        run: pnpm install --prod --no-lockfile --config.confirmModulesPurge=false
+        run: pnpm install --prod --frozen-lockfile --config.confirmModulesPurge=false
 
       # The blog apps and every scenario's apps (FAST: only those marked `fast`).
       - name: Build frameworks
+        working-directory: suites/apps
         env:
           OGYGIA_SPEC: ${{ steps.plan.outputs.spec }}
           # An A/B run: every ogygia app a second time, with the base build (ogygia apps only).
@@ -188,7 +193,7 @@ jobs:
 
       - name: Start mochi
         if: steps.plan.outputs.scope == 'full' && steps.builds.outputs.base_spec == ''
-        working-directory: frameworks/mochi
+        working-directory: suites/apps/frameworks/mochi
         run: |
           PORT=3335 MOCHI_KEY=dGVzdC1rZXktMzItYnl0ZXMtYmFzZTY0dXJsISEh bun run start &
           for i in $(seq 1 60); do curl -sf http://127.0.0.1:3335/posts/small >/dev/null && exit 0; sleep 1; done
@@ -199,6 +204,7 @@ jobs:
       # served by the harness, or the app's own server on a free port). An A/B run measures the
       # two ogygia builds, interleaved, with every pass kept for compare.ts.
       - name: Run benchmark
+        working-directory: suites/apps
         env:
           SCOPE: ${{ steps.plan.outputs.scope }}
           BENCH_AB: ${{ steps.builds.outputs.base_spec != '' && '1' || '' }}
@@ -245,11 +251,12 @@ jobs:
       # another machine). A manual A/B run gets the same comment, in its summary.
       - name: Compare the PR with its base
         if: steps.plan.outputs.kind == 'pr' || steps.builds.outputs.base_spec != ''
+        working-directory: suites/apps
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          node compare.ts --run results/scratch/run.json --run-url "$RUN_URL" --out comment.md
-          cat comment.md >> "$GITHUB_STEP_SUMMARY"
+          node compare.ts --run results/scratch/run.json --run-url "$RUN_URL" --out results/scratch/comment.md
+          cat results/scratch/comment.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Store the result
         if: steps.plan.outputs.kind != 'manual'
@@ -257,28 +264,29 @@ jobs:
           KIND: ${{ steps.plan.outputs.kind }}
           PR: ${{ steps.plan.outputs.pr }}
           SHA: ${{ steps.plan.outputs.sha }}
+          RUN: suites/apps/results/scratch/run.json
         run: |
           set -euo pipefail
           if [ "$KIND" = pr ]; then
             mkdir -p _results/pr
-            cp results/scratch/run.json "_results/pr/$PR.json"
+            cp "$RUN" "_results/pr/$PR.json"
             msg="pr #$PR @ ${SHA:0:7}"
           else
             mkdir -p _results/main
             # The weekly run installs a release, which has no commit sha: name it by version.
             name="$SHA"
             if [ -z "$name" ]; then
-              name="v$(node -p "require('./results/scratch/run.json').meta.ogygia")"
+              name="v$(node -p "require('./$RUN').meta.ogygia")"
             fi
-            cp results/scratch/run.json "_results/main/$name.json"
-            cp results/scratch/run.json _results/main/latest.json
+            cp "$RUN" "_results/main/$name.json"
+            cp "$RUN" _results/main/latest.json
             msg="main $name"
           fi
           # The same file per measured commit, for walking main's history and a PR's commits. The
           # weekly run installs a release and has no sha, so it has no commit file.
           if [ -n "$SHA" ]; then
             mkdir -p _results/commit
-            cp results/scratch/run.json "_results/commit/$SHA.json"
+            cp "$RUN" "_results/commit/$SHA.json"
           fi
           cd _results
           git add -A
@@ -295,6 +303,7 @@ jobs:
           echo "::error::could not push to the results branch"
           exit 1
 
+      # The `apps` section of the PR's one benchmark comment; the other sections (Abax's) are kept.
       - name: Comment on the ogygia PR
         if: steps.plan.outputs.kind == 'pr'
         env:
@@ -305,16 +314,11 @@ jobs:
             echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the result was not posted to $UPSTREAM#$PR."
             exit 0
           fi
-          id=$(gh api --paginate "repos/$UPSTREAM/issues/$PR/comments" \
-            --jq '.[] | select(.body | contains("<!-- ogygia-benchmarks -->")) | .id' | sed -n 1p)
-          if [ -n "$id" ]; then
-            gh api -X PATCH "repos/$UPSTREAM/issues/comments/$id" -F body=@comment.md >/dev/null
-          else
-            gh api -X POST "repos/$UPSTREAM/issues/$PR/comments" -F body=@comment.md >/dev/null
-          fi
+          node packages/compare/src/upsert-comment.ts --repo "$UPSTREAM" --pr "$PR" --section apps \
+            --file suites/apps/results/scratch/comment.md
 
-      # A failed run still updates the comment, so the PR never shows numbers for an older commit
-      # as if they were current.
+      # A failed run still updates its section, so the PR never shows numbers for an older commit
+      # as if they were current. The upsert script needs no install, so this works whatever failed.
       - name: Report a failed run on the ogygia PR
         if: failure() && steps.plan.outputs.kind == 'pr'
         env:
@@ -327,24 +331,16 @@ jobs:
             echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the failure was not posted."
             exit 0
           fi
-          printf '%s\n' '<!-- ogygia-benchmarks -->' '### ogygia benchmarks' '' \
-            "⚠️ The benchmark run for \`${SHA:0:7}\` failed before it produced numbers. [Benchmark run]($RUN_URL)" \
-            > failed.md
-          id=$(gh api --paginate "repos/$UPSTREAM/issues/$PR/comments" \
-            --jq '.[] | select(.body | contains("<!-- ogygia-benchmarks -->")) | .id' | sed -n 1p)
-          if [ -n "$id" ]; then
-            gh api -X PATCH "repos/$UPSTREAM/issues/comments/$id" -F body=@failed.md >/dev/null
-          else
-            gh api -X POST "repos/$UPSTREAM/issues/$PR/comments" -F body=@failed.md >/dev/null
-          fi
+          node packages/compare/src/upsert-comment.ts --repo "$UPSTREAM" --pr "$PR" --section apps \
+            --body "$(printf '%s\n' '#### App benchmark' '' \
+              "⚠️ The app benchmark run for \`${SHA:0:7}\` failed before it produced numbers. [Benchmark run]($RUN_URL)")"
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: bench-results
           path: |
-            results/scratch/
-            results/fidelity.md
-            results/fidelity-scenarios.md
-            comment.md
+            suites/apps/results/scratch/
+            suites/apps/results/fidelity.md
+            suites/apps/results/fidelity-scenarios.md
           if-no-files-found: ignore

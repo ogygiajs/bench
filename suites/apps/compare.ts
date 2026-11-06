@@ -1,27 +1,24 @@
 #!/usr/bin/env node
-// Turn one A/B run into the body of the benchmark comment on the ogygia PR.
+// Turn one A/B run into the app benchmark's section of the benchmark comment on the ogygia PR.
 //
 //   node compare.ts --run run.json [--run-url <url>] [--out comment.md]
 //
 // The run is benchmark.ts --ab JSON: the PR's ogygia (`ogygia`) and its base build
 // (`ogygia-base`), built and measured in the same job on the same runner, interleaved, with every
-// pass kept (`samples`). Comparing with a result from another run would compare two machines:
-// GitHub-hosted runners differ by up to 2× in server throughput for the same code. A run without
-// a base build is not an error: the comment then shows the PR's numbers alone. The verdict lives
-// in the text, so the exit code is 0 either way; CI never fails on a slower run.
+// pass kept (`samples`). The noise rule is @bench/compare's `judge`. A run without a base build is
+// not an error: the section then shows the PR's numbers alone. The verdict lives in the text, so
+// the exit code is 0 either way; CI never fails on a slower run.
 //
-// The comment is grouped by scenario: one short summary table (a row per scenario, a few headline
-// metrics), then every metric of each scenario in its own <details>.
+// The output is the `apps` section only; the workflow puts it into the PR's one comment with
+// @bench/compare's upsert-comment.ts, which keeps every other section. It is grouped by scenario:
+// one short summary table (a row per scenario, a few headline metrics), then every metric of each
+// scenario in its own <details>.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { MIN_REPEATS, judge as judgeRule, markOf, range as rangeOf, signed as signedOf } from '@bench/compare';
 import { METRICS, kb, kindOf, labelOf } from './harness/metrics.ts';
 import { BASE_ID, PR_ID } from './harness/ab.ts';
 
-// The workflow finds the existing comment by this line and edits it in place.
-const MARKER = '<!-- ogygia-benchmarks -->';
 const OGYGIA_REPO = 'ogygiajs/ogygia';
-
-// A metric with at least this many repeats of each build is judged against its own noise.
-const MIN_REPEATS = 3;
 
 // Metrics measured once per build: sizes, counts and lines of code come out the same every time
 // (exact); build time is one timing. These are judged against their floor alone.
@@ -79,77 +76,27 @@ const SUMMARY = [
 	{ head: 'Lines of code', keys: ['loc'] }
 ];
 
-const median = (xs) => {
-	const s = [...xs].sort((a, b) => a - b);
-	const m = s.length >> 1;
-	return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-};
-const spreadOf = (xs) => Math.max(...xs) - Math.min(...xs);
-
 /**
- * How the PR sits against the base. With repeats of both builds, a metric changed (for the worse
- * or the better) only when
- *   1. the two sets of repeats do not overlap: every PR repeat is on the same side of every base
- *      repeat (with 5 and 5 that happens by chance once in 126 for two builds that perform the
- *      same, either way),
- *   2. the medians differ by more than the larger spread (max − min) of the two builds' repeats,
- *      the noise the runner showed for one build within this job,
- *   3. and the difference is above the metric's floor.
- * Anything else is within noise, and the comment says so rather than showing a percent. A metric
- * measured once is judged by its floor; a timing without enough repeats is not judged.
+ * How the PR sits against the base: @bench/compare's noise rule, with the metric's direction, its
+ * floor, and whether it is measured once. Anything within noise is said so in the comment rather
+ * than shown as a percent.
  */
 function judge(key, pr, base, prS, baseS) {
 	const kind = kindOf(key);
-	const sign = METRICS[kind].better === 'lower' ? 1 : -1;
-	const { pct = 0, abs = 0 } = FLOOR[kind] ?? {};
-	const floorOf = (b) => Math.max(abs, (Math.abs(b) * pct) / 100);
-	const verdict = (changed, p, b) => ({
-		regressed: changed && sign * (p - b) > 0,
-		improved: changed && sign * (p - b) < 0
-	});
-	if (!ONCE.has(kind) && prS?.length >= MIN_REPEATS && baseS?.length >= MIN_REPEATS) {
-		const p = median(prS);
-		const b = median(baseS);
-		const spread = [spreadOf(prS), spreadOf(baseS)];
-		const apart = Math.min(...prS) > Math.max(...baseS) || Math.max(...prS) < Math.min(...baseS);
-		const changed = apart && Math.abs(p - b) > Math.max(...spread) && Math.abs(p - b) > floorOf(b);
-		return { pr: p, base: b, diff: p - b, spread, prS, baseS, ...verdict(changed, p, b) };
-	}
-	if (ONCE.has(kind)) return { pr, base, diff: pr - base, once: true, ...verdict(Math.abs(pr - base) > floorOf(base), pr, base) };
-	return { pr, base, diff: pr - base, unjudged: true, regressed: false, improved: false };
+	return judgeRule({ better: METRICS[kind].better, floor: FLOOR[kind], once: ONCE.has(kind) }, pr, base, prS, baseS);
 }
 
 const fmt = (key, n) => METRICS[kindOf(key)].fmt(n);
 // A magnitude in the metric's unit; byte amounts under a kilobyte read better in bytes.
 const mag = (key, n) => (METRICS[kindOf(key)].fmt === kb && Math.abs(n) < 1024 ? `${Math.round(Math.abs(n))} B` : fmt(key, Math.abs(n)));
 
-function signed(key, diff, base) {
-	const sign = diff > 0 ? '+' : diff < 0 ? '−' : '±';
-	const rel = base ? ` (${sign}${((Math.abs(diff) / Math.abs(base)) * 100).toFixed(1)}%)` : '';
-	return `${sign}${mag(key, diff)}${rel}`;
-}
-
-/** `lo–hi` of a build's repeats, the unit written once (`69–73`, `15.1–16.0 ms`). */
-function range(key, xs) {
-	const lo = fmt(key, Math.min(...xs));
-	const hi = fmt(key, Math.max(...xs));
-	if (lo === hi) return lo;
-	const unit = / [^\d\s.,]+$/.exec(hi)?.[0];
-	return `${unit && lo.endsWith(unit) ? lo.slice(0, -unit.length) : lo}–${hi}`;
-}
+const signed = (key, diff, base) => signedOf(diff, base, (n) => mag(key, n));
+const range = (key, xs) => rangeOf(xs, (n) => fmt(key, n));
 
 function repeatsCell(key, j) {
-	if (j.prS) return `${range(key, j.prS)} / ${range(key, j.baseS)}`;
+	if (j.prSamples) return `${range(key, j.prSamples)} / ${range(key, j.baseSamples)}`;
 	if (j.once) return kindOf(key) === 'buildMs' ? 'one build' : 'exact';
 	return 'too few repeats';
-}
-
-// ⚠️ worse beyond noise; better: better beyond noise; ≈ within noise; = the same (exact); · not judged.
-function markOf(j) {
-	if (j.regressed) return '⚠️';
-	if (j.improved) return 'better';
-	if (j.unjudged) return '·';
-	return j.once && j.diff === 0 ? '=' : '≈';
 }
 
 const readJson = (file) => {
@@ -184,15 +131,15 @@ function groups(run, id) {
 		for (const k of ['score', 'lcp', 'tbt', 'cls', 'evalMs', 'dom']) if (fw.avg?.[k] != null) metrics[k] = fw.avg[k];
 		for (const r of fw.rows ?? [])
 			for (const k of ['jsBr', 'jsRaw', 'htmlBr']) if (r[k] != null) metrics[`${k}:${r.post}`] = r[k];
-		out.blog = { metrics, samples: { ...(fw.samples ?? {}) } };
+		out.blog = { metrics, samples: { ...fw.samples } };
 	}
 	for (const [name, s] of Object.entries(run?.scenarios ?? {})) {
 		const f = s.frameworks?.find((x) => x.id === id);
 		if (!f?.metrics) continue;
 		const top = name === 'blog' ? out.blog : null;
 		out[name] = {
-			metrics: { ...f.metrics, ...(top?.metrics ?? {}) },
-			samples: { ...(f.samples ?? {}), ...(top?.samples ?? {}) }
+			metrics: { ...f.metrics, ...top?.metrics },
+			samples: { ...f.samples, ...top?.samples }
 		};
 	}
 	// The blog's per-post JS replaces the per-route average for the blog's summary cell.
@@ -238,8 +185,8 @@ function compare(run, runUrl) {
 				judged[key] = j;
 				if (j.regressed) worse.push(labelOf(key));
 				if (j.improved) improvements.push(`${name}: ${labelOf(key)}`);
-				if ((j.regressed || j.improved) && j.prS)
-					evidence.push(`- ${labelOf(key)}: this PR ${j.prS.map((x) => fmt(key, x)).join(', ')}; base ${j.baseS.map((x) => fmt(key, x)).join(', ')}`);
+				if ((j.regressed || j.improved) && j.prSamples)
+					evidence.push(`- ${labelOf(key)}: this PR ${j.prSamples.map((x) => fmt(key, x)).join(', ')}; base ${j.baseSamples.map((x) => fmt(key, x)).join(', ')}`);
 				rows.push(`| ${labelOf(key)} | ${fmt(key, j.pr)} | ${fmt(key, j.base)} | ${signed(key, j.diff, j.base)} | ${repeatsCell(key, j)} | ${markOf(j)} |`);
 			} else rows.push(b ? `| ${labelOf(key)} | ${fmt(key, metrics[key])} | n/a | | | |` : `| ${labelOf(key)} | ${fmt(key, metrics[key])} |`);
 		}
@@ -275,7 +222,7 @@ function compare(run, runUrl) {
 		);
 	}
 
-	const lines = [MARKER, '### ogygia benchmarks', ''];
+	const lines = ['#### App benchmark', ''];
 	const repeats = scenarioPasses === passes ? `${passes} repeats of each` : `${scenarioPasses} repeats of each (the blog's Lighthouse: ${passes})`;
 	if (hasBase) {
 		lines.push(

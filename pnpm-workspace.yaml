@@ -1,0 +1,21 @@
+packages:
+  - 'packages/*'
+  - 'suites/*'
+# The app benchmark's framework and scenario apps (suites/apps/frameworks/*,
+# suites/apps/scenarios/*/apps/*) are NOT workspace members: build-all.ts installs each one on its
+# own, without a lockfile, so every framework keeps the exact pins in its own package.json.
+
+# ONE version per dependency that more than one workspace package uses: `"x": "catalog:"`.
+catalog:
+  oxfmt: ^0.75.0
+  oxlint: ^1.90.0
+  rolldown: 1.2.2
+catalogs:
+  # Exact on purpose: a new Lighthouse, Playwright, Chrome launcher or autocannon changes the
+  # numbers the app benchmark reports, so they move only by hand. Playwright also matches the
+  # Docker image tag in suites/apps/Dockerfile.
+  measure:
+    autocannon: 8.0.0
+    chrome-launcher: 1.2.1
+    lighthouse: 13.6.0
+    playwright: 1.62.1

@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip curl ca-c
 	&& ln -sf /root/.bun/bin/bun /usr/local/bin/bun \
 	&& ln -sf /root/.bun/bin/bunx /usr/local/bin/bunx
 
+# The build context is the repository root (the pnpm workspace); the app benchmark is suites/apps.
 WORKDIR /bench
 COPY . /bench
 
@@ -28,8 +29,8 @@ ENV CHROME_PATH=/usr/local/bin/chrome
 ENV NODE_OPTIONS=--experimental-strip-types
 ENV CI=1
 
-RUN pnpm install --prod --no-lockfile --config.confirmModulesPurge=false
+RUN pnpm install --prod --frozen-lockfile --config.confirmModulesPurge=false
 
-RUN chmod +x /bench/docker-entrypoint.sh
+RUN chmod +x /bench/suites/apps/docker-entrypoint.sh
 
-CMD ["/bench/docker-entrypoint.sh"]
+CMD ["/bench/suites/apps/docker-entrypoint.sh"]
