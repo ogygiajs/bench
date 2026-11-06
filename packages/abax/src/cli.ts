@@ -12,13 +12,41 @@ import { run_growth } from './growth/index.ts';
 import { run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
 import { MEASURE_USAGE, measure_command, measure_run, time_section } from './measure/cli.ts';
+import { APP_USAGE, app_command, app_diff_sections } from './app/cli.ts';
+import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
+import { COVERAGE_USAGE, coverage_command } from './coverage/cli.ts';
+import type { VerifyLayer } from './verify/index.ts';
 
 const USAGE = `abax run <bench files...> [--root dir] [--out report.json] [--deps all|a,b] [--filter text] [--sha sha] [--state fresh|shared]
 abax diff <base.json> <pr.json> [--repo dir] [--base sha] [--head sha] [--out section.md] [--json out.json]
 abax dts <source files...> --out abax-private.d.ts [--tsconfig tsconfig.json]
 abax health <bench files...> [--root dir] [--out report.json] [--filter text] [--warmup 20] [--runs 3] [--check on|off]
 abax growth <bench files...> [--root dir] [--out report.json] [--filter text] [--sizes 1,10,100] [--scaled on|off]
-abax search <bench files...> [--root dir] [--out report.json] [--filter text] [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]`;
+abax search <bench files...> [--root dir] [--out report.json] [--filter text] [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
+abax verify [--layers steps,elision,leak,engine,growth,search,app,time] [--filter text] [--jobs n] [--md table.md] [--json rows.json]`;
+
+/** `abax verify`: every planted case of every layer; exit 1 when any fails. */
+async function verify_command(flags: Map<string, string>): Promise<number> {
+	const layers = flags.get('layers')?.split(',') as VerifyLayer[] | undefined;
+	const bad = layers?.filter((l) => !VERIFY_LAYERS.includes(l));
+	if (bad && bad.length > 0) {
+		console.error(`abax verify: unknown layer ${bad.join(', ')} (${VERIFY_LAYERS.join(', ')})`);
+		return 2;
+	}
+	const rows = await run_verify({
+		layers,
+		filter: flags.get('filter'),
+		jobs: flags.has('jobs') ? Number(flags.get('jobs')) : undefined,
+		log: (r) =>
+			console.log(`${r.pass ? 'pass' : 'FAIL'}  ${r.layer}/${r.name}  ${r.got}  (${r.ms} ms)`)
+	});
+	console.log('\n' + render_verify(rows, false));
+	const md = flags.get('md');
+	if (md) writeFileSync(md, render_verify(rows));
+	const json = flags.get('json');
+	if (json) writeFileSync(json, JSON.stringify(rows, null, '\t') + '\n');
+	return rows.length > 0 && rows.every((r) => r.pass) ? 0 : 1;
+}
 
 interface Parsed {
 	positional: string[];
@@ -68,6 +96,11 @@ async function main(argv: string[]): Promise<number> {
 	}
 	const measured = await measure_command(cmd, positional, flags);
 	if (measured !== null) return measured;
+	const app = app_command(cmd, positional, flags);
+	if (app !== null) return app;
+	if (cmd === 'verify') return verify_command(flags);
+	const coverage = await coverage_command(cmd, positional, flags);
+	if (coverage !== null) return coverage;
 	if (cmd === 'diff') {
 		if (positional.length !== 2) {
 			console.error(USAGE);
@@ -86,7 +119,12 @@ async function main(argv: string[]): Promise<number> {
 		const sections = diff_sections(base, pr, files);
 		const extra = render_sections(sections);
 		const time = time_section(flags);
-		const md = render_markdown(result) + (extra ? '\n' + extra : '') + (time ? '\n' + time : '');
+		const apps = app_diff_sections(result, base, pr, flags);
+		const md =
+			(apps ? apps + '\n' : '') +
+			render_markdown(result) +
+			(extra ? '\n' + extra : '') +
+			(time ? '\n' + time : '');
 		const out = flags.get('out');
 		if (out) writeFileSync(out, md + '\n');
 		else console.log(md);
@@ -152,7 +190,7 @@ async function main(argv: string[]): Promise<number> {
 		});
 		return 0;
 	}
-	console.error(USAGE + '\n' + MEASURE_USAGE);
+	console.error(USAGE + '\n' + MEASURE_USAGE + '\n' + APP_USAGE + '\n' + COVERAGE_USAGE);
 	return 2;
 }
 

@@ -38,6 +38,7 @@ export { render_time as renderTime } from './measure/markdown.ts';
 export type { TimeComparison, TimeStats } from './measure/time.ts';
 export type { LeakResult } from './measure/leak.ts';
 export { recount, align_prices as alignPrices } from './recount.ts';
+export { load_prices as loadPrices } from './prices.ts';
 export type { Units } from './units.ts';
 export {
 	calibrate_prices as calibratePrices,

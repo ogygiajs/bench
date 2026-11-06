@@ -226,6 +226,29 @@ OGYGIA_REPO=/path/to/ogygia node router/ops.ts
 They are not part of CI. Their last results are in `results/router-latest.md` and
 `results/ops-latest.md`.
 
+## Counted runs (Abax)
+
+`abax/` runs the ogygia apps' scenarios on a counted build: ogygia's packages and the Svelte
+runtime rewritten by Abax's counting transform (`packages/abax`), so every function call, block and
+allocation is an exact count instead of a timing. The server is counted per request inside Abax's
+deterministic window (frozen clock, seeded random, fake timers, recorded IO), the pages per load and
+per interaction in Chromium under virtual time (frames, timers and observers on a fixed clock), and
+each phase runs twice: the counts must match. `abax/scenarios.ts` holds each scenario's routes and a
+fixed script of its session.
+
+```bash
+node abax/run.ts                                   # every scenario -> results/scratch/abax/app-report.json
+node abax/run.ts --scenarios dashboard --side base # one scenario, on the base twin
+node ../../packages/abax/src/cli.ts weights results/scratch/abax/app-report.json   # app-weights.json
+node ../../packages/abax/src/cli.ts coverage results/scratch/abax/app-report.json \
+  --app scenarios/dashboard/apps/ogygia --md coverage.md   # which functions the scenarios reached
+node abax/ab.ts --spec <pr> --base-spec <base>     # PR vs base on every scenario, exact
+node abax/answer-key.ts                            # planted changes Abax must find
+```
+
+The apps must be installed (`build-all.ts`); the counted copies are built in a temp directory and
+the apps' own builds are not touched.
+
 ## License
 
 MIT. See [LICENSE](../../LICENSE). The blog benchmark's design is Stanislav Khromov's; see his

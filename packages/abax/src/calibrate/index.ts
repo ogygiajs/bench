@@ -4,6 +4,8 @@ import { DEFAULT_SIZES, fit_curve, prices_from_fits, priced_keys, write_prices }
 import type { CurveFit, PricePoint } from './prices.ts';
 import { fit_weights, measure_corpus, write_weights } from './weights.ts';
 import type { CorpusPoint, Weights } from './weights.ts';
+import { machine_info } from './points.ts';
+import type { Machine } from './points.ts';
 
 /*
  * The calibration entry points behind `abax calibrate prices|weights` (and scripts/calibrate.ts).
@@ -23,21 +25,27 @@ export interface CalibrateWeightsOptions {
 	out?: string | URL;
 	time_ms?: number;
 	repeats?: number;
+	/** Points measured before (`abax calibrate points`): fitted as they are, nothing is timed. */
+	points?: CorpusPoint[];
+	/** Recorded in the weights file: where the points were measured. */
+	machine?: Machine;
 	log?: (line: string) => void;
 }
 
 export async function calibrate_weights(
 	o: CalibrateWeightsOptions = {}
 ): Promise<{ weights: Weights; points: CorpusPoint[] }> {
-	const points = await measure_corpus({
-		root: o.root ?? CORPUS_ROOT,
-		files: o.files ?? CORPUS_FILES,
-		filter: o.filter,
-		time_ms: o.time_ms,
-		repeats: o.repeats,
-		log: o.log
-	});
-	const fit = fit_weights(points);
+	const points =
+		o.points ??
+		(await measure_corpus({
+			root: o.root ?? CORPUS_ROOT,
+			files: o.files ?? CORPUS_FILES,
+			filter: o.filter,
+			time_ms: o.time_ms,
+			repeats: o.repeats,
+			log: o.log
+		}));
+	const fit = { ...fit_weights(points), ...(o.machine ? { machine: o.machine } : {}) };
 	const weights = o.out ? write_weights(o.out, fit) : { version: 0, ...fit };
 	for (const [fam, f] of Object.entries(weights.families)) {
 		o.log?.(
@@ -102,6 +110,11 @@ export async function calibrate_prices(o: CalibratePricesOptions = {}): Promise<
 		);
 	}
 	const out = o.out ?? DEFAULT_PRICES_PATH;
-	const { version, changed } = write_prices(out, prices_from_fits(fits, ns_per_step));
+	const { load: _load, ...machine } = machine_info();
+	const { version, changed } = write_prices(out, prices_from_fits(fits, ns_per_step), {
+		date: new Date().toISOString().slice(0, 10),
+		step_ns: Math.round(ns_per_step * 1e4) / 1e4,
+		machine
+	});
 	return { fits, step_ns: ns_per_step, version, changed };
 }

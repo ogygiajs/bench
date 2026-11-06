@@ -5,7 +5,14 @@ import { measure_layers, parse_layers } from './index.ts';
 import { run_child } from './spawn.ts';
 import type { TimeComparison } from './time.ts';
 import { render_time } from './markdown.ts';
-import { calibrate_prices, calibrate_weights } from '../calibrate/index.ts';
+import {
+	CORPUS_FILES,
+	CORPUS_ROOT,
+	calibrate_prices,
+	calibrate_weights
+} from '../calibrate/index.ts';
+import { agree_files } from '../calibrate/agree.ts';
+import { measure_points, read_points, write_points } from '../calibrate/points.ts';
 import { DEFAULT_WEIGHTS_PATH } from '../calibrate/weights.ts';
 
 /*
@@ -21,7 +28,10 @@ export const MEASURE_USAGE = `abax run <bench files...> --measure time,bytes,lea
 abax time <bench files...> --base dir --pr dir [--repeats 5] [--time-ms 300] [--filter text] [--out time.json] [--md time.md]
 abax diff <base.json> <pr.json> --time time.json
 abax calibrate prices [--keys a,b] [--sizes 16,64,256] [--out prices.json] [--time-ms 100]
-abax calibrate weights [bench files...] [--root dir] [--out weights.json] [--time-ms 150] [--repeats 3]`;
+abax calibrate weights [bench files...] [--root dir] [--out weights.json] [--time-ms 150] [--repeats 3]
+abax calibrate weights --points a.json,b.json [--out weights.json]     fit points measured before
+abax calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
+abax calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]     two point sets or two price files`;
 
 type Flags = Map<string, string>;
 
@@ -95,13 +105,46 @@ export async function measure_command(
 			);
 			return 0;
 		}
+		if (what === 'points') {
+			const root = flags.get('root') ?? (files.length > 0 ? process.cwd() : CORPUS_ROOT);
+			const set = await measure_points({
+				root,
+				files: files.length > 0 ? files : CORPUS_FILES,
+				filter: flags.get('filter'),
+				time_ms: num(flags, 'time-ms'),
+				repeats: num(flags, 'repeats'),
+				log
+			});
+			const out = flags.get('out') ?? 'abax-points.json';
+			write_points(out, set);
+			log(
+				`${set.points.length} points (${set.repeats} repeats, load ${set.machine.load}) -> ${out}`
+			);
+			return 0;
+		}
+		if (what === 'agree') {
+			if (files.length !== 2) {
+				console.error(MEASURE_USAGE);
+				return 2;
+			}
+			const tol = { shape_pct: num(flags, 'tolerance') ?? 3, shift_pct: num(flags, 'shift') ?? 5 };
+			const a = agree_files(files[0], files[1], tol);
+			for (const line of a.lines) log(line);
+			log(
+				`${a.pass ? 'agree' : 'DISAGREE'} (allowed: ${tol.shape_pct}% case-to-case, ${tol.shift_pct}% shift)`
+			);
+			return a.pass ? 0 : 1;
+		}
 		if (what === 'weights') {
+			const sets = flags.get('points')?.split(',').map(read_points);
 			const { weights } = await calibrate_weights({
 				root: flags.get('root'),
 				files: files.length > 0 ? files : undefined,
 				out: flags.get('out') ?? DEFAULT_WEIGHTS_PATH,
 				time_ms: num(flags, 'time-ms'),
 				repeats: num(flags, 'repeats'),
+				points: sets?.flatMap((s) => s.points),
+				machine: sets?.[0].machine,
 				log
 			});
 			log(`weights v${weights.version}: R^2 ${weights.fit.r2} over ${weights.fit.points} points`);

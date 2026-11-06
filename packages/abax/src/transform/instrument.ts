@@ -75,6 +75,40 @@ function nodes(node: Node, key: string): Node[] {
 	return list(node, key).filter((n): n is Node => n !== null);
 }
 
+/**
+ * Position of the first `token` at or after `from` that is not inside a comment. Only used between
+ * two nodes, where code holds nothing but punctuation, whitespace and comments (a comment may
+ * contain the token: `() => /** @type {(x: T) => void} *\/ (fn)(x)`).
+ */
+export function find_token(code: string, token: string, from: number): number {
+	let i = from;
+	while (i < code.length) {
+		if (code.startsWith('/*', i)) {
+			const end = code.indexOf('*/', i + 2);
+			i = end === -1 ? code.length : end + 2;
+		} else if (code.startsWith('//', i)) {
+			const end = code.indexOf('\n', i + 2);
+			i = end === -1 ? code.length : end + 1;
+		} else if (code.startsWith(token, i)) {
+			return i;
+		} else {
+			i++;
+		}
+	}
+	return -1;
+}
+
+/** Where an arrow function's `=>` can start: after its parameters, type parameters and return type. */
+function arrow_search_start(node: Node): number {
+	let at = node.start;
+	for (const p of nodes(node, 'params')) at = Math.max(at, p.end);
+	for (const k of ['typeParameters', 'returnType']) {
+		const t = get(node, k);
+		if (t) at = Math.max(at, t.end);
+	}
+	return at;
+}
+
 const SKIP_KEYS = new Set([
 	'type',
 	'start',
@@ -930,7 +964,7 @@ class Instrumenter {
 			}
 			this.walk_statements(stmts.slice(first), false);
 		} else {
-			const arrow = this.arrow_token(node, body);
+			const arrow = find_token(this.code, '=>', arrow_search_start(node));
 			this.open(arrow + 2, () => '{' + head() + 'return(');
 			this.close(node.end, () => ')' + tail() + '}');
 			this.walk_expr(body);
@@ -943,26 +977,6 @@ class Instrumenter {
 		this.block = prev_block;
 		this.scope_block = prev_scope;
 		return f;
-	}
-
-	/**
-	 * Offset of an arrow function's `=>`: the first one after its parameters (and TS return type)
-	 * that is not in a comment. A comment before the body may hold one of its own
-	 * (`() => /** @type {(x: X) => void} *\/ (fn)(x)`).
-	 */
-	arrow_token(node: Node, body: Node): number {
-		let i = node.start;
-		for (const p of nodes(node, 'params')) i = Math.max(i, p.end);
-		const rt = get(node, 'returnType');
-		if (rt) i = Math.max(i, rt.end);
-		const code = this.code;
-		while (i < body.start) {
-			if (code.startsWith('/*', i)) i = code.indexOf('*/', i + 2) + 2;
-			else if (code.startsWith('//', i)) i = code.indexOf('\n', i);
-			else if (code.startsWith('=>', i)) return i;
-			else i++;
-		}
-		return code.lastIndexOf('=>', body.start);
 	}
 
 	walk_class(node: Node, name: string): void {
@@ -1011,7 +1025,7 @@ class Instrumenter {
 				this.block = prev_block;
 			} else if (m.type === 'StaticBlock') {
 				const prev = this.block;
-				const brace = this.code.indexOf('{', m.start);
+				const brace = find_token(this.code, '{', m.start);
 				this.start_block_at(brace + 1, m.start, undefined, 'static');
 				this.walk_statements(list(m, 'body'), false);
 				this.block = prev;
@@ -1376,7 +1390,7 @@ class Instrumenter {
 				const inner =
 					link.type === 'MemberExpression' ? get(link, 'object')! : get(link, 'callee')!;
 				const b = this.new_block(link.start, 'optional');
-				b.origin.start = this.code.indexOf('?.', inner.end);
+				b.origin.start = find_token(this.code, '?.', inner.end);
 				b.origin.end = link.end;
 				if (link.type === 'MemberExpression') {
 					opt_blocks.set(link, b);
@@ -1475,7 +1489,7 @@ class Instrumenter {
 			this.open(node.start, () => `${R}.resume(${r},`);
 			if (arg) {
 				let at = node.start + 5;
-				if (flag(node, 'delegate')) at = this.code.indexOf('*', at) + 1;
+				if (flag(node, 'delegate')) at = find_token(this.code, '*', at) + 1;
 				this.open(at, () => ` ${R}.suspend(${r},`);
 				this.close(node.end, () => '))');
 			} else {
