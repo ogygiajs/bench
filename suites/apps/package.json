@@ -1,0 +1,29 @@
+{
+	"name": "@bench/apps",
+	"private": true,
+	"description": "ogygia against other Svelte frameworks: khromov's interactive blog plus docs, dashboard, AI chat and shop scenarios.",
+	"license": "MIT",
+	"type": "module",
+	"scripts": {
+		"posts": "node generate-posts.ts",
+		"sync": "node shared/sync.ts",
+		"build:all": "node build-all.ts",
+		"build:fast": "node build-all.ts --fast",
+		"benchmark": "node benchmark.ts --config frameworks.config.json --out results/latest.md --json",
+		"benchmark:fast": "node benchmark.ts --fast --passes 3 --out results/scratch/fast.md --json",
+		"benchmark:gzip": "node benchmark.ts --config frameworks.config.json --out results/latest.md --json --gzip",
+		"compare": "node compare.ts",
+		"router": "node router/run.ts",
+		"ops": "node router/ops.ts"
+	},
+	"dependencies": {
+		"@bench/compare": "workspace:*",
+		"autocannon": "catalog:measure",
+		"chrome-launcher": "catalog:measure",
+		"lighthouse": "catalog:measure",
+		"playwright": "catalog:measure"
+	},
+	"devDependencies": {
+		"rolldown": "catalog:"
+	}
+}

@@ -1,32 +1,26 @@
 {
-	"name": "ogygia-benchmarks",
+	"name": "ogygia-bench",
 	"private": true,
-	"description": "ogygia against other Svelte frameworks: khromov's interactive blog plus docs, dashboard, AI chat and shop scenarios.",
+	"description": "Benchmarks for ogygia: the app benchmark (suites/apps) and its shared PR comparison (packages/compare).",
 	"license": "MIT",
 	"type": "module",
-	"packageManager": "pnpm@12.16.1",
+	"scripts": {
+		"build:all": "pnpm --filter @bench/apps build:all",
+		"build:fast": "pnpm --filter @bench/apps build:fast",
+		"benchmark": "pnpm --filter @bench/apps benchmark",
+		"benchmark:fast": "pnpm --filter @bench/apps benchmark:fast",
+		"compare": "pnpm --filter @bench/apps compare",
+		"test": "pnpm -r --if-present test",
+		"lint": "oxlint",
+		"format": "oxfmt .",
+		"format:check": "oxfmt --check ."
+	},
+	"devDependencies": {
+		"oxfmt": "catalog:",
+		"oxlint": "catalog:"
+	},
 	"engines": {
 		"node": ">=22.18"
 	},
-	"scripts": {
-		"posts": "node generate-posts.ts",
-		"sync": "node shared/sync.ts",
-		"build:all": "node build-all.ts",
-		"build:fast": "node build-all.ts --fast",
-		"benchmark": "node benchmark.ts --config frameworks.config.json --out results/latest.md --json",
-		"benchmark:fast": "node benchmark.ts --fast --passes 3 --out results/scratch/fast.md --json",
-		"benchmark:gzip": "node benchmark.ts --config frameworks.config.json --out results/latest.md --json --gzip",
-		"compare": "node compare.ts",
-		"router": "node router/run.ts",
-		"ops": "node router/ops.ts"
-	},
-	"dependencies": {
-		"autocannon": "8.0.0",
-		"chrome-launcher": "1.2.1",
-		"lighthouse": "13.6.0",
-		"playwright": "1.62.1"
-	},
-	"devDependencies": {
-		"rolldown": "1.2.2"
-	}
+	"packageManager": "pnpm@12.16.1"
 }
