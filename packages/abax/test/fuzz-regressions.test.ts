@@ -190,6 +190,73 @@ export async function f() {
 	assert.deepEqual(callers, [fn_of(r, 'f').id]);
 });
 
+test('await using disposal takes as many microtask turns as the language: interleaving is kept', async () => {
+	// minimized from seed 114563: the disposal awaited Promise.resolve(out).then(...), one turn more
+	// than the language, and concurrent async code ran in another order
+	const source = `function res(name) {
+	return { async [Symbol.asyncDispose]() { await null; log.push('disposed ' + name); } };
+}
+function sync_only() {
+	return { [Symbol.dispose]() { log.push('sync disposed'); } };
+}
+function rejects() {
+	return { [Symbol.asyncDispose]() { return Promise.reject(new Error('no')); } };
+}
+let log = [];
+async function a() {
+	{
+		await using u = res('u');
+		await using s = sync_only();
+		await using n = null;
+	}
+	try {
+		await using r = rejects();
+		await using u2 = res('u2');
+	} catch (e) {
+		log.push('caught ' + e.message);
+	}
+	log.push('a done');
+}
+async function b() {
+	for (let i = 0; i < 12; i++) {
+		await null;
+		log.push('b' + i);
+	}
+}
+export async function main() {
+	log = [];
+	await Promise.all([a(), b()]);
+	return log;
+}`;
+	const m = await load_module<{ main: () => Promise<string[]> }>(source, '.js');
+	const p = await plain<typeof m>(source);
+	assert.deepEqual(await m.main(), await p.main());
+});
+
+test('each ?. link of a chain counts its own runs', async () => {
+	// minimized from seed 201: the counters of `a?.b?.c` were nested the wrong way round, so the
+	// `?.b` link counted the runs of `?.c` and the other way round
+	const m = await load_module(`export function f(o: any) {
+	return o?.a?.b;
+}
+export function g(o: any) {
+	return (o?.a)?.b;
+}`);
+	const inputs = [null, {}, { a: {} }, { a: { b: 1 } }];
+	const r = await measure(() => {
+		for (const o of inputs) {
+			m.f(o as never);
+			m.g(o as never);
+		}
+	});
+	// entry, then `?.a` (o is not nullish: 3 of 4), then `?.b` (o.a is not nullish: 2 of 4)
+	for (const name of ['f', 'g'])
+		assert.deepEqual(
+			fn_of(r, name).blocks.map((b) => b.count),
+			[4, 3, 2]
+		);
+});
+
 test("an arrow's => is found past comments that hold one", async () => {
 	// from the corpus run: svelte/src/internal/client/dom/elements/attachments.js casts with a
 	// JSDoc comment holding `=>`, and the body was opened there (code that does not parse)

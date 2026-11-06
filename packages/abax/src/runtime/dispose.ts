@@ -22,11 +22,11 @@ interface Resource {
 	value: unknown;
 	method: ((this: unknown) => unknown) | null;
 	awaited: boolean;
+	/** An `await using` of a value with only `Symbol.dispose`: its result is not awaited. */
+	sync: boolean;
 }
 
 const reflect_apply = Reflect.apply;
-
-function noop(): void {}
 
 export class DisposeScope {
 	#resources: Resource[] = [];
@@ -34,7 +34,8 @@ export class DisposeScope {
 
 	use<T>(value: T, awaited: boolean): T {
 		if (value == null) {
-			if (awaited) this.#resources[this.#resources.length] = { value, method: null, awaited };
+			if (awaited)
+				this.#resources[this.#resources.length] = { value, method: null, awaited, sync: true };
 			return value;
 		}
 		// The errors are worded as V8 words them, so a program that reads them sees no difference.
@@ -46,13 +47,15 @@ export class DisposeScope {
 		if (method !== undefined && typeof method !== 'function') {
 			throw new TypeError('Symbol(Symbol.asyncDispose) is not a function');
 		}
-		if (method === undefined) method = v[Symbol.dispose];
+		const sync = method === undefined;
+		if (sync) method = v[Symbol.dispose];
 		if (typeof method !== 'function')
 			throw new TypeError('Symbol(Symbol.dispose) is not a function');
 		this.#resources[this.#resources.length] = {
 			value,
 			method: method as Resource['method'],
-			awaited
+			awaited,
+			sync
 		};
 		return value;
 	}
@@ -61,30 +64,55 @@ export class DisposeScope {
 		this.#error = { e };
 	}
 
-	#record(e: unknown): void {
+	/** A disposal threw, or what it returned rejected when awaited. */
+	record(e: unknown): void {
 		this.#error = this.#error
 			? { e: new SuppressedError(e, this.#error.e, 'An error was suppressed during disposal.') }
 			: { e };
 	}
 
+	/** An `await using x = null` was passed: the language awaits once, later, if nothing else did. */
+	#needs_await = false;
+	#has_awaited = false;
+
 	/**
-	 * Dispose resources from the last one until one has to be awaited: returns that promise (it
-	 * never rejects; errors are recorded), or the scope itself when every resource is done.
+	 * Dispose resources from the last one until one has to be awaited: returns what the language
+	 * awaits there (DisposeResources), so the awaits take as many turns of the microtask queue as
+	 * the language's own; or the scope itself when every resource is done. The transform's loop
+	 * awaits it and hands a rejection to `record`.
+	 *
+	 *   `await using` of a disposer      its result is awaited
+	 *   ... with only `Symbol.dispose`   called; a resolved promise is awaited
+	 *   ... of null or undefined         nothing yet; one await at the end (or before the next sync
+	 *                                    disposal) when no other disposal awaited
+	 *   a call that throws               recorded, not awaited
 	 */
 	step(): unknown {
 		const list = this.#resources;
 		while (list.length > 0) {
 			const r = list[list.length - 1];
+			if (!r.awaited && this.#needs_await && !this.#has_awaited) {
+				this.#needs_await = false;
+				return undefined;
+			}
 			list.length--;
+			if (!r.method) {
+				this.#needs_await = true;
+				continue;
+			}
 			try {
-				const out = r.method ? reflect_apply(r.method, r.value, []) : undefined;
+				const out = reflect_apply(r.method, r.value, []);
 				if (r.awaited) {
-					return Promise.resolve(out).then(noop, (e: unknown) => this.#record(e));
+					this.#has_awaited = true;
+					return r.sync ? undefined : out;
 				}
 			} catch (e) {
-				this.#record(e);
-				if (r.awaited) return Promise.resolve();
+				this.record(e);
 			}
+		}
+		if (this.#needs_await && !this.#has_awaited) {
+			this.#needs_await = false;
+			return undefined;
 		}
 		return this;
 	}

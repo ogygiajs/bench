@@ -527,7 +527,9 @@ class Instrumenter {
 	 *
 	 * The disposals run in its finally, which first resumes the frame: a generator resumed by
 	 * `return()` or `throw()`, or an await that rejects, leaves through the finally without passing
-	 * the resume the transform put after the `yield` or `await`.
+	 * the resume the transform put after the `yield` or `await`. Each disposal awaits exactly what
+	 * the language awaits (DisposeScope.step), so concurrent async code interleaves the same; a
+	 * rejection is recorded and the next resource still disposed.
 	 */
 	dispose_scope(start: number, end: number, first?: (u: string) => string): string {
 		const u = `${this.n.R}u${this.using_count++}`;
@@ -539,7 +541,7 @@ class Instrumenter {
 			() =>
 				`}catch(${u}e){${u}.fail(${u}e)}finally{${R}.resume_if(${r});` +
 				(awaits
-					? `for(let ${u}p;(${u}p=${u}.step())!==${u};)${R}.resume(${r},await ${R}.suspend(${r},${u}p));`
+					? `for(let ${u}p;(${u}p=${u}.step())!==${u};)try{${R}.resume(${r},await ${R}.suspend(${r},${u}p))}catch(${u}x){${R}.resume_if(${r});${u}.record(${u}x)}`
 					: `${u}.step();`) +
 				`${u}.finish()}`
 		);
@@ -1353,8 +1355,21 @@ class Instrumenter {
 		}
 		links.reverse();
 		const prev = this.block;
-		this.walk_expr(cur);
 		const { R, c } = this.n;
+		// A `?.` member link wraps its object in `R.opt(...)`. Every object starts where the chain
+		// does, so the outermost link's wrapper must be created first (see the edit-order note at
+		// the top), before the links inside it and before the chain's head, which may be a chain
+		// of its own (`(a?.b)?.c`). The blocks are made below, in the order the links run.
+		const opt_blocks = new Map<Node, BlockRec>();
+		for (let i = links.length - 1; i >= 0; i--) {
+			const link = links[i];
+			if (!flag(link, 'optional') || link.type !== 'MemberExpression') continue;
+			this.as_arg(get(link, 'object')!, () => {
+				const b = opt_blocks.get(link)!;
+				return `${R}.opt(${c},${b.id},${this.price(b)},`;
+			});
+		}
+		this.walk_expr(cur);
 		for (const link of links) {
 			if (flag(link, 'optional')) {
 				this.op('compare', link.start);
@@ -1364,8 +1379,7 @@ class Instrumenter {
 				b.origin.start = this.code.indexOf('?.', inner.end);
 				b.origin.end = link.end;
 				if (link.type === 'MemberExpression') {
-					const obj = get(link, 'object')!;
-					this.as_arg(obj, () => `${R}.opt(${c},${b.id},${this.price(b)},`);
+					opt_blocks.set(link, b);
 				} else {
 					const args = nodes(link, 'arguments');
 					if (args.length > 0) {
