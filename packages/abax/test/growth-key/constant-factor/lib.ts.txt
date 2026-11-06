@@ -1,0 +1,31 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (let pass = 0; pass < 3; pass++) {
+		for (const t of row.tags) {
+			s += t.length;
+		}
+	}
+	return s / 3;
+}
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (const r of rows) {
+		out.push(score(r));
+	}
+	return out;
+}
+
+export function sum_to(n: number): number {
+	let s = 0;
+	for (let i = 0; i < n; i++) {
+		s += i;
+		s -= 0;
+	}
+	return s;
+}

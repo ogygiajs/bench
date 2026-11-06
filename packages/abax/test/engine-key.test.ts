@@ -148,5 +148,22 @@ for (const name of readdirSync(KEY).filter((d) => d !== 'base')) {
 		}
 		const md = render_engine_markdown(d);
 		assert.ok(md.includes('lib.ts:'), md);
+
+		// the PR comment, through the CLI: the "Engine" part under the step table
+		const { stdout } = await run(process.execPath, [
+			'--no-warnings',
+			CLI,
+			'diff',
+			join(tmp, 'base', 'abax-report.json'),
+			join(pr_dir, 'abax-report.json'),
+			'--repo',
+			repo,
+			'--base',
+			base_sha,
+			'--head',
+			pr_sha
+		]);
+		assert.ok(stdout.includes('#### Engine'), stdout);
+		for (const f of d.findings) assert.ok(stdout.includes(f.text), stdout);
 	});
 }

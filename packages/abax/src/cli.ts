@@ -7,10 +7,17 @@ import { render_markdown } from './diff/markdown.ts';
 import { git_diff } from './diff/git.ts';
 import { write_private_dts } from './dts.ts';
 import type { Report } from './report.ts';
+import { engine_health } from './engine/health.ts';
+import { run_growth } from './growth/index.ts';
+import { run_search } from './search/index.ts';
+import { diff_sections, render_sections, write_section } from './sections.ts';
 
 const USAGE = `abax run <bench files...> [--root dir] [--out report.json] [--deps all|a,b] [--filter text] [--sha sha]
 abax diff <base.json> <pr.json> [--repo dir] [--base sha] [--head sha] [--out section.md] [--json out.json]
-abax dts <source files...> --out abax-private.d.ts [--tsconfig tsconfig.json]`;
+abax dts <source files...> --out abax-private.d.ts [--tsconfig tsconfig.json]
+abax health <bench files...> [--root dir] [--out report.json] [--filter text] [--warmup 20] [--runs 3] [--check on|off]
+abax growth <bench files...> [--root dir] [--out report.json] [--filter text] [--sizes 1,10,100]
+abax search <bench files...> [--root dir] [--out report.json] [--filter text] [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]`;
 
 interface Parsed {
 	positional: string[];
@@ -71,13 +78,60 @@ async function main(argv: string[]): Promise<number> {
 				? git_diff(resolve(repo), base_sha, head_sha)
 				: null;
 		const result = diff_reports(base, pr, { files });
-		const md = render_markdown(result);
+		const sections = diff_sections(base, pr, files);
+		const extra = render_sections(sections);
+		const md = render_markdown(result) + (extra ? '\n' + extra : '');
 		const out = flags.get('out');
 		if (out) writeFileSync(out, md + '\n');
 		else console.log(md);
 		const json = flags.get('json');
-		if (json) writeFileSync(json, JSON.stringify(result, null, '\t') + '\n');
+		if (json) writeFileSync(json, JSON.stringify({ ...result, ...sections }, null, '\t') + '\n');
 		return 0;
+	}
+	if (cmd === 'health' || cmd === 'growth' || cmd === 'search') {
+		if (positional.length === 0) {
+			console.error(USAGE);
+			return 2;
+		}
+		const root = flags.get('root') ?? process.cwd();
+		const out = flags.get('out') ?? 'abax-report.json';
+		const deps_flag = flags.get('deps');
+		const common = {
+			files: positional,
+			root,
+			filter: flags.get('filter'),
+			deps: deps_flag === undefined ? false : deps_flag === 'all' ? true : deps_flag.split(','),
+			log: (l: string) => console.log(l)
+		};
+		const num = (k: string): number | undefined =>
+			flags.has(k) ? Number(flags.get(k)) : undefined;
+		const info = { root, sha: flags.get('sha') ?? null };
+		if (cmd === 'health') {
+			const r = await engine_health({
+				...common,
+				warmup: num('warmup'),
+				runs: num('runs'),
+				check: flags.get('check') !== 'off'
+			});
+			write_section(out, 'engine', r, info);
+			return r.cases.some((c) => c.error !== null) ? 1 : 0;
+		}
+		if (cmd === 'growth') {
+			const sizes = flags.get('sizes')?.split(',').map(Number);
+			const r = await run_growth({ ...common, sizes });
+			write_section(out, 'growth', r, info);
+			return r.cases.some((c) => c.error !== null) ? 1 : 0;
+		}
+		const r = await run_search({
+			...common,
+			evals: num('evals'),
+			steps: num('budget-steps'),
+			ms: num('budget-ms'),
+			seed: num('seed'),
+			size_factor: num('size-factor')
+		});
+		write_section(out, 'search', r, info);
+		return r.cases.some((c) => c.error !== null) ? 1 : 0;
 	}
 	if (cmd === 'dts') {
 		const out = flags.get('out');
