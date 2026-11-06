@@ -14,7 +14,16 @@ const WORDS =
 	'the model reads your question then plans a short answer and checks the docs before it writes code that you can paste into the project so the build stays green and the page stays fast'.split(
 		' '
 	);
-const TOPICS = ['caching', 'streaming', 'forms', 'routing', 'hydration', 'testing', 'deploys', 'layouts'];
+const TOPICS = [
+	'caching',
+	'streaming',
+	'forms',
+	'routing',
+	'hydration',
+	'testing',
+	'deploys',
+	'layouts'
+];
 
 function sentence(n) {
 	const w = [];
@@ -37,7 +46,11 @@ function code() {
 }
 
 function answer(long) {
-	const parts = [para(), `**${pick(TOPICS)}** works like this:`, ['- ' + sentence(8), '- ' + sentence(9), '- ' + sentence(7)].join('\n')];
+	const parts = [
+		para(),
+		`**${pick(TOPICS)}** works like this:`,
+		['- ' + sentence(8), '- ' + sentence(9), '- ' + sentence(7)].join('\n')
+	];
 	if (long || next() % 2) parts.push(code());
 	parts.push(para());
 	if (long) parts.push(`### Next steps`, para(), code(), para());
@@ -50,14 +63,20 @@ function tool() {
 		name: pick(['search_docs', 'run_query', 'read_file']),
 		args: { query: `${t} setup`, limit: 3 },
 		result: {
-			hits: [1, 2, 3].map((i) => ({ title: `${t} guide part ${i}`, score: Number((0.9 - i * 0.1).toFixed(2)) }))
+			hits: [1, 2, 3].map((i) => ({
+				title: `${t} guide part ${i}`,
+				score: Number((0.9 - i * 0.1).toFixed(2))
+			}))
 		}
 	};
 }
 
 const messages = [];
 for (let i = 0; i < 60; i++) {
-	messages.push({ role: 'user', text: `How do I set up ${pick(TOPICS)} for ${pick(TOPICS)}? ${sentence(8)}` });
+	messages.push({
+		role: 'user',
+		text: `How do I set up ${pick(TOPICS)} for ${pick(TOPICS)}? ${sentence(8)}`
+	});
 	const m = { role: 'assistant', text: answer(i % 10 === 0) };
 	if (i % 4 === 1) m.tool = tool();
 	messages.push(m);

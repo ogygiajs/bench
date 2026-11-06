@@ -2,7 +2,8 @@
 // contents. Measures load, client navigation over a reading session, and the search INP.
 import { readFileSync } from 'node:fs';
 
-const data = (file) => JSON.parse(readFileSync(new URL(`./shared/data/${file}`, import.meta.url), 'utf8'));
+const data = (file) =>
+	JSON.parse(readFileSync(new URL(`./shared/data/${file}`, import.meta.url), 'utf8'));
 const nav = data('nav.json');
 const search = data('public/search.json');
 const flat = nav.flatMap((s) => s.pages);
@@ -10,9 +11,12 @@ const at = (slug) => flat.findIndex((p) => p.slug === slug);
 
 const START = nav[5].pages[12];
 const QUERY = 'prefetching';
-const FIRST_HIT = search.find((e) => e.title.toLowerCase().includes(QUERY) || e.text.includes(QUERY));
+const FIRST_HIT = search.find(
+	(e) => e.title.toLowerCase().includes(QUERY) || e.text.includes(QUERY)
+);
 
-const h1Is = (title) => `document.querySelector('main.article h1')?.textContent?.trim() === ${JSON.stringify(title)}`;
+const h1Is = (title) =>
+	`document.querySelector('main.article h1')?.textContent?.trim() === ${JSON.stringify(title)}`;
 
 export default {
 	title: 'Docs: 300 generated pages with sidebar, search, code tabs and a table of contents',
@@ -67,13 +71,21 @@ export default {
 			await s.nav('next', (p) => p.click('.pager a.next'), h1Is(to.title));
 		}
 		const side = flat[i + 3];
-		await s.nav('sidebar', (p) => p.click(`.sidebar a[href="/docs/${side.slug}"]`), h1Is(side.title));
+		await s.nav(
+			'sidebar',
+			(p) => p.click(`.sidebar a[href="/docs/${side.slug}"]`),
+			h1Is(side.title)
+		);
 		// A router that keeps the header mounted keeps the earlier query in the box: clear it first.
 		await s.page.fill('.search input', '');
 		await s.page.click('.search input');
 		await s.page.keyboard.type(QUERY, { delay: 30 });
 		await s.until(() => document.querySelectorAll('.search-results a').length > 0);
-		await s.nav('search-result', (p) => p.click('.search-results a >> nth=0'), h1Is(FIRST_HIT.title));
+		await s.nav(
+			'search-result',
+			(p) => p.click('.search-results a >> nth=0'),
+			h1Is(FIRST_HIT.title)
+		);
 	},
 	// A long reading session: 25 more pages through "Next", then the heap.
 	async long(s) {

@@ -14,7 +14,13 @@
 // one short summary table (a row per scenario, a few headline metrics), then every metric of each
 // scenario in its own <details>.
 import { readFileSync, writeFileSync } from 'node:fs';
-import { MIN_REPEATS, judge as judgeRule, markOf, range as rangeOf, signed as signedOf } from '@bench/compare';
+import {
+	MIN_REPEATS,
+	judge as judgeRule,
+	markOf,
+	range as rangeOf,
+	signed as signedOf
+} from '@bench/compare';
 import { METRICS, kb, kindOf, labelOf } from './harness/metrics.ts';
 import { BASE_ID, PR_ID } from './harness/ab.ts';
 
@@ -22,7 +28,17 @@ const OGYGIA_REPO = 'ogygiajs/ogygia';
 
 // Metrics measured once per build: sizes, counts and lines of code come out the same every time
 // (exact); build time is one timing. These are judged against their floor alone.
-const ONCE = new Set(['jsBr', 'jsRaw', 'htmlBr', 'cacheable', 'buildMs', 'outBytes', 'loc', 'locCode', 'locConfig']);
+const ONCE = new Set([
+	'jsBr',
+	'jsRaw',
+	'htmlBr',
+	'cacheable',
+	'buildMs',
+	'outBytes',
+	'loc',
+	'locCode',
+	'locConfig'
+]);
 
 // The smallest change that counts, in the metric's own unit (`abs`) and in percent of the base
 // (`pct`); a change has to exceed both. For a timing this is only the size below which a change
@@ -83,12 +99,21 @@ const SUMMARY = [
  */
 function judge(key, pr, base, prS, baseS) {
 	const kind = kindOf(key);
-	return judgeRule({ better: METRICS[kind].better, floor: FLOOR[kind], once: ONCE.has(kind) }, pr, base, prS, baseS);
+	return judgeRule(
+		{ better: METRICS[kind].better, floor: FLOOR[kind], once: ONCE.has(kind) },
+		pr,
+		base,
+		prS,
+		baseS
+	);
 }
 
 const fmt = (key, n) => METRICS[kindOf(key)].fmt(n);
 // A magnitude in the metric's unit; byte amounts under a kilobyte read better in bytes.
-const mag = (key, n) => (METRICS[kindOf(key)].fmt === kb && Math.abs(n) < 1024 ? `${Math.round(Math.abs(n))} B` : fmt(key, Math.abs(n)));
+const mag = (key, n) =>
+	METRICS[kindOf(key)].fmt === kb && Math.abs(n) < 1024
+		? `${Math.round(Math.abs(n))} B`
+		: fmt(key, Math.abs(n));
 
 const signed = (key, diff, base) => signedOf(diff, base, (n) => mag(key, n));
 const range = (key, xs) => rangeOf(xs, (n) => fmt(key, n));
@@ -128,9 +153,11 @@ function groups(run, id) {
 	const fw = run?.frameworks?.find((f) => f.id === id);
 	if (fw) {
 		const metrics = {};
-		for (const k of ['score', 'lcp', 'tbt', 'cls', 'evalMs', 'dom']) if (fw.avg?.[k] != null) metrics[k] = fw.avg[k];
+		for (const k of ['score', 'lcp', 'tbt', 'cls', 'evalMs', 'dom'])
+			if (fw.avg?.[k] != null) metrics[k] = fw.avg[k];
 		for (const r of fw.rows ?? [])
-			for (const k of ['jsBr', 'jsRaw', 'htmlBr']) if (r[k] != null) metrics[`${k}:${r.post}`] = r[k];
+			for (const k of ['jsBr', 'jsRaw', 'htmlBr'])
+				if (r[k] != null) metrics[`${k}:${r.post}`] = r[k];
 		out.blog = { metrics, samples: { ...fw.samples } };
 	}
 	for (const [name, s] of Object.entries(run?.scenarios ?? {})) {
@@ -172,7 +199,9 @@ function compare(run, runUrl) {
 	const details = [];
 	for (const [name, { metrics, samples }] of Object.entries(prG)) {
 		const b = baseG[name] ?? null;
-		const keys = Object.keys(metrics).filter((k) => METRICS[kindOf(k)]).sort(byMetric);
+		const keys = Object.keys(metrics)
+			.filter((k) => METRICS[kindOf(k)])
+			.sort(byMetric);
 		const worse = [];
 		const rows = [];
 		const judged = {};
@@ -186,9 +215,18 @@ function compare(run, runUrl) {
 				if (j.regressed) worse.push(labelOf(key));
 				if (j.improved) improvements.push(`${name}: ${labelOf(key)}`);
 				if ((j.regressed || j.improved) && j.prSamples)
-					evidence.push(`- ${labelOf(key)}: this PR ${j.prSamples.map((x) => fmt(key, x)).join(', ')}; base ${j.baseSamples.map((x) => fmt(key, x)).join(', ')}`);
-				rows.push(`| ${labelOf(key)} | ${fmt(key, j.pr)} | ${fmt(key, j.base)} | ${signed(key, j.diff, j.base)} | ${repeatsCell(key, j)} | ${markOf(j)} |`);
-			} else rows.push(b ? `| ${labelOf(key)} | ${fmt(key, metrics[key])} | n/a | | | |` : `| ${labelOf(key)} | ${fmt(key, metrics[key])} |`);
+					evidence.push(
+						`- ${labelOf(key)}: this PR ${j.prSamples.map((x) => fmt(key, x)).join(', ')}; base ${j.baseSamples.map((x) => fmt(key, x)).join(', ')}`
+					);
+				rows.push(
+					`| ${labelOf(key)} | ${fmt(key, j.pr)} | ${fmt(key, j.base)} | ${signed(key, j.diff, j.base)} | ${repeatsCell(key, j)} | ${markOf(j)} |`
+				);
+			} else
+				rows.push(
+					b
+						? `| ${labelOf(key)} | ${fmt(key, metrics[key])} | n/a | | | |`
+						: `| ${labelOf(key)} | ${fmt(key, metrics[key])} |`
+				);
 		}
 		regressions.push(...worse.map((w) => `${name}: ${w}`));
 
@@ -199,7 +237,8 @@ function compare(run, runUrl) {
 			const j = judged[key];
 			if (!j) return fmt(key, metrics[key]);
 			if (j.unjudged) return fmt(key, j.pr);
-			if (!j.regressed && !j.improved) return `${fmt(key, j.pr)} (${j.once && j.diff === 0 ? '=' : '≈'})`;
+			if (!j.regressed && !j.improved)
+				return `${fmt(key, j.pr)} (${j.once && j.diff === 0 ? '=' : '≈'})`;
 			const pct = j.base ? ((Math.abs(j.diff) / Math.abs(j.base)) * 100).toFixed(1) : null;
 			const rel = pct ? `${j.diff > 0 ? '+' : '−'}${pct}%` : signed(key, j.diff, 0);
 			return `${fmt(key, j.pr)} (${rel})${j.regressed ? ' ⚠️' : ''}`;
@@ -208,7 +247,10 @@ function compare(run, runUrl) {
 		summary.push(`| ${name} | ${cells.join(' | ')} | ${status} |`);
 
 		const head = b
-			? ['| Metric | This PR | Base | Change | Repeats, min–max (PR / base) | |', '|---|---:|---:|---:|---:|:-:|']
+			? [
+					'| Metric | This PR | Base | Change | Repeats, min–max (PR / base) | |',
+					'|---|---:|---:|---:|---:|:-:|'
+				]
 			: ['| Metric | This PR |', '|---|---:|'];
 		details.push(
 			`<details><summary><b>${name}</b>${worse.length ? `: ⚠️ ${worse.join(', ')}` : ''}</summary>`,
@@ -216,14 +258,19 @@ function compare(run, runUrl) {
 			...head,
 			...rows,
 			'',
-			...(evidence.length ? ['Every repeat, in pass order, of what changed beyond noise:', '', ...evidence, ''] : []),
+			...(evidence.length
+				? ['Every repeat, in pass order, of what changed beyond noise:', '', ...evidence, '']
+				: []),
 			'</details>',
 			''
 		);
 	}
 
 	const lines = ['#### App benchmark', ''];
-	const repeats = scenarioPasses === passes ? `${passes} repeats of each` : `${scenarioPasses} repeats of each (the blog's Lighthouse: ${passes})`;
+	const repeats =
+		scenarioPasses === passes
+			? `${passes} repeats of each`
+			: `${scenarioPasses} repeats of each (the blog's Lighthouse: ${passes})`;
 	if (hasBase) {
 		lines.push(
 			regressions.length
@@ -252,7 +299,9 @@ function compare(run, runUrl) {
 	);
 
 	const floors = Object.entries(FLOOR)
-		.filter(([key]) => Object.values(prG).some(({ metrics }) => Object.keys(metrics).some((k) => kindOf(k) === key)))
+		.filter(([key]) =>
+			Object.values(prG).some(({ metrics }) => Object.keys(metrics).some((k) => kindOf(k) === key))
+		)
 		.map(([key, { pct = 0, abs = 0 }]) => {
 			if (!pct && !abs) return `\`${key}\` any change`;
 			const parts = [];
@@ -283,7 +332,8 @@ function parseArgs(argv) {
 		else if (a === '--run-url') args.runUrl = argv[++i];
 		else if (a === '--out') args.out = argv[++i];
 	}
-	if (!args.run) throw new Error('usage: node compare.ts --run run.json [--run-url <url>] [--out comment.md]');
+	if (!args.run)
+		throw new Error('usage: node compare.ts --run run.json [--run-url <url>] [--out comment.md]');
 	return args;
 }
 

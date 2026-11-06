@@ -24,8 +24,33 @@ const SECTIONS = [
 	'Reference'
 ];
 const PAGES_PER_SECTION = 25;
-const VERBS = ['Configure', 'Understand', 'Debug', 'Extend', 'Migrate', 'Optimize', 'Test', 'Secure', 'Deploy', 'Compose'];
-const NOUNS = ['routing', 'caching', 'layouts', 'streaming', 'islands', 'hydration', 'forms', 'sessions', 'assets', 'adapters', 'headers', 'errors', 'prefetching'];
+const VERBS = [
+	'Configure',
+	'Understand',
+	'Debug',
+	'Extend',
+	'Migrate',
+	'Optimize',
+	'Test',
+	'Secure',
+	'Deploy',
+	'Compose'
+];
+const NOUNS = [
+	'routing',
+	'caching',
+	'layouts',
+	'streaming',
+	'islands',
+	'hydration',
+	'forms',
+	'sessions',
+	'assets',
+	'adapters',
+	'headers',
+	'errors',
+	'prefetching'
+];
 const WORDS =
 	'the router renders each page on the server and the browser receives plain html so the first paint is fast while small components wake when the reader needs them and data loads close to where it is used with caching that keeps repeated visits cheap'.split(
 		' '
@@ -52,7 +77,12 @@ function paragraph(links) {
 	const parts = [];
 	const count = 3 + (next() % 3);
 	for (let i = 0; i < count; i++) parts.push(sentence(10 + (next() % 12)));
-	if (next() % 3 === 0) parts.splice(1, 0, `Set <code>${pick(NOUNS)}.${pick(['enabled', 'mode', 'timeout', 'strategy'])}</code> to change it.`);
+	if (next() % 3 === 0)
+		parts.splice(
+			1,
+			0,
+			`Set <code>${pick(NOUNS)}.${pick(['enabled', 'mode', 'timeout', 'strategy'])}</code> to change it.`
+		);
 	if (links.length && next() % 2 === 0) {
 		const l = pick(links);
 		parts.push(`See <a href="/docs/${l.slug}">${esc(l.title)}</a> for more.`);
@@ -102,12 +132,18 @@ flat.forEach((entry, i) => {
 	const links = Array.from({ length: 4 }, () => flat[next() % flat.length]);
 	const intro = [paragraph(links), paragraph(links)].join('\n');
 	const blocks = [{ type: 'html', html: intro }];
-	const sections = ['Overview', `How ${entry.title.toLowerCase()} works`, 'Options', 'Common problems'];
+	const sections = [
+		'Overview',
+		`How ${entry.title.toLowerCase()} works`,
+		'Options',
+		'Common problems'
+	];
 	sections.forEach((h, si) => {
 		let html = heading(h, 2) + '\n' + paragraph(links) + '\n' + paragraph(links);
 		if (si === 1) html += '\n' + heading('Step by step', 3) + '\n' + paragraph(links);
 		if (si === 2)
-			html += `\n<div class="callout"><strong>Note</strong> ${sentence(16)}</div>\n` + paragraph(links);
+			html +=
+				`\n<div class="callout"><strong>Note</strong> ${sentence(16)}</div>\n` + paragraph(links);
 		blocks.push({ type: 'html', html });
 		if (si === 0) blocks.push({ type: 'tabs', tabs: tabs(entry.title) });
 	});
@@ -139,6 +175,9 @@ writeFileSync(join(OUT, 'pages.json'), JSON.stringify(pages));
 // one JSON per page (what the client-rendered SPA fetches on navigation).
 writeFileSync(join(OUT, 'public', 'search.json'), JSON.stringify(search));
 for (const [slug, page] of Object.entries(pages))
-	writeFileSync(join(OUT, 'public', 'data', 'pages', `${slug.replace('/', '--')}.json`), JSON.stringify(page));
+	writeFileSync(
+		join(OUT, 'public', 'data', 'pages', `${slug.replace('/', '--')}.json`),
+		JSON.stringify(page)
+	);
 const bytes = JSON.stringify(pages).length;
 console.log(`  docs: ${flat.length} pages, ${(bytes / 1024).toFixed(0)} KB of page data`);

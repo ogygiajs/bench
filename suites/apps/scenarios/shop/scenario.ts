@@ -5,17 +5,22 @@
 import { readFileSync } from 'node:fs';
 import { productPage } from './shared/catalog.ts';
 
-const products = JSON.parse(readFileSync(new URL('./shared/data/products.json', import.meta.url), 'utf8'));
+const products = JSON.parse(
+	readFileSync(new URL('./shared/data/products.json', import.meta.url), 'utf8')
+);
 const FIRST = products[4];
 const SECOND = productPage(products, FIRST.id).related[0];
 const THIRD = products[20];
 
-const h1Is = (t) => `document.querySelector('main h1')?.textContent?.trim() === ${JSON.stringify(t)}`;
+const h1Is = (t) =>
+	`document.querySelector('main h1')?.textContent?.trim() === ${JSON.stringify(t)}`;
 // After Add to cart only the greeting is checked: a client router that keeps the layout (Kit's,
 // Vike's) shows the count it rendered until something invalidates it.
 const personal = (name, cart = null) =>
 	`document.querySelector('.greeting')?.textContent?.trim() === 'Hello, ${name}'` +
-	(cart == null ? '' : ` && document.querySelector('.cart')?.textContent?.trim() === 'Cart (${cart})'`);
+	(cart == null
+		? ''
+		: ` && document.querySelector('.cart')?.textContent?.trim() === 'Cart (${cart})'`);
 
 export default {
 	title: 'Shop: product grid and pages, cacheable HTML with a personal greeting and cart count',
@@ -32,8 +37,20 @@ export default {
 	cacheability: {
 		route: 'product',
 		visitors: [
-			{ cookies: [{ name: 'bench_user', value: 'ada' }, { name: 'bench_cart', value: '3' }], markers: ['Hello, Ada'] },
-			{ cookies: [{ name: 'bench_user', value: 'linus' }, { name: 'bench_cart', value: '7' }], markers: ['Hello, Linus'] }
+			{
+				cookies: [
+					{ name: 'bench_user', value: 'ada' },
+					{ name: 'bench_cart', value: '3' }
+				],
+				markers: ['Hello, Ada']
+			},
+			{
+				cookies: [
+					{ name: 'bench_user', value: 'linus' },
+					{ name: 'bench_cart', value: '7' }
+				],
+				markers: ['Hello, Linus']
+			}
 		]
 	},
 	fidelity: {
@@ -61,7 +78,11 @@ export default {
 			(p) => p.click('.add-to-cart'),
 			() => document.querySelector('.buy-status')?.textContent?.includes('4 in cart')
 		);
-		await s.nav('related', (p) => p.click(`.related .card[href="/product/${SECOND.id}"]`), h1Is(SECOND.name));
+		await s.nav(
+			'related',
+			(p) => p.click(`.related .card[href="/product/${SECOND.id}"]`),
+			h1Is(SECOND.name)
+		);
 		await s.until(personal('Ada'));
 		await s.nav('home', (p) => p.click('.brand'), h1Is('All products'));
 		await s.nav('product', (p) => p.click(`.card[href="/product/${THIRD.id}"]`), h1Is(THIRD.name));

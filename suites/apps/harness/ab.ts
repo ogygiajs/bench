@@ -23,7 +23,10 @@ const withTwin = (list) => list.flatMap((e) => (e.id === PR_ID ? [e, twin(e)] : 
 /** The config with an `ogygia-base` entry after every `ogygia` one (the blog and each scenario). */
 export function withBase(cfg) {
 	const scenarios = Object.fromEntries(
-		Object.entries(cfg.scenarios ?? {}).map(([name, s]) => [name, { ...s, apps: withTwin(s.apps ?? []) }])
+		Object.entries(cfg.scenarios ?? {}).map(([name, s]) => [
+			name,
+			{ ...s, apps: withTwin(s.apps ?? []) }
+		])
 	);
 	return { ...cfg, frameworks: withTwin(cfg.frameworks ?? []), scenarios };
 }

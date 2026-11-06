@@ -11,13 +11,13 @@ growing length are his. This version runs on current tooling and adds ogygia. Th
 
 ## Scenarios
 
-| scenario    | stands for                                   | what it has                                                                                         | what it stresses                                                         |
-| ----------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| `blog`      | content sites with a few widgets             | three posts of 8.8k, 23k and 71k words, five counters each                                          | JS that grows (or not) with the page; Lighthouse load                     |
-| `docs`      | documentation sites                          | 300 generated pages, a 300-link sidebar, search (index loaded on first use), code tabs, a scroll-spy table of contents, prev/next | load, navigation over a reading session, search and tab INP             |
-| `dashboard` | internal tools and admin apps                | four live KPI cards and a live chart (a tick every second), a static bar chart, a 1,000-row orders table with sort and filters | sort/filter INP, the cost of one live update, JS weight, render per request |
-| `ai-chat`   | chat UIs over a streaming model              | a 120-message history (markdown, code, tool calls), replies streamed token by token from a deterministic local stream (no model) and rendered as markdown as they arrive, tool-call cards | time to first token on screen, INP while streaming, memory after a long conversation, the stream's first chunk |
-| `shop`      | storefronts with personal bits on shared HTML | a 48-product grid and product pages, "Hello, name" and the cart count in the header, Add to cart     | load, time to the personal header, server cost per view, whether one copy of the HTML can be cached for everyone |
+| scenario    | stands for                                    | what it has                                                                                                                                                                               | what it stresses                                                                                                 |
+| ----------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `blog`      | content sites with a few widgets              | three posts of 8.8k, 23k and 71k words, five counters each                                                                                                                                | JS that grows (or not) with the page; Lighthouse load                                                            |
+| `docs`      | documentation sites                           | 300 generated pages, a 300-link sidebar, search (index loaded on first use), code tabs, a scroll-spy table of contents, prev/next                                                         | load, navigation over a reading session, search and tab INP                                                      |
+| `dashboard` | internal tools and admin apps                 | four live KPI cards and a live chart (a tick every second), a static bar chart, a 1,000-row orders table with sort and filters                                                            | sort/filter INP, the cost of one live update, JS weight, render per request                                      |
+| `ai-chat`   | chat UIs over a streaming model               | a 120-message history (markdown, code, tool calls), replies streamed token by token from a deterministic local stream (no model) and rendered as markdown as they arrive, tool-call cards | time to first token on screen, INP while streaming, memory after a long conversation, the stream's first chunk   |
+| `shop`      | storefronts with personal bits on shared HTML | a 48-product grid and product pages, "Hello, name" and the cart count in the header, Add to cart                                                                                          | load, time to the personal header, server cost per view, whether one copy of the HTML can be cached for everyone |
 
 All content is generated and deterministic: `generate-posts.ts` and `scenarios/<name>/generate.ts`.
 Each scenario keeps its UI and data in `scenarios/<name>/shared` (Svelte components, CSS, the
@@ -29,14 +29,14 @@ script, routes and checks are in `scenarios/<name>/scenario.ts`.
 Which frameworks are in and why (and which were looked at and left out) is in
 [FRAMEWORKS.md](FRAMEWORKS.md).
 
-| id           | blog | docs | dashboard | ai-chat | shop | how it builds the scenarios                                                        |
-| ------------ | :--: | :--: | :-------: | :-----: | :--: | ---------------------------------------------------------------------------------- |
-| `ogygia`     |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | SvelteKit + ogygia: `csr = false` server HTML, islands, server islands (PPR), its router |
-| `sveltekit`  |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | SvelteKit: SSR or prerender, whole-page hydration, Kit's router                     |
+| id           | blog | docs | dashboard | ai-chat | shop | how it builds the scenarios                                                                  |
+| ------------ | :--: | :--: | :-------: | :-----: | :--: | -------------------------------------------------------------------------------------------- |
+| `ogygia`     |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | SvelteKit + ogygia: `csr = false` server HTML, islands, server islands (PPR), its router     |
+| `sveltekit`  |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | SvelteKit: SSR or prerender, whole-page hydration, Kit's router                              |
 | `astro`      |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | Astro + `@astrojs/svelte`: islands, server islands, the Node adapter where it needs a server |
-| `mochi`      |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | Mochi on Bun: server rendering per request, islands, `mochi:defer` server islands    |
-| `vike`       |      |  ✓   |     ✓     |    ✓    |  ✓   | Vike + `vike-svelte`: SSR or prerender, hydration, Vike's client routing, Hono server |
-| `svelte-spa` |      |  ✓   |     ✓     |    ✓    |  ✓   | plain Svelte + Vite: client-rendered, data from JSON endpoints (the baseline)        |
+| `mochi`      |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | Mochi on Bun: server rendering per request, islands, `mochi:defer` server islands            |
+| `vike`       |      |  ✓   |     ✓     |    ✓    |  ✓   | Vike + `vike-svelte`: SSR or prerender, hydration, Vike's client routing, Hono server        |
+| `svelte-spa` |      |  ✓   |     ✓     |    ✓    |  ✓   | plain Svelte + Vite: client-rendered, data from JSON endpoints (the baseline)                |
 
 The blog keeps its original four apps in `frameworks/<id>`. Scenario apps live in
 `scenarios/<name>/apps/<id>`. Every app has its own exact version pins and installs on its own (no
@@ -67,25 +67,25 @@ floor (the smallest change that counts) in `compare.ts`'s `FLOOR` table. A resul
 `<metric>` or `<metric>:<route|step>`. Timings are the median of N passes, and every pass's value
 is kept beside it (`samples`); sizes and lines of code are exact.
 
-| metric | what it is |
-| --- | --- |
-| `score`, `lcp`, `tbt`, `cls` | Lighthouse (mobile, simulated throttling, performance only) on the scenario's Lighthouse page(s) |
-| `evalMs` | JS evaluation + parse/compile on the main thread during the load, from Lighthouse's trace, × its CPU slowdown (`harness/lighthouse.ts`) |
-| `jsBr`, `htmlBr` | brotli bytes of every script / of the document a route loads cold, before any interaction or scroll; bare = average of the routes |
-| `inp:<step>` | the worst Event Timing duration of the interactions one scripted step caused (Playwright input, 4× CPU throttle); `inp` = the worst step. Below 16 ms reads as 16 |
-| `resp:<step>` | from the step's last input to its result on screen: the wait Event Timing cannot see (a fetch, a lazy island waking) |
-| `navMs` | median time from a click on a link to the new page's heading on screen, over a scripted visit |
-| `visitBr` | brotli bytes of every response in that visit |
-| `heapMb` | JS heap (`JSHeapUsedSize`, after a forced GC) after the scenario's long session |
-| `updateMs` | dashboard: the DOM-update work of one live tick, measured in the page |
-| `ttft`, `streamMs` | ai-chat: from Send to the first / last token on screen |
-| `personalMs` | shop: from navigation start to the visitor's greeting and cart count on screen |
-| `ttfb`, `htmlMs` | server apps: sequential requests (median of 25), time to headers / to the whole document |
+| metric                             | what it is                                                                                                                                                                                                                                      |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `score`, `lcp`, `tbt`, `cls`       | Lighthouse (mobile, simulated throttling, performance only) on the scenario's Lighthouse page(s)                                                                                                                                                |
+| `evalMs`                           | JS evaluation + parse/compile on the main thread during the load, from Lighthouse's trace, × its CPU slowdown (`harness/lighthouse.ts`)                                                                                                         |
+| `jsBr`, `htmlBr`                   | brotli bytes of every script / of the document a route loads cold, before any interaction or scroll; bare = average of the routes                                                                                                               |
+| `inp:<step>`                       | the worst Event Timing duration of the interactions one scripted step caused (Playwright input, 4× CPU throttle); `inp` = the worst step. Below 16 ms reads as 16                                                                               |
+| `resp:<step>`                      | from the step's last input to its result on screen: the wait Event Timing cannot see (a fetch, a lazy island waking)                                                                                                                            |
+| `navMs`                            | median time from a click on a link to the new page's heading on screen, over a scripted visit                                                                                                                                                   |
+| `visitBr`                          | brotli bytes of every response in that visit                                                                                                                                                                                                    |
+| `heapMb`                           | JS heap (`JSHeapUsedSize`, after a forced GC) after the scenario's long session                                                                                                                                                                 |
+| `updateMs`                         | dashboard: the DOM-update work of one live tick, measured in the page                                                                                                                                                                           |
+| `ttft`, `streamMs`                 | ai-chat: from Send to the first / last token on screen                                                                                                                                                                                          |
+| `personalMs`                       | shop: from navigation start to the visitor's greeting and cart count on screen                                                                                                                                                                  |
+| `ttfb`, `htmlMs`                   | server apps: sequential requests (median of 25), time to headers / to the whole document                                                                                                                                                        |
 | `p50`, `p99`, `vps`, `reqsPerView` | server apps under load: 10 connections replay every request one page view makes to the server (document, data and server-island fetches, a batched POST included) with the visitor's cookies; latency, page views per second, requests per view |
-| `ttfc`, `streamTotal` | ai-chat server apps: the stream's first chunk and its end, from Node |
-| `cacheable` | shop: 1 when the page's HTML carries no visitor's personal content and allows shared caching (no `private`/`no-store`, no cookie set) |
-| `buildMs`, `outBytes` | the app's `build` command, and every file in its client output except the scenario's shared static files |
-| `loc`, `locCode`, `locConfig` | lines of code a developer wrote for the app (rule below) |
+| `ttfc`, `streamTotal`              | ai-chat server apps: the stream's first chunk and its end, from Node                                                                                                                                                                            |
+| `cacheable`                        | shop: 1 when the page's HTML carries no visitor's personal content and allows shared caching (no `private`/`no-store`, no cookie set)                                                                                                           |
+| `buildMs`, `outBytes`              | the app's `build` command, and every file in its client output except the scenario's shared static files                                                                                                                                        |
+| `loc`, `locCode`, `locConfig`      | lines of code a developer wrote for the app (rule below)                                                                                                                                                                                        |
 
 The browser sessions run in Chrome with 4× CPU throttling and a 40 ms, 10 Mbps down / 5 Mbps up
 network applied per request, pages served uncompressed like the Lighthouse runs

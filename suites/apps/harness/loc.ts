@@ -27,7 +27,16 @@ const BLOG_GENERATED = [
 ];
 
 // Without git (the Docker image has no .git): walk the app, skipping what .gitignore leaves out.
-const UNTRACKED = new Set(['node_modules', 'build', 'dist', '.svelte-kit', '.astro', '.mochi', 'public', 'static']);
+const UNTRACKED = new Set([
+	'node_modules',
+	'build',
+	'dist',
+	'.svelte-kit',
+	'.astro',
+	'.mochi',
+	'public',
+	'static'
+]);
 const UNTRACKED_PATHS = ['src/lib/shared', 'src/shared'];
 
 function walk(root, dir, rel = '', out = []) {
@@ -66,7 +75,9 @@ export function linesOfCode(root, dir, composition = []) {
 	if (!files?.length) return null;
 	let code = 0;
 	let config = 0;
-	const sources = files.filter((f) => SOURCE.test(f)).map((f) => readFileSync(join(root, f), 'utf8'));
+	const sources = files
+		.filter((f) => SOURCE.test(f))
+		.map((f) => readFileSync(join(root, f), 'utf8'));
 	for (const shared of composition) {
 		// Imported from the app's copy of the shared dir: `…/shared/components/DocPage.svelte'`.
 		const tail = shared.slice(shared.indexOf('/shared/'));

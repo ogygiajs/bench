@@ -4,12 +4,15 @@
 // conversation, and (server apps) the stream's first chunk and the page's render cost.
 import { readFileSync } from 'node:fs';
 
-const history = JSON.parse(readFileSync(new URL('./shared/data/history.json', import.meta.url), 'utf8'));
+const history = JSON.parse(
+	readFileSync(new URL('./shared/data/history.json', import.meta.url), 'utf8')
+);
 const START = history.length / 2;
 const DRAFT = 'thanks, and the next step?';
 
 const now = (s) => s.page.evaluate(() => performance.timeOrigin + performance.now());
-const firstToken = (turn) => `document.querySelector('.msg[data-turn="${turn}"] .body')?.textContent.length > 0`;
+const firstToken = (turn) =>
+	`document.querySelector('.msg[data-turn="${turn}"] .body')?.textContent.length > 0`;
 const finished = (turn) => `!!document.querySelector('.msg[data-turn="${turn}"][data-done]')`;
 
 /** Send one message; resolves once its first token is on screen, with the send time. */

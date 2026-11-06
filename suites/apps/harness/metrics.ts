@@ -42,14 +42,22 @@ export const METRICS = {
 	// Streaming (ai-chat): on screen, in the browser, and the raw stream from the server.
 	ttft: { label: 'Send to first token on screen', fmt: ms, better: 'lower' },
 	streamMs: { label: 'Send to last token on screen', fmt: ms, better: 'lower' },
-	ttfc: { label: 'Stream: first chunk (server)', fmt: (n) => `${n.toFixed(1)} ms`, better: 'lower' },
+	ttfc: {
+		label: 'Stream: first chunk (server)',
+		fmt: (n) => `${n.toFixed(1)} ms`,
+		better: 'lower'
+	},
 	streamTotal: { label: 'Stream: whole reply (server)', fmt: ms, better: 'lower' },
 	// Dashboard: the DOM update work of one live tick (median), measured inside the page.
 	updateMs: { label: 'Live update cost', fmt: (n) => `${n.toFixed(1)} ms`, better: 'lower' },
 	// Shop: from navigation start to the visitor's greeting and cart count on screen.
 	personalMs: { label: 'Personal header on screen', fmt: ms, better: 'lower' },
 	// Shop: 1 when one copy of the page can be served to every visitor by a shared cache.
-	cacheable: { label: 'HTML cacheable for everyone', fmt: (n) => (n ? 'yes' : 'no'), better: 'higher' },
+	cacheable: {
+		label: 'HTML cacheable for everyone',
+		fmt: (n) => (n ? 'yes' : 'no'),
+		better: 'higher'
+	},
 	// From build-all.ts: the app's `build` command, and every file in its client output.
 	buildMs: { label: 'Build time', fmt: (n) => `${(n / 1000).toFixed(1)} s`, better: 'lower' },
 	outBytes: { label: 'Client output size', fmt: kb, better: 'lower' },
@@ -75,4 +83,20 @@ export function labelOf(key) {
 }
 
 /** The headline keys of each scenario, in the order the summary tables show them. */
-export const HEADLINE = ['score', 'lcp', 'inp', 'resp', 'navMs', 'jsBr', 'heapMb', 'ttft', 'updateMs', 'personalMs', 'ttfb', 'p99', 'vps', 'cacheable', 'loc'];
+export const HEADLINE = [
+	'score',
+	'lcp',
+	'inp',
+	'resp',
+	'navMs',
+	'jsBr',
+	'heapMb',
+	'ttft',
+	'updateMs',
+	'personalMs',
+	'ttfb',
+	'p99',
+	'vps',
+	'cacheable',
+	'loc'
+];

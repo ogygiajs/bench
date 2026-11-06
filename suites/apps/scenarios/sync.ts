@@ -24,7 +24,10 @@ if (!existsSync(from)) {
 }
 const to = join(ROOT, appDir, dest);
 rmSync(to, { recursive: true, force: true });
-cpSync(from, to, { recursive: true, filter: (src) => !src.startsWith(join(from, 'data', 'public')) });
+cpSync(from, to, {
+	recursive: true,
+	filter: (src) => !src.startsWith(join(from, 'data', 'public'))
+});
 const pub = join(ROOT, appDir, publicDir);
 rmSync(pub, { recursive: true, force: true });
 for (const dir of [join(from, 'public'), join(from, 'data', 'public')])

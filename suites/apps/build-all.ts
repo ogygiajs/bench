@@ -18,7 +18,15 @@
 // `ogygia`, and with the base spec into a copy of the same app, `ogygia-base`. Only the ogygia apps
 // are built then; benchmark.ts --ab measures the two against each other in the same job.
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+	cpSync,
+	existsSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	writeFileSync
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APP_ENV } from './harness/serve.ts';
@@ -141,11 +149,23 @@ function installAndBuild(fw) {
 	console.log(`\n▸ ${fw.id}`);
 	run('node', [join(ROOT, 'shared', 'sync.ts'), fw.id]);
 	installAndBuildIn(cwd, fw.install, fw.out ?? (fw.install === 'bun' ? null : 'build'));
-	if (fw.id === 'ogygia' && basePackages) buildBase('frameworks/ogygia', fw.install, fw.out ?? 'build');
+	if (fw.id === 'ogygia' && basePackages)
+		buildBase('frameworks/ogygia', fw.install, fw.out ?? 'build');
 }
 
 // What an app copy leaves behind: installs, build output and the files the build writes.
-const NOT_COPIED = new Set(['node_modules', 'build', 'dist', '.svelte-kit', '.astro', '.mochi', '.bench-build.json', '.ogygia-spec.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']);
+const NOT_COPIED = new Set([
+	'node_modules',
+	'build',
+	'dist',
+	'.svelte-kit',
+	'.astro',
+	'.mochi',
+	'.bench-build.json',
+	'.ogygia-spec.json',
+	'pnpm-workspace.yaml',
+	'pnpm-lock.yaml'
+]);
 
 /**
  * The base build of an A/B run: copy the (already synced) ogygia app to its `ogygia-base`
@@ -212,9 +232,13 @@ function installAndBuildIn(cwd, install, out, client = out ? [out] : [], publicD
 	const buildMs = Math.round(performance.now() - t0);
 	const shared = publicDir ? listFiles(join(cwd, publicDir)) : new Set();
 	const dirs = client.filter((d) => existsSync(join(cwd, d)));
-	const outBytes = dirs.length ? dirs.reduce((s, d) => s + dirBytes(join(cwd, d), shared), 0) : null;
+	const outBytes = dirs.length
+		? dirs.reduce((s, d) => s + dirBytes(join(cwd, d), shared), 0)
+		: null;
 	writeFileSync(join(cwd, '.bench-build.json'), JSON.stringify({ buildMs, outBytes }) + '\n');
-	console.log(`  build ${(buildMs / 1000).toFixed(1)} s${outBytes ? `, client output ${(outBytes / 1024).toFixed(0)} KB` : ''}`);
+	console.log(
+		`  build ${(buildMs / 1000).toFixed(1)} s${outBytes ? `, client output ${(outBytes / 1024).toFixed(0)} KB` : ''}`
+	);
 }
 
 /**
@@ -235,7 +259,10 @@ function pinOgygia(appDir, packages, spec) {
 		`minimumReleaseAge: 0\nblockExoticSubdeps: false\noverrides:\n${yaml}\n`
 	);
 	// benchmark.ts reads this back for the result's `meta` block.
-	writeFileSync(join(appDir, '.ogygia-spec.json'), JSON.stringify({ spec, packages }, null, '\t') + '\n');
+	writeFileSync(
+		join(appDir, '.ogygia-spec.json'),
+		JSON.stringify({ spec, packages }, null, '\t') + '\n'
+	);
 }
 
 const args = parseArgs(process.argv.slice(2));
@@ -318,4 +345,6 @@ const built = [
 	...scenarioApps.map((a) => `${a.scenario}/${a.id}`).filter((id) => !failed.includes(id)),
 	...bases
 ];
-console.log(`\n✓ built ${built.join(', ')}${failed.length ? `\n✗ failed ${failed.join(', ')}` : ''}`);
+console.log(
+	`\n✓ built ${built.join(', ')}${failed.length ? `\n✗ failed ${failed.join(', ')}` : ''}`
+);

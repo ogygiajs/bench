@@ -150,7 +150,8 @@ export async function spawnServer(cwd, start, { ready = '/', env = {} } = {}) {
 			setTimeout(() => child.kill('SIGKILL'), 3000).unref();
 		});
 	for (let i = 0; i < 120; i++) {
-		if (child.exitCode != null) throw new Error(`${start.join(' ')} exited (${child.exitCode}):\n${log}`);
+		if (child.exitCode != null)
+			throw new Error(`${start.join(' ')} exited (${child.exitCode}):\n${log}`);
 		try {
 			const r = await fetch(base + ready, { signal: AbortSignal.timeout(2000) });
 			await r.arrayBuffer();

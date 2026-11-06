@@ -7,7 +7,11 @@ export const BROWSER = {
 	// A CDN-near mobile connection, applied per request. Pages are served uncompressed (the same
 	// `identity` encoding the Lighthouse runs use), so the byte metrics are brotli sizes the harness
 	// computes, not what this profile puts on the wire.
-	network: { latency: 40, downloadThroughput: (10 * 1024 * 1024) / 8, uploadThroughput: (5 * 1024 * 1024) / 8 },
+	network: {
+		latency: 40,
+		downloadThroughput: (10 * 1024 * 1024) / 8,
+		uploadThroughput: (5 * 1024 * 1024) / 8
+	},
 	viewport: { width: 1280, height: 800 },
 	acceptEncoding: 'identity',
 	// "Ready" = the load event, then this long without a request in flight, then an idle callback.

@@ -4,7 +4,9 @@
 import { readFileSync } from 'node:fs';
 import { filterOrders } from './shared/format.ts';
 
-const data = JSON.parse(readFileSync(new URL('./shared/data/dashboard.json', import.meta.url), 'utf8'));
+const data = JSON.parse(
+	readFileSync(new URL('./shared/data/dashboard.json', import.meta.url), 'utf8')
+);
 const QUERY = 'north';
 const FILTERED = filterOrders(data.orders, QUERY, 'all').length;
 const REFUNDED = filterOrders(data.orders, QUERY, 'refunded').length;
@@ -19,7 +21,8 @@ const median = (xs) => {
 };
 
 export default {
-	title: 'Dashboard: live cards and chart, a static chart, a sortable and filterable 1,000-row table',
+	title:
+		'Dashboard: live cards and chart, a static chart, a sortable and filterable 1,000-row table',
 	routes: { home: '/' },
 	ready: '/',
 	lighthouse: ['home'],
@@ -52,7 +55,11 @@ export default {
 			},
 			`document.querySelector('.orders input')?.value === '${QUERY}' && ${countIs(FILTERED)}`
 		);
-		await s.interact('status', (p) => p.selectOption('.orders select', 'refunded'), countIs(REFUNDED));
+		await s.interact(
+			'status',
+			(p) => p.selectOption('.orders select', 'refunded'),
+			countIs(REFUNDED)
+		);
 
 		// Live updates: let six ticks land, then take the median DOM-update time of the last five.
 		await s.until(() => Number(document.querySelector('.live')?.dataset.ticks) >= 6, 20000);

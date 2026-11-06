@@ -48,7 +48,8 @@ function mergePasses(runs) {
 	return out;
 }
 
-const roundKey = (k, v) => round(v, k === 'cls' || k === 'heapMb' ? 3 : k.startsWith('inp') ? 0 : 1);
+const roundKey = (k, v) =>
+	round(v, k === 'cls' || k === 'heapMb' ? 3 : k.startsWith('inp') ? 0 : 1);
 
 /** Every pass's value of each key that more than one pass measured, in pass order. */
 function samplesOf(runs) {
@@ -107,7 +108,10 @@ async function sessionPass(browser, scenario, target) {
 
 /** The requests one cold view of `path` makes to the app's server (document, data, fragments). */
 async function viewRequests(browser, scenario, target, path) {
-	const s = await openSession(browser, target.base, { cookies: scenario.cookies ?? [], throttle: false });
+	const s = await openSession(browser, target.base, {
+		cookies: scenario.cookies ?? [],
+		throttle: false
+	});
 	try {
 		await s.goto(path);
 		return s.serverRequests();
@@ -120,7 +124,10 @@ async function viewRequests(browser, scenario, target, path) {
 async function fidelity(browser, scenario, targets, lines) {
 	const prints = new Map();
 	for (const t of targets) {
-		const s = await openSession(browser, t.base, { cookies: scenario.cookies ?? [], throttle: false });
+		const s = await openSession(browser, t.base, {
+			cookies: scenario.cookies ?? [],
+			throttle: false
+		});
 		try {
 			const parts = [];
 			for (const path of scenario.fidelity.paths) {
@@ -140,7 +147,9 @@ async function fidelity(browser, scenario, targets, lines) {
 	for (const id of ids) {
 		const same = prints.get(id) === ref && !ref.startsWith('ERROR');
 		if (!same) ok = false;
-		lines.push(`- **${id}**: ${same ? 'matches' : 'DIFFERS'} · \`${prints.get(id).replace(/\s+/g, ' ').slice(0, 160)}\``);
+		lines.push(
+			`- **${id}**: ${same ? 'matches' : 'DIFFERS'} · \`${prints.get(id).replace(/\s+/g, ' ').slice(0, 160)}\``
+		);
 	}
 	return ok;
 }
@@ -236,7 +245,13 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				const lh = [];
 				for (const rid of scenario.lighthouse ?? []) {
 					try {
-						lh.push(await runLighthouse(t.base + scenario.routes[rid], chrome.port, BROWSER.acceptEncoding));
+						lh.push(
+							await runLighthouse(
+								t.base + scenario.routes[rid],
+								chrome.port,
+								BROWSER.acceptEncoding
+							)
+						);
 					} catch (e) {
 						slot.errors.push(`lighthouse ${rid}: ${e.message}`);
 					}
@@ -247,7 +262,10 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				}
 				if (slot.view) {
 					try {
-						Object.assign(m, await serverPass(t, scenario, slot, { warm: pass === 1, fast: opts.fast }));
+						Object.assign(
+							m,
+							await serverPass(t, scenario, slot, { warm: pass === 1, fast: opts.fast })
+						);
 					} catch (e) {
 						slot.errors.push(`server pass ${pass}: ${e.message}`);
 					}
@@ -267,7 +285,11 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 			const metrics = { ...slot.fixed, ...mergePasses(slot.passes) };
 			if (scenario.cacheability && t.kind === 'server') {
 				try {
-					const c = await cacheability(t.base, scenario.routes[scenario.cacheability.route], scenario.cacheability.visitors);
+					const c = await cacheability(
+						t.base,
+						scenario.routes[scenario.cacheability.route],
+						scenario.cacheability.visitors
+					);
 					metrics.cacheable = c.cacheable;
 					if (c.reasons.length) slot.notes = c.reasons;
 				} catch (e) {
@@ -283,7 +305,9 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				metrics.buildMs = build.buildMs;
 				metrics.outBytes = build.outBytes;
 			}
-			const composition = [scenario.composition ?? []].flat().map((f) => `scenarios/${name}/shared/${f}`);
+			const composition = [scenario.composition ?? []]
+				.flat()
+				.map((f) => `scenarios/${name}/shared/${f}`);
 			// (an A/B run's base app is an untracked copy: its lines are the source app's)
 			Object.assign(metrics, linesOfCode(root, t.app.source ?? t.app.buildDir, composition) ?? {});
 			const clean = {};
@@ -307,7 +331,9 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 
 /** Run the named scenarios; returns `{ [name]: result }` and writes the fidelity report. */
 export async function runScenarios(root, cfg, opts) {
-	const names = (opts.names ?? SCENARIOS).filter((n) => SCENARIOS.includes(n) && existsSync(join(root, 'scenarios', n, 'scenario.ts')));
+	const names = (opts.names ?? SCENARIOS).filter(
+		(n) => SCENARIOS.includes(n) && existsSync(join(root, 'scenarios', n, 'scenario.ts'))
+	);
 	const lines = [
 		'# Scenario fidelity',
 		'',

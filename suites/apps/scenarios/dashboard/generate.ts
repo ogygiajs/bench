@@ -12,10 +12,43 @@ const next = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff);
 const pick = (xs) => xs[next() % xs.length];
 
 const REGIONS = ['North', 'South', 'East', 'West', 'Central'];
-const PRODUCTS = ['Starter plan', 'Team plan', 'Business plan', 'Add-on seats', 'Support pack', 'Storage 1 TB'];
+const PRODUCTS = [
+	'Starter plan',
+	'Team plan',
+	'Business plan',
+	'Add-on seats',
+	'Support pack',
+	'Storage 1 TB'
+];
 const STATUSES = ['paid', 'paid', 'paid', 'pending', 'refunded', 'failed'];
-const FIRST = ['Ada', 'Grace', 'Alan', 'Linus', 'Margaret', 'Ken', 'Barbara', 'Dennis', 'Frances', 'Edsger', 'Radia', 'Tim'];
-const LAST = ['Lovelace', 'Hopper', 'Turing', 'Torvalds', 'Hamilton', 'Thompson', 'Liskov', 'Ritchie', 'Allen', 'Dijkstra', 'Perlman', 'Berners-Lee'];
+const FIRST = [
+	'Ada',
+	'Grace',
+	'Alan',
+	'Linus',
+	'Margaret',
+	'Ken',
+	'Barbara',
+	'Dennis',
+	'Frances',
+	'Edsger',
+	'Radia',
+	'Tim'
+];
+const LAST = [
+	'Lovelace',
+	'Hopper',
+	'Turing',
+	'Torvalds',
+	'Hamilton',
+	'Thompson',
+	'Liskov',
+	'Ritchie',
+	'Allen',
+	'Dijkstra',
+	'Perlman',
+	'Berners-Lee'
+];
 
 const START = Date.UTC(2026, 9, 1);
 const orders = Array.from({ length: 1000 }, (_, i) => ({
@@ -30,7 +63,9 @@ const orders = Array.from({ length: 1000 }, (_, i) => ({
 
 const regions = REGIONS.map((name) => ({
 	name,
-	revenue: Math.round(orders.filter((o) => o.region === name && o.status === 'paid').reduce((s, o) => s + o.amount, 0))
+	revenue: Math.round(
+		orders.filter((o) => o.region === name && o.status === 'paid').reduce((s, o) => s + o.amount, 0)
+	)
 }));
 
 // The live panel: four KPIs and the last 60 points of revenue per minute.
@@ -51,4 +86,6 @@ mkdirSync(join(OUT, 'public', 'api'), { recursive: true });
 writeFileSync(join(OUT, 'dashboard.json'), JSON.stringify(dashboard));
 // What the client-rendered SPA fetches; the server apps import dashboard.json directly.
 writeFileSync(join(OUT, 'public', 'api', 'dashboard.json'), JSON.stringify(dashboard));
-console.log(`  dashboard: ${orders.length} orders, ${(JSON.stringify(dashboard).length / 1024).toFixed(0)} KB`);
+console.log(
+	`  dashboard: ${orders.length} orders, ${(JSON.stringify(dashboard).length / 1024).toFixed(0)} KB`
+);

@@ -13,7 +13,16 @@ const pick = (xs) => xs[next() % xs.length];
 
 const ADJ = ['Classic', 'Everyday', 'Trail', 'Studio', 'Compact', 'Weekend', 'Urban', 'Field'];
 const NOUN = ['Backpack', 'Jacket', 'Mug', 'Lamp', 'Notebook', 'Headphones', 'Bottle', 'Chair'];
-const COLORS = ['#2563eb', '#16a34a', '#dc2626', '#9333ea', '#ea580c', '#0891b2', '#4b5563', '#ca8a04'];
+const COLORS = [
+	'#2563eb',
+	'#16a34a',
+	'#dc2626',
+	'#9333ea',
+	'#ea580c',
+	'#0891b2',
+	'#4b5563',
+	'#ca8a04'
+];
 const WORDS =
 	'made to last with a light frame and soft finish it fits a busy day and packs away small when you are done so you can take it anywhere'.split(
 		' '

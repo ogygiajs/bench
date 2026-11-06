@@ -42,7 +42,8 @@ const OBSERVER = () => {
 	}
 };
 
-const DESTROYED = /context was destroyed|Execution context|navigation|Target closed|frame was detached/i;
+const DESTROYED =
+	/context was destroyed|Execution context|navigation|Target closed|frame was detached/i;
 
 /**
  * One session: a fresh browser context (cold cache, no cookies but the scenario's), throttled.
@@ -53,8 +54,7 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 		viewport: BROWSER.viewport,
 		extraHTTPHeaders: { 'accept-encoding': BROWSER.acceptEncoding }
 	});
-	if (cookies.length)
-		await context.addCookies(cookies.map((c) => ({ ...c, url: base })));
+	if (cookies.length) await context.addCookies(cookies.map((c) => ({ ...c, url: base })));
 	await context.addInitScript(OBSERVER);
 	const page = await context.newPage();
 	const cdp = await context.newCDPSession(page);
@@ -109,7 +109,9 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 			.evaluate(
 				() =>
 					new Promise((r) =>
-						'requestIdleCallback' in window ? requestIdleCallback(() => r(), { timeout: 2000 }) : setTimeout(r, 50)
+						'requestIdleCallback' in window
+							? requestIdleCallback(() => r(), { timeout: 2000 })
+							: setTimeout(r, 50)
 					)
 			)
 			.catch(() => {});
@@ -229,7 +231,9 @@ export async function openSession(browser, base, { cookies = [], throttle = true
 				if (u.origin !== origin || !['GET', 'POST'].includes(r.method())) continue;
 				const type = r.resourceType();
 				// A fetch an inline script starts while the page parses can be typed `other`.
-				const dynamic = ['document', 'fetch', 'xhr', 'eventsource'].includes(type) || (type === 'other' && !/\.[a-z0-9]+$/i.test(u.pathname));
+				const dynamic =
+					['document', 'fetch', 'xhr', 'eventsource'].includes(type) ||
+					(type === 'other' && !/\.[a-z0-9]+$/i.test(u.pathname));
 				if (!dynamic) continue;
 				const path = u.pathname + u.search;
 				const body = r.method() === 'POST' ? (r.postData() ?? '') : undefined;

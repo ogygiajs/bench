@@ -49,7 +49,10 @@ export async function loadTest(base, view, { cookies = [], duration = SERVER.dur
 					method: r.method,
 					path: r.path,
 					...(r.method === 'POST'
-						? { body: r.body, headers: { ...headers, origin: base, 'content-type': r.contentType ?? 'text/plain' } }
+						? {
+								body: r.body,
+								headers: { ...headers, origin: base, 'content-type': r.contentType ?? 'text/plain' }
+							}
 						: {})
 				}
 	);
@@ -77,7 +80,11 @@ export async function loadTest(base, view, { cookies = [], duration = SERVER.dur
  * A streamed response (the chat reply): time to the first chunk that carries content, and to the
  * end of the stream. Medians over sequential requests.
  */
-export async function streamTiming(base, { path, method = 'POST', body, cookies = [] }, samples = SERVER.streamSamples) {
+export async function streamTiming(
+	base,
+	{ path, method = 'POST', body, cookies = [] },
+	samples = SERVER.streamSamples
+) {
 	const firsts = [];
 	const totals = [];
 	for (let i = 0; i < samples; i++) {

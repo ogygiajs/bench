@@ -85,7 +85,9 @@ function parseArgs(argv) {
 		sha: process.env.BENCH_SHA || null,
 		pr: process.env.BENCH_PR ? Number(process.env.BENCH_PR) : null,
 		scenarios: process.env.BENCH_SCENARIOS || 'all',
-		scenarioPasses: process.env.BENCH_SCENARIO_PASSES ? Number(process.env.BENCH_SCENARIO_PASSES) : null
+		scenarioPasses: process.env.BENCH_SCENARIO_PASSES
+			? Number(process.env.BENCH_SCENARIO_PASSES)
+			: null
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -541,11 +543,19 @@ function runMeta(args, frameworks) {
 		}
 	};
 	// The blog's ogygia app, else the first scenario's (a `--no-blog` run); all install the same spec.
-	const apps = [app, ...Object.values(args.cfg?.scenarios ?? {}).flatMap((s) => s.apps.filter((a) => a.id === 'ogygia').map((a) => join(ROOT, a.dir)))];
+	const apps = [
+		app,
+		...Object.values(args.cfg?.scenarios ?? {}).flatMap((s) =>
+			s.apps.filter((a) => a.id === 'ogygia').map((a) => join(ROOT, a.dir))
+		)
+	];
 	const build = (id, dirs) => {
 		if (!frameworks.some((f) => f.id === id)) return {};
 		const pick = (rel) => dirs.map((dir) => read(join(dir, rel))).find(Boolean) ?? null;
-		return { ogygia: pick('node_modules/ogygia/package.json')?.version ?? null, spec: pick('.ogygia-spec.json')?.spec ?? null };
+		return {
+			ogygia: pick('node_modules/ogygia/package.json')?.version ?? null,
+			spec: pick('.ogygia-spec.json')?.spec ?? null
+		};
 	};
 	const pr = build('ogygia', apps);
 	const base = build(BASE_ID, apps.map(baseDir));
@@ -563,7 +573,11 @@ function runMeta(args, frameworks) {
 		// An A/B run: the base build measured beside the PR's, in this same run.
 		...(base.ogygia || base.spec ? { base: { ...base, sha: args.baseSha } } : {}),
 		// Every timing depends on the machine; a result is only comparable with one from this runner.
-		runner: { cpu: cpus[0]?.model?.trim() ?? null, cores: cpus.length, memGb: Math.round(os.totalmem() / 2 ** 30) },
+		runner: {
+			cpu: cpus[0]?.model?.trim() ?? null,
+			cores: cpus.length,
+			memGb: Math.round(os.totalmem() / 2 ** 30)
+		},
 		runAt: new Date().toISOString()
 	};
 }
@@ -591,7 +605,11 @@ async function main() {
 	if (!args.noBlog) {
 		if (!args.skipFidelity) {
 			console.error('▸ fidelity preflight');
-			const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, fidelityFile(args, 'fidelity.md')));
+			const fidelityOk = await fidelityCheck(
+				frameworks,
+				posts,
+				resolve(ROOT, fidelityFile(args, 'fidelity.md'))
+			);
 			if (!fidelityOk) {
 				console.error(
 					'\nFidelity failed — not publishing numbers. Fix apps or pass --skip-fidelity.'
@@ -635,7 +653,9 @@ async function main() {
 		fidelityFile: fidelityFile(args, 'fidelity-scenarios.md')
 	});
 	const measuredIds = [
-		...new Set([...results, ...Object.values(scenarios).flatMap((s) => s.frameworks)].map((f) => f.id))
+		...new Set(
+			[...results, ...Object.values(scenarios).flatMap((s) => s.frameworks)].map((f) => f.id)
+		)
 	];
 	if (!measuredIds.length) {
 		console.error('\nNothing measured.');
