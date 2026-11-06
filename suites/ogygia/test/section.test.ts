@@ -1,10 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REPORT_SCHEMA } from '@bench/abax';
+import { REPORT_SCHEMA, diffReports } from '@bench/abax';
 import type { CaseReport, Report } from '@bench/abax';
 import { parseComment, upsertSection } from '@bench/compare';
 import { merge_reports } from '../src/run.ts';
-import { HEADING, RESULT_SCHEMA, render_full_summary, render_pr_section } from '../src/section.ts';
+import {
+	CAPS,
+	HEADING,
+	RESULT_SCHEMA,
+	env_note,
+	one_line,
+	render_full_summary,
+	render_pr_section
+} from '../src/section.ts';
 import type { Result } from '../src/section.ts';
 import { select_all, select_changed } from '../src/select.ts';
 
@@ -144,6 +152,101 @@ test('the merged report keeps the environment and every file that did not load',
 		['a', 'b']
 	);
 	assert.equal(merge_reports([report('s', [])], 'x')!.load_errors, undefined);
+});
+
+const sel_one = () => select_changed(new Map([['x.bench.ts', ['x.bench.ts', 'y.ts']]]), ['y.ts']);
+
+test('case names and errors are escaped for a table cell, errors on one line', () => {
+	const failed = { ...case_of('a | b `c`', 1), error: '\n  TypeError: x | y\n    at z\n' };
+	const md = render_full_summary(
+		result({
+			meta: { ...result({}).meta, kind: 'main', pr: null, base: null, merge_base: null },
+			selection: select_all(['x.bench.ts'], 'a full run'),
+			head: report('a', [failed])
+		})
+	);
+	const row = md.split('\n').find((l) => l.startsWith('| `a'))!;
+	assert.equal(row.split(/(?<!\\)\|/).length, 10, 'the row keeps its 8 cells');
+	assert.match(row, /\| `a \\\| b 'c'` \|/);
+	assert.match(row, /failed: `TypeError: x \\\| y` \|$/);
+});
+
+test('every list is capped, with a count of the rest', () => {
+	const benches = Array.from({ length: 30 }, (_, i) => `packages/p/bench/b${i}.bench.ts`);
+	const graphs = new Map(benches.map((b) => [b, [b, 'packages/p/src/x.ts']]));
+	const errors = benches.map((file) => ({ file, command: 'run' as const, error: 'boom' }));
+	const md = render_pr_section(
+		result({
+			selection: select_changed(graphs, ['packages/p/src/x.ts']),
+			load_errors: { head: errors, base: [] }
+		})
+	);
+	assert.equal(
+		md.split('\n').filter((l) => l.startsWith('- `packages/p/bench/')).length,
+		CAPS.selection
+	);
+	assert.match(md, /- and 10 more bench files \(in result\.json\)/);
+	assert.equal(md.split('\n').filter((l) => l.startsWith('- PR: ')).length, CAPS.load_errors);
+	assert.match(md, /- and 20 more files \(in result\.json\)/);
+});
+
+test('bench files the report says did not load are listed', () => {
+	const head = {
+		...report('a', [case_of('c', 1)]),
+		load_errors: [{ file: 'z.bench.ts', error: 'SyntaxError: enum\nmore' }]
+	};
+	const md = render_pr_section(result({ selection: sel_one(), head, base: report('c', []) }));
+	assert.match(md, /- PR: `z\.bench\.ts` \(load\): `SyntaxError: enum`\n/);
+});
+
+test('head and base from different environments: one note, said once', () => {
+	const env = (node: string) => ({ node, v8: '14', platform: 'linux', arch: 'x64', weights: null });
+	const base = { ...report('c', [case_of('c', 1)]), node: 'v26.1.0', env: env('v26.1.0') };
+	const head = { ...report('a', [case_of('c', 2)]), node: 'v26.2.0', env: env('v26.2.0') };
+	const diff = {
+		...diffReports(base, head, { files: null }),
+		engine: null,
+		growth: null,
+		search: null
+	};
+	assert.ok(diff.env && diff.env.length > 0);
+	const md = render_pr_section(result({ selection: sel_one(), head, base, diff }));
+	assert.equal(md.match(/different environments/g)?.length, 1);
+	assert.match(
+		md,
+		/⚠️ PR and base were counted in different environments \(Node v26\.1\.0 vs v26\.2\.0\)/
+	);
+	assert.equal(env_note({ ...diff, env: [] }), null);
+});
+
+test('engine and growth findings are capped', () => {
+	const finding = (i: number) => ({
+		case: 'c',
+		kind: 'deopt' as never,
+		module: 'm.ts',
+		function: 'f',
+		line: i,
+		text: `finding ${i}`
+	});
+	const diff = {
+		...diffReports(report('c', []), report('a', []), { files: null }),
+		engine: {
+			findings: Array.from({ length: 40 }, (_, i) => finding(i)),
+			better: [],
+			unstable: [],
+			failed: []
+		},
+		growth: null,
+		search: null
+	};
+	const md = render_pr_section(result({ selection: sel_one(), diff }));
+	assert.equal(md.split('\n').filter((l) => l.startsWith('- finding ')).length, CAPS.engine);
+	assert.match(md, /25 more engine entries are in result\.json\./);
+});
+
+test('one_line: the first line that says something, trimmed and shortened', () => {
+	assert.equal(one_line('\n\n  Error: x  \nat y'), 'Error: x');
+	assert.equal(one_line('x'.repeat(300), 10), 'xxxxxxx...');
 });
 
 test('a full run lists every case with its counts', () => {
