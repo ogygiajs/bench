@@ -2,6 +2,7 @@ import type { ModuleMeta } from '../meta.ts';
 import { load_prices, builtin_names } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import { array_bytes, object_bytes, string_bytes } from '../layout.ts';
+import { DisposeScope } from './dispose.ts';
 
 /*
  * The counting runtime. Everything the instrumented code calls per block or per call lives here and
@@ -289,6 +290,11 @@ export class Runtime {
 		fr.running = true;
 		this.switch_to(fr.chain!);
 		return v;
+	}
+
+	/** The disposal scope of a block with `await using` (dispose.ts). */
+	scope(): DisposeScope {
+		return new DisposeScope();
 	}
 
 	resume_if(fr: AsyncFrame): void {

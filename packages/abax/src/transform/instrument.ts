@@ -162,6 +162,8 @@ interface Edit {
 	pos: number;
 	open: boolean;
 	text: () => string;
+	/** Replace the source from `pos` to `end` with the text (keeping text inserted at `pos`). */
+	end?: number;
 }
 
 interface Naming {
@@ -189,6 +191,9 @@ class Instrumenter {
 	fn!: FnRec;
 	block!: BlockRec;
 	scope_block: BlockRec | null = null;
+	/** Disposal scope variable of the statement list being walked (`await using`), if any. */
+	using: string | null = null;
+	using_count = 0;
 
 	constructor(code: string, opts: InstrumentOptions) {
 		this.code = code;
@@ -429,9 +434,19 @@ class Instrumenter {
 	}
 
 	/** Returns true when the code after the list needs a new block. */
-	walk_statements(stmts: Array<Node | null>, need_block: boolean): boolean {
+	/**
+	 * `scope`: the list is a block scope of its own (not a switch case, whose declarations share
+	 * the whole switch), so an `await using` in it can get its own disposal scope.
+	 */
+	walk_statements(stmts: Array<Node | null>, need_block: boolean, scope = true): boolean {
 		const prev_scope = this.scope_block;
+		const prev_using = this.using;
 		this.scope_block = need_block ? null : this.block;
+		this.using = null;
+		const present = stmts.filter((s): s is Node => s !== null);
+		if (scope && this.fn.framed && this.fn.meta.async && present.some(is_await_using)) {
+			this.using = this.dispose_scope(present[0].start, present[present.length - 1].end);
+		}
 		let split = need_block;
 		for (const st of stmts) {
 			if (!st) continue;
@@ -442,7 +457,39 @@ class Instrumenter {
 			if (this.walk_statement(st)) split = true;
 		}
 		this.scope_block = prev_scope;
+		this.using = prev_using;
 		return split;
+	}
+
+	/**
+	 * Wrap `start..end` in a disposal scope (runtime/dispose.ts) whose awaits suspend and resume
+	 * the frame. Returns the scope's variable name; `first` is code to run first inside the try.
+	 */
+	dispose_scope(start: number, end: number, first?: (u: string) => string): string {
+		const u = `${this.n.R}u${this.using_count++}`;
+		const { R, r } = this.n;
+		this.open(start, () => `const ${u}=${R}.scope();try{${first ? first(u) : ''}`);
+		this.close(
+			end,
+			() =>
+				`}catch(${u}e){${u}.fail(${u}e)}finally{for(let ${u}p;(${u}p=${u}.step())!==${u};)${R}.resume(${r},await ${R}.suspend(${r},${u}p));${u}.finish()}`
+		);
+		return u;
+	}
+
+	/** `await using a = A, b = B` -> `const a = u.use(A, true), b = u.use(B, true)`. */
+	rewrite_using(decl: Node, u: string): void {
+		const awaited = text(decl, 'kind') === 'await using';
+		const decls = nodes(decl, 'declarations');
+		if (decls.length === 0) return;
+		this.edits.push({ pos: decl.start, end: decls[0].start, open: true, text: () => 'const ' });
+		for (const d of decls) {
+			const init = get(d, 'init');
+			if (!init) continue;
+			this.open(init.start, () => `${u}.use(`);
+			this.close(init.end, () => `,${awaited})`);
+			if (awaited) this.op('await', d.start);
+		}
 	}
 
 	/** A branch body (if/else, loop body, catch, finally) is always a block of its own. */
@@ -476,10 +523,14 @@ class Instrumenter {
 				if (e) this.walk_expr(e);
 				return false;
 			}
-			case 'VariableDeclaration':
+			case 'VariableDeclaration': {
 				if (flag(st, 'declare')) return false;
+				const kind = text(st, 'kind');
+				if (this.using && (kind === 'await using' || kind === 'using'))
+					this.rewrite_using(st, this.using);
 				this.walk_var_decl(st);
 				return false;
+			}
 			case 'FunctionDeclaration': {
 				if (!get(st, 'body')) return false;
 				const id = get(st, 'id');
@@ -565,7 +616,7 @@ class Instrumenter {
 					const cons = nodes(c, 'consequent');
 					if (cons.length > 0) {
 						this.start_block_at(cons[0].start, cons[0].start);
-						this.walk_statements(cons, false);
+						this.walk_statements(cons, false, false);
 					}
 					this.block = prev;
 				}
@@ -653,7 +704,21 @@ class Instrumenter {
 		}
 		this.walk_expr(right);
 		if (of) this.op('iter_init', right.start);
-		this.walk_branch(get(st, 'body')!, is_await ? this.resume_prefix() : undefined, () => {
+		const body = get(st, 'body')!;
+		this.walk_branch(body, is_await ? this.resume_prefix() : undefined, () => {
+			// `for (await using x of xs)`: x is disposed (awaited) after each iteration's body.
+			if (of && is_await_using(left) && f.framed && f.meta.async) {
+				const id = get(nodes(left, 'declarations')[0], 'id')!;
+				const block = body.type === 'BlockStatement';
+				// the scope's first statement registers the loop variable
+				this.dispose_scope(
+					block ? body.start + 1 : body.start,
+					block ? body.end - 1 : body.end,
+					(u) => `${u}.use(${text(id, 'name')},true);`
+				);
+				this.edits.push({ pos: left.start, end: id.start, open: true, text: () => 'const ' });
+				this.op('await', left.start);
+			}
 			// The iterator protocol step of each iteration is a hidden cost of the body block.
 			this.op(of ? 'iter_step' : 'forin_step', left.start);
 			if (left.type === 'VariableDeclaration') {
@@ -739,8 +804,14 @@ class Instrumenter {
 			let first = 0;
 			while (first < stmts.length && typeof stmts[first].directive === 'string') first++;
 			const at = first > 0 ? stmts[first - 1].end : body.start + 1;
-			this.open(at, head);
-			this.close(body.end - 1, tail);
+			if (at >= body.end - 1) {
+				// An empty body (`() => {}`): head and tail share one position, and closing text
+				// would land before opening text there.
+				this.open(at, () => head() + tail());
+			} else {
+				this.open(at, head);
+				this.close(body.end - 1, tail);
+			}
 			this.walk_statements(stmts.slice(first), false);
 		} else {
 			const arrow = this.code.lastIndexOf('=>', body.start);
@@ -1428,6 +1499,10 @@ export function private_bindings(program: Node): Array<{ name: string; live: boo
 	return res;
 }
 
+function is_await_using(st: Node): boolean {
+	return st.type === 'VariableDeclaration' && text(st, 'kind') === 'await using';
+}
+
 function lang_of(filename: string): 'js' | 'jsx' | 'ts' | 'tsx' {
 	if (filename.endsWith('.tsx')) return 'tsx';
 	if (filename.endsWith('.ts') || filename.endsWith('.mts') || filename.endsWith('.cts'))
@@ -1452,7 +1527,8 @@ export function instrument(code: string, opts: InstrumentOptions): InstrumentRes
 
 	const s = new MagicString(code);
 	for (const e of ins.edits) {
-		if (e.open) s.appendRight(e.pos, e.text());
+		if (e.end !== undefined) s.overwrite(e.pos, e.end, e.text(), { contentOnly: true });
+		else if (e.open) s.appendRight(e.pos, e.text());
 		else s.prependLeft(e.pos, e.text());
 	}
 
