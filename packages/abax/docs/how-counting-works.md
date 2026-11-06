@@ -122,14 +122,22 @@ today. A few:
 | `RegExp.prototype.exec`  | 109 + 0.1875 n |
 | `structuredClone`        | 3120 + 105 n   |
 
-The transform marks each call site that may reach a built-in (`R.site_last(...)` around the
-callback or argument), so the charge lands on the line of the call. A built-in called by another
-built-in is not charged twice. A built-in with no price (`Array.prototype.push`, for one) costs
-what any call costs: 4 steps.
+The transform marks each call site that may reach a built-in by name (`x.slice(a)`,
+`structuredClone(v)`, `Array.prototype.map.call(xs, f)`). It wraps the receiver the call runs on
+(`R.rcv(k, x).slice(...)`) and announces the site after the last argument
+(`R.site_last(k, a)`), right before the call. The wrapper charges the built-in to that site only
+when the site names it and it runs on that receiver, so the charge lands on the line of the call.
+Where wrapping the receiver would change what the code does (inside an optional chain, after an
+`await` in the arguments, on `super`), the site is announced without it and the wrapper checks
+that its caller is the module that announced it, from V8's stack.
 
-Code that is not counted, such as a dependency run without `--deps`, costs nothing of its own. The
-priced built-ins it calls are charged to the counted function that called into it, on line 0 in
-the report, because they still happen on that function's behalf.
+So a built-in is charged only when counted code calls it directly. Code that is not counted, a
+dependency run without `--deps` or Node's own JavaScript, costs nothing, and neither do the
+built-ins it calls: a same-named method of uncounted code (`headers.get(...)`, which calls
+`Map.prototype.get` inside) is not a call of the built-in. Before this rule, Node's `URLSearchParams`
+parsing (non-primordial `slice` calls) cost ogygia's flag `override` 651 `slice` calls on Node 26.4
+and 1,151 on Node 26.13. A built-in called by another built-in is not charged twice. A built-in
+with no price (`Array.prototype.push`, for one) costs what any call costs: 4 steps.
 
 Where the prices come from is in [calibration.md](calibration.md).
 
@@ -144,8 +152,12 @@ measuring window:
   `randomInt` come from one seeded generator (sfc32, seed `0xabac`).
 - **Timers.** `setTimeout`, `setInterval` and `setImmediate` go to a fake loop that runs them in
   order of due time, then creation, moving the virtual clock to each one's due time.
-- **IO.** The warm-up run records file reads and `fetch` responses; the measured runs replay them.
-  A read that was not recorded, any write, and any socket (`http`, `https`, `net`) throws.
+- **IO.** The warm-up run records file reads and `fetch` responses; the measured runs replay them,
+  failed reads included (a missing file throws the same error). A read that was not recorded, any
+  write, and any socket (`http`, `https`, `net`) throws.
+- **Working directory.** `process.cwd()` (and `PWD`) is `/abax/root`, which stands for the run
+  root. Code that slices or compares the working directory (ogygia's profiler path helpers) counts
+  the same in every checkout, at any depth. Reads of files under `/abax/root` go to the root.
 - **Finalizers.** `FinalizationRegistry` callbacks only run between runs. A `WeakRef` made in the
   window keeps its target, so `deref()` never changes during a run.
 - **Module state.** Each run imports a fresh copy of the bench file and everything it imports
@@ -164,8 +176,10 @@ The runtime never charges itself. Its own tables are typed arrays and plain obje
 A report places every block on a line of the original source:
 
 - **TypeScript** is stripped by Node's own type stripping, which replaces types with spaces, so
-  offsets and lines stay the same. This also means only erasable TypeScript loads: no `enum`,
-  `namespace` or parameter properties.
+  offsets and lines stay the same. A module stripping cannot run (`enum`, `namespace`,
+  parameter properties) is compiled with the TypeScript compiler (the project's, else Abax's own),
+  and the compiler's source map takes its blocks back to their lines. Bench files get the same
+  treatment, so an `enum` in one does not stop the run.
 - **`.svelte` and `.svelte.ts`** are compiled with the project's own Svelte compiler (server
   output by default). The compiler's source map is combined with the transform's, so a block in
   compiled output reports the `.svelte` line.

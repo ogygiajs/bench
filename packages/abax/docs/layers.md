@@ -79,12 +79,12 @@ function and line.
 
 How long the plain build takes, measured with tinybench. Per case:
 
-| Metric | What                                                                             |
-| ------ | -------------------------------------------------------------------------------- |
-| p50    | Median time of one call. Setup and teardown run outside the timing.              |
-| p99    | 99th percentile.                                                                 |
-| ops/s  | Calls per second, from tinybench's mean.                                         |
-| CPU/op | Process CPU (user + system) per call, minus the CPU of setup and teardown alone. |
+| Metric | What                                                                                                          |
+| ------ | ------------------------------------------------------------------------------------------------------------- |
+| p50    | Median time of one call. Setup and teardown run outside the timing.                                           |
+| p99    | 99th percentile.                                                                                              |
+| ops/s  | Calls per second, from tinybench's mean.                                                                      |
+| CPU/op | Process CPU (user + system) per call, read over batches of calls whose setups ran before the reading started. |
 
 `abax time` compares two trees. Both are loaded in one process and take turns case by case, and
 the side that goes first flips every turn, so warm-up, GC debt and heat land on both sides. The
@@ -103,11 +103,16 @@ Cells show the range over the turns, base then PR, with `⚠️` (worse), `bette
 ```md
 | Case | p50 | p99 | ops/s | CPU/op |
 | --- | --- | --- | --- | --- |
-| `rank: twenty rows` | ≈ 83–84 ns → 84 ns | ≈ 125–167 ns → 125–167 ns | ≈ 10,425,649/s–11,139,814/s → 10,093,572/s–10,297,023/s | ≈ 251–492 ns → 0–380 ns |
+| `rank: twenty rows` | ≈ 83–84 ns → 84 ns | ≈ 125–167 ns → 125–167 ns | ≈ 10,425,649/s–11,139,814/s → 10,093,572/s–10,297,023/s | ≈ 88–91 ns → 89–92 ns |
 ```
 
-That is the quick-start's planted loop: +520 steps, no change in time. CPU/op comes from
-`process.cpuUsage`, whose resolution is coarse next to a call this short, so it can read 0.
+That is the quick-start's planted loop: +520 steps, no change in time.
+
+CPU/op comes from `process.cpuUsage`, which reads the CPU clock in ticks far longer than a short
+call. So the calls are read in batches of about 10 ms, each batch's setups done before its reading
+starts, for a third of the timed phase. When the calls of all batches together used less than
+20 ms of CPU (a cheap call behind a costly setup), the reading is the clock's tick, not the code:
+the cell says `· below resolution` and the metric is not judged.
 
 `abax run --measure time` times one tree and puts p50 next to the steps in the report.
 
@@ -153,8 +158,9 @@ function, `score` was estimated at 960 B (60 objects of 16 B) and V8 allocated 5
 totals look close only because `rank`'s real bytes (1000.9 B, the growing `out` array) are not
 in the estimate.
 
-When every changed line of a function is an elided allocation, the function is left out of the
-step table as well, though its steps went up (here by 600). The diff JSON still has it.
+Elision qualifies the bytes, not the steps. A function whose steps changed is always in the step
+table; when its added allocations are elided, its bytes cell says so (`+960 B (elided)`), and the
+"Where" rows for those lines do too.
 
 Real bytes above the estimate (arrays and strings built-ins return, backing stores that grow) are
 reported, never flagged.
@@ -284,8 +290,9 @@ The modules no scenario loaded are led by insights (`page-insights.js`, 337 func
 beacon, and the compiler and Vite plugin, which run at build time. No scenario uses
 `@ogygia/content` yet.
 
-The function list comes from the packages installed in the `--app` directory. A package that app
-does not install is left out of the table: here only the blog app installs `@ogygia/content`.
+The function list comes from every package installed in any of the `--app` directories
+(`--app a,b,c`), so give it every scenario app: a package only the blog app installs, like
+`@ogygia/content`, is still listed, as not loaded when no scenario ran it.
 
 ## The measurement-source gate
 
@@ -313,8 +320,13 @@ turned on for a codebase that is far from covered. An exemption names a function
 { "exempt": [{ "id": "src/rank.ts > total", "reason": "a one-line sum over rank" }] }
 ```
 
-An exemption covers that function only. A closure inside it (`src/rank.ts > total > reduce:0`)
-is a function of its own and needs its own entry or its own source.
+An exemption covers that function and every function nested in it: the closure inside it
+(`src/rank.ts > total > reduce:0`) is exempt with it. `"nested": false` exempts the function
+alone.
+
+A file the PR moved keeps its functions' history when the gate gets the git range
+(`--repo dir --base sha --head sha`): its unmeasured functions stay old, not new. A new file the
+transform cannot read fails the gate, since its functions are unknown.
 
 On ogygia PR #180 (CI run 42288359583): 1,524 of 8,234 functions (18.5%) had a measurement
 source, 555 through a bench and 969 through recorded test inputs. Of the rest, 2,822 never ran,

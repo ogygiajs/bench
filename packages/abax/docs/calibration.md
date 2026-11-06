@@ -143,6 +143,14 @@ keeps the old ones, says so (`prices.recounted_from`), and the diff ignores them
 machine. Weights only feed the `≈ ns` estimates and the time-led verdict; they never change a
 count.
 
+Every report also records where it was counted (`env`): the Node and V8 versions, the platform
+and architecture, and the version and hash of the weights. `abax diff` names any difference
+between the two reports at the top of its section and leaves engine health out when Node or V8
+differ. Steps are still compared: a count does not depend on the Node version, the machine or
+the checkout path (see [how counting works](how-counting-works.md#built-ins)). Layers written
+into one report (`abax health --out` an existing report) must come from the same Node; Abax
+refuses to mix them.
+
 The real-world check (`suites/ogygia/src/correlate.ts --summarize --prices <file>`) recounts its
 stored measurements with any price file, so a new calibration can be judged on the same commits
 before it is committed.

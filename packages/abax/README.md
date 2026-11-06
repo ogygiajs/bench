@@ -180,9 +180,6 @@ pnpm exec abax diff base.json pr.json --repo .
 matched even when they moved, and changed lines are marked "new code". Without it, lines are
 compared by number.
 
-Node prints an `ExperimentalWarning` for `stripTypeScriptTypes` on every run.
-`NODE_OPTIONS=--no-warnings` hides it.
-
 ## Bench files
 
 ```ts
@@ -239,8 +236,11 @@ public callers.
 
 ### What a bench file can load
 
-- TypeScript that Node can strip: no `enum`, `namespace` or parameter properties. A module with
-  one stops the whole run.
+- TypeScript. Types are stripped, as Node does it. A module that stripping cannot run (`enum`,
+  `namespace`, parameter properties) is compiled with the project's TypeScript, and its lines map
+  back through the compiler's source map.
+- A bench file that throws, does not parse or defines no cases is reported on its own; the other
+  files still run.
 - `.svelte` components and `.svelte.ts` modules, compiled with the project's own Svelte (server
   output). Lines map back to the `.svelte` source.
 - Dependencies run uncounted unless `--deps all` or `--deps devalue,svelte` asks for them; counted
@@ -268,6 +268,10 @@ writes JSON; `diff` and a few others also write markdown.
 
 `health`, `growth` and `search` write their section into the report given by `--out`, so one JSON
 file per commit holds everything `diff` needs.
+
+Exit codes: 0 when everything ran, 1 when a case, a bench file or a layer failed (the report
+says which), 2 when the command line is wrong. Errors are one line; `--debug` adds the stack.
+Ctrl-C stops the run and every process it started.
 
 ## The PR comment
 
@@ -311,20 +315,26 @@ fitted cost in ns. It is not a measurement. Only the time layer measures.
   the network or writes a file throws.
 - Every run gets fresh module state, so a cache filled by one run does not make the next one fast.
 
+- `process.cwd()` is `/abax/root` (the run root), so code that slices or compares the working
+  directory counts the same in every checkout. Files under it still read.
+
 **What changes the count:**
 
 - The code that runs, and how often each block runs.
 - The sizes passed to priced built-ins.
-- Dependencies. Uncounted code costs nothing of its own, but the priced built-ins it calls are
-  charged to the counted function that called into it. A new version of a dependency can move a
-  count.
-- The Node version. Priced built-ins that Node's own JavaScript calls are charged to the counted
-  caller, and that internal code changes between versions.
-- The environment, when the code reads it: a function that slices absolute paths counts more in a
-  deeper directory.
 - The price file. A report records the price version it was counted with. When two reports differ,
   `abax diff` recounts both with the current prices from the units each report keeps, and compares
   those.
+
+**What does not:** the machine, the Node version, the checkout path, and code Abax does not
+count. A priced built-in is charged only when counted code calls it directly. Built-ins that a
+dependency running uncounted or Node's own JavaScript calls are free, whatever counted code called
+into them. ogygia `86e537b` counted in two checkouts at different depths, and under Node 26.4.0
+and 26.13.0: all 57 cases and 934 functions gave the same steps.
+
+A report records Node, V8, the platform and the weights it was counted with. `abax diff` says so
+at the top when two reports differ in any of them, and leaves engine health out: what V8 does is
+only comparable on one V8.
 
 ## Limits
 
@@ -345,13 +355,13 @@ fitted cost in ns. It is not a measurement. Only the time layer measures.
   built-ins return (`split`, `slice`, `map`, `JSON.parse`) and the backing store `push` grows are
   not in it. In the quick start, `rank` is estimated at 16 B and V8 allocates 907.66 B.
 - **Real bytes are per function, not per line.**
-- **Counts match across machines only when Node and paths match.** ogygia `86e537b` counted on CI
-  (Node 26.13.0) and the same tree counted on an M4 Max (Node 26.4.0): 45 of 48 cases gave the
-  same steps, 875 of 879 functions. In the other 3, `override` in the flags package was charged
-  651 `slice` calls on one side and 1,151 on the other, all from code Abax does not count (line 0
-  in the report, most likely Node's own), and two profiler
-  path helpers counted more `startsWith`, `split` and `join` work for a longer checkout path. PR
-  and base always run on one machine, in one job, so this never shows in a comparison.
+- **Built-ins called in ways the transform cannot see are free.** A priced built-in costs steps
+  when counted code calls it by name (`xs.slice(1)`, `structuredClone(v)`, `Array.prototype.map.call(xs, f)`).
+  Through a computed name (`xs['slice']()`) or a variable holding the function
+  (`const s = String.prototype.slice; s.call(x)`), it costs one call.
+- **Paths a module builds from `import.meta.url` are real paths.** Only the working directory is
+  virtual. A function that slices a path made from `import.meta.url` still counts more in a deeper
+  checkout.
 - **Coverage is low today.** ogygia's gate on PR #180: 1,524 of 8,234 functions (18.5%) have a
   measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
   app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
