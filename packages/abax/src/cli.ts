@@ -13,7 +13,7 @@ import { run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
 import { MEASURE_USAGE, measure_command, measure_run, time_section } from './measure/cli.ts';
 
-const USAGE = `abax run <bench files...> [--root dir] [--out report.json] [--deps all|a,b] [--filter text] [--sha sha]
+const USAGE = `abax run <bench files...> [--root dir] [--out report.json] [--deps all|a,b] [--filter text] [--sha sha] [--state fresh|shared]
 abax diff <base.json> <pr.json> [--repo dir] [--base sha] [--head sha] [--out section.md] [--json out.json]
 abax dts <source files...> --out abax-private.d.ts [--tsconfig tsconfig.json]
 abax health <bench files...> [--root dir] [--out report.json] [--filter text] [--warmup 20] [--runs 3] [--check on|off]
@@ -59,6 +59,7 @@ async function main(argv: string[]): Promise<number> {
 			deps,
 			filter: flags.get('filter'),
 			sha: flags.get('sha') ?? null,
+			fresh: flags.get('state') !== 'shared',
 			log: (l) => console.log(l)
 		});
 		await measure_run(report, positional, flags);
