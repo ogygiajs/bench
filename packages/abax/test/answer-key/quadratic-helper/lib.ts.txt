@@ -1,0 +1,32 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function dedupe(tags: string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < tags.length; i++) {
+		let seen = false;
+		for (let j = 0; j < i; j++) {
+			if (tags[j] === tags[i]) seen = true;
+		}
+		if (!seen) out.push(tags[i]);
+	}
+	return out;
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of dedupe(row.tags)) {
+		s += t.length;
+	}
+	return s;
+}
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (const r of rows) {
+		out.push(score(r));
+	}
+	return out;
+}

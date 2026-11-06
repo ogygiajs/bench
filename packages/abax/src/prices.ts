@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import default_prices from '../prices.json' with { type: 'json' };
 
 /** Every op kind the transform prices. A block's ops vector is indexed by this list. */
 export const OP_KINDS = [
@@ -53,18 +54,18 @@ export interface Prices {
 	builtins: Record<string, BuiltinPrice>;
 }
 
-export const PRICES_URL = new URL('../prices.json', import.meta.url);
+function hash_of(prices: Prices): string {
+	return createHash('sha256').update(JSON.stringify(prices)).digest('hex').slice(0, 16);
+}
 
-let cached: { prices: Prices; hash: string } | null = null;
+/** The versioned price file (a JSON import, so a bundled runtime carries it along). */
+const DEFAULT = { prices: default_prices as Prices, hash: hash_of(default_prices as Prices) };
 
+/** The default prices, or another price file (e.g. a calibration candidate). */
 export function load_prices(path?: string | URL): { prices: Prices; hash: string } {
-	if (!path && cached) return cached;
-	const text = readFileSync(path ?? PRICES_URL, 'utf8');
-	const prices = JSON.parse(text) as Prices;
-	const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
-	const out = { prices, hash };
-	if (!path) cached = out;
-	return out;
+	if (!path) return DEFAULT;
+	const prices = JSON.parse(readFileSync(path, 'utf8')) as Prices;
+	return { prices, hash: hash_of(prices) };
 }
 
 /** Price vector aligned with OP_KINDS. */

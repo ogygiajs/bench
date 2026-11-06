@@ -204,7 +204,7 @@ function localize(
 	const base_lines = new Map(b.lines.map((l) => [l.line, l]));
 	const consumed = new Set<number>();
 	const hunk_pr = new Map<number, LineReport[]>();
-	const hunk_base = new Map<number, Stats>();
+	const hunk_base = new Map<number, LineReport[]>();
 
 	for (const pl of p.lines) {
 		const h = lmap.added_in(pl.line);
@@ -224,9 +224,9 @@ function localize(
 		if (consumed.has(bl.line)) continue;
 		const h = lmap.removed_in(bl.line);
 		if (h >= 0) {
-			const acc = hunk_base.get(h) ?? { ...ZERO };
-			add_to(acc, stats(bl));
-			hunk_base.set(h, acc);
+			const list = hunk_base.get(h) ?? [];
+			list.push(bl);
+			hunk_base.set(h, list);
 			continue;
 		}
 		const nl = lmap.forward(bl.line);
@@ -235,19 +235,46 @@ function localize(
 	}
 	const hunks = new Set([...hunk_pr.keys(), ...hunk_base.keys()]);
 	for (const h of [...hunks].sort((x, y) => x - y)) {
-		const added = hunk_pr.get(h) ?? [];
+		const added = (hunk_pr.get(h) ?? []).filter(costly);
+		const removed = (hunk_base.get(h) ?? []).filter(costly);
 		const pr_sum = { ...ZERO };
 		for (const l of added) add_to(pr_sum, stats(l));
-		const base_sum = hunk_base.get(h) ?? ZERO;
+		const base_sum = { ...ZERO };
+		for (const l of removed) add_to(base_sum, stats(l));
+		// A reformatted or renamed hunk costs the same as a whole, however its lines split.
 		if (same(pr_sum, base_sum)) continue;
-		const costly = added.filter((l) => l.steps !== 0 || l.allocations !== 0);
-		if (costly.length === 0) {
-			finding('removed code', lmap.hunks[h].new_start, base_sum, null);
+		// Lines rewritten at the same cost cancel out (`f(r)` -> `f(copy)`).
+		const left = [...removed];
+		const fresh: LineReport[] = [];
+		for (const a of added) {
+			const i = left.findIndex((r) => same(stats(r), stats(a)));
+			if (i === -1) fresh.push(a);
+			else left.splice(i, 1);
+		}
+		if (fresh.length === left.length) {
+			// one-for-one rewrites: the PR line against the line it replaced
+			for (let i = 0; i < fresh.length; i++) {
+				finding('changed', fresh[i].line, stats(left[i]), stats(fresh[i]));
+			}
 			continue;
 		}
-		for (const l of costly) finding('new code', l.line, null, stats(l));
+		for (const a of fresh) finding('new code', a.line, null, stats(a));
+		if (left.length > 0) {
+			const gone = { ...ZERO };
+			for (const r of left) add_to(gone, stats(r));
+			finding(
+				'removed code',
+				fresh.length > 0 ? fresh[0].line : lmap.hunks[h].new_start,
+				gone,
+				null
+			);
+		}
 	}
 	return out;
+}
+
+function costly(l: LineReport): boolean {
+	return l.steps !== 0 || l.allocations !== 0;
 }
 
 function diff_case(
