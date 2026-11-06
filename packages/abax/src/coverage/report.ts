@@ -12,7 +12,8 @@ import type { Inventory } from './inventory.ts';
  *   loaded      its module was loaded by the server or a page, but the function never ran
  *   not loaded  no run loaded its module (build-time code, a feature no scenario uses)
  *
- * Module-level code (`<top>`) is not a function and is left out. For a loaded module the functions
+ * Module-level code (`<top>`) and class field initializers (`<fields>`) are not functions and are
+ * left out. For a loaded module the functions
  * are the ones the counted build's transform listed (the code the app really ran); for the others
  * the package's own file, transformed the same way (inventory.ts).
  */
@@ -117,7 +118,7 @@ export function build_coverage(
 		if (!package_matches(pkg, packages)) continue;
 		const is_loaded = module in loaded;
 		for (const f of (is_loaded ? loaded[module] : all[module]) ?? []) {
-			if (f.kind === 'top') continue;
+			if (f.kind === 'top' || f.kind === 'fields') continue;
 			const id = `${module} > ${f.path}`;
 			const c = calls.get(id);
 			functions.push({
