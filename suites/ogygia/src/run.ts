@@ -58,6 +58,12 @@ function read_report(path: string): Report | null {
 	return JSON.parse(readFileSync(path, 'utf8')) as Report;
 }
 
+/**
+ * How long one command on one bench file may take. A case whose growth is quadratic at 100x (or
+ * that never settles) costs its own part of the report, not the whole run.
+ */
+const LIMIT_MIN: Record<Command | 'time', number> = { run: 15, health: 15, growth: 5, time: 20 };
+
 function tail_of(r: {
 	stdout?: string | null;
 	stderr?: string | null;
@@ -68,14 +74,19 @@ function tail_of(r: {
 	return text.split('\n').slice(-6).join('\n') || `exit ${r.status}`;
 }
 
-function spawn_abax(tree: Tree, args: string[], log_file: string) {
+function spawn_abax(tree: Tree, args: string[], log_file: string, limit_min: number) {
 	const r = spawnSync(process.execPath, [ABAX_CLI, ...args], {
 		cwd: tree.dir,
 		encoding: 'utf8',
 		maxBuffer: 1 << 28,
+		timeout: limit_min * 60_000,
+		killSignal: 'SIGKILL',
 		env: { ...process.env, NODE_OPTIONS: node_options(tree) }
 	});
 	appendFileSync(log_file, `$ abax ${args.join(' ')}\n${r.stdout ?? ''}${r.stderr ?? ''}\n`);
+	if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+		return { ...r, stderr: `abax ${args[0]} did not finish within ${limit_min} min`, stdout: '' };
+	}
 	return r;
 }
 
@@ -97,7 +108,8 @@ function abax(
 	const r = spawn_abax(
 		tree,
 		[command, file, '--root', tree.dir, '--out', out, '--sha', tree.sha, ...extra],
-		log_file
+		log_file,
+		LIMIT_MIN[command]
 	);
 	// Exit 1 is "a case failed": the report holds that failure. A missing part is a crash.
 	const report = read_report(out);
@@ -205,7 +217,8 @@ export function run_time(
 			'--md',
 			join(out_dir, 'time.md')
 		],
-		join(out_dir, 'abax.log')
+		join(out_dir, 'abax.log'),
+		LIMIT_MIN.time
 	);
 	if (!existsSync(out)) {
 		const error = tail_of(r);
