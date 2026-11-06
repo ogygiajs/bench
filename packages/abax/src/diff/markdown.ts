@@ -40,6 +40,11 @@ export function render_markdown(d: DiffResult): string {
 	const flagged = d.changes.filter((c) => c.findings.length > 0);
 	if (!d.prices_match) {
 		lines.push('> Prices differ between the two runs: steps are not comparable.', '');
+	} else if (d.recounted) {
+		lines.push(
+			`> The two runs used different prices: both were recounted with prices v${d.recounted.version}.`,
+			''
+		);
 	}
 	if (flagged.length === 0) {
 		lines.push('No function changed its own steps, allocations or bytes.', '');

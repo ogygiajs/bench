@@ -1,6 +1,8 @@
 import { IDENTITY, LineMap } from './git.ts';
 import type { FileDiff } from './git.ts';
 import type { CaseReport, FunctionReport, LineReport, Report } from '../report.ts';
+import { align_prices } from '../recount.ts';
+import type { Prices } from '../prices.ts';
 
 /*
  * PR vs base (spec 11). Functions are matched by identity (`module > path`), through git file
@@ -62,7 +64,10 @@ export interface DiffResult {
 	failed: string[];
 	missing: { base: string[]; pr: string[] };
 	cases: Array<{ name: string; base_steps: number; pr_steps: number }>;
+	/** Both sides are counted with the same prices (as they came, or after a recount). */
 	prices_match: boolean;
+	/** The prices both sides were recounted with when they came with different ones. */
+	recounted?: { version: number; hash: string } | null;
 }
 
 export interface DiffOptions {
@@ -70,6 +75,8 @@ export interface DiffOptions {
 	files?: FileDiff[] | null;
 	/** Body similarity a renamed function needs to match (0..1, default 0.8). */
 	rename_threshold?: number;
+	/** Prices a recount uses when the two sides differ (default: the current prices.json). */
+	prices?: { prices: Prices; hash: string };
 }
 
 const ZERO: Stats = { steps: 0, allocations: 0, bytes: 0 };
@@ -282,7 +289,8 @@ function diff_case(
 	base: CaseReport,
 	pr: CaseReport,
 	paths: Paths,
-	threshold: number
+	threshold: number,
+	inclusive = true
 ): {
 	changes: FunctionChange[];
 	renames: Array<{ case: string; from: string; to: string }>;
@@ -333,6 +341,8 @@ function diff_case(
 
 	for (const [b, p, renamed_from] of pairs) {
 		const change = function_change(name, b, p, renamed_from);
+		// After a recount inclusive steps still carry the old prices (recount.ts): not compared.
+		if (!inclusive) change.delta.inclusive_steps = 0;
 		const own_same =
 			Math.abs(change.delta.self_steps) < EPS &&
 			change.delta.allocations === 0 &&
@@ -398,7 +408,14 @@ function diff_case(
 	return { changes, renames };
 }
 
-export function diff_reports(base: Report, pr: Report, opts: DiffOptions = {}): DiffResult {
+export function diff_reports(
+	base_report: Report,
+	pr_report: Report,
+	opts: DiffOptions = {}
+): DiffResult {
+	// A price change recounts both sides with one price file (recount.ts).
+	const aligned = align_prices(base_report, pr_report, opts.prices);
+	const { base, pr } = aligned;
 	const paths = new Paths(base, pr, opts.files);
 	const threshold = opts.rename_threshold ?? 0.8;
 	const result: DiffResult = {
@@ -409,7 +426,8 @@ export function diff_reports(base: Report, pr: Report, opts: DiffOptions = {}): 
 		failed: [],
 		missing: { base: [], pr: [] },
 		cases: [],
-		prices_match: base.prices.hash === pr.prices.hash
+		prices_match: aligned.comparable,
+		recounted: aligned.recounted
 	};
 	const pr_cases = new Map(pr.cases.map((c) => [c.name, c]));
 	const base_names = new Set(base.cases.map((c) => c.name));
@@ -422,7 +440,7 @@ export function diff_reports(base: Report, pr: Report, opts: DiffOptions = {}): 
 		if (bc.error || pc.error) result.failed.push(bc.name);
 		if (!bc.stable || !pc.stable) result.unstable.push(bc.name);
 		result.cases.push({ name: bc.name, base_steps: bc.totals.steps, pr_steps: pc.totals.steps });
-		const d = diff_case(bc.name, bc, pc, paths, threshold);
+		const d = diff_case(bc.name, bc, pc, paths, threshold, aligned.recounted === null);
 		result.changes.push(...d.changes);
 		result.renames.push(...d.renames);
 	}
