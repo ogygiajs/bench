@@ -27,6 +27,19 @@ const is_enumerable = Object.prototype.propertyIsEnumerable;
 const reflect_apply = Reflect.apply;
 const is_array = Array.isArray;
 
+/** A run counted more steps than its cap (Runtime.cap): it would not have ended on its own. */
+export class StepCapError extends Error {
+	override name = 'StepCapError';
+	cap: number;
+	steps: number;
+
+	constructor(cap: number, steps: number) {
+		super(`abax: the run went past its step cap of ${cap} steps`);
+		this.cap = cap;
+		this.steps = steps;
+	}
+}
+
 export interface ModuleRecord {
 	meta: ModuleMeta;
 	/** Block counts. */
@@ -146,6 +159,12 @@ export class Runtime {
 	site = -1;
 	/** Stack depth at which a built-in wrapper is running (-1: none); nested built-ins are free. */
 	bdepth = -1;
+	/**
+	 * Step cap of the current run: past it, the next function entry or loop iteration throws a
+	 * StepCapError (and so does every one after it, so no catch keeps the run going). Infinity
+	 * unless the caller sets one (the slow-input search does, per input).
+	 */
+	cap = Infinity;
 
 	price_spread_key: number;
 	price_spread_element: number;
@@ -208,7 +227,13 @@ export class Runtime {
 
 	// ------------------------------------------------------------ call stack
 
+	/** The run went past the step cap. */
+	over(): never {
+		throw new StepCapError(this.cap, this.s[0]);
+	}
+
 	enter(fid: number): number {
+		if (this.s[0] > this.cap) this.over();
 		const d = this.depth;
 		const caller = d > 0 ? this.stack[d - 1] : ROOT;
 		this.calls[fid]++;

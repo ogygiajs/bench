@@ -220,6 +220,8 @@ class Instrumenter {
 	/** Disposal scope variable of the statement list being walked (`await using`), if any. */
 	using: string | null = null;
 	using_count = 0;
+	/** Start of the labels in front of the statement being walked (see take_label). */
+	label_start: number | null = null;
 
 	constructor(code: string, opts: InstrumentOptions) {
 		this.code = code;
@@ -580,13 +582,31 @@ class Instrumenter {
 		this.block = prev;
 	}
 
+	/**
+	 * First thing in a loop body: stop a run that went past the runtime's step cap (Runtime.cap,
+	 * Infinity unless a caller sets one), so an input that makes a loop run forever ends the run.
+	 * Function entries check it too (Runtime.enter).
+	 */
+	cap_check(): () => string {
+		return () => `${this.n.s}[0]>${this.n.R}.cap&&${this.n.R}.over();`;
+	}
+
 	resume_prefix(): (() => string) | undefined {
 		const f = this.fn;
 		if (!f.framed || !(f.meta.async || f.meta.generator)) return undefined;
 		return () => `${this.n.R}.resume_if(${this.n.r});`;
 	}
 
+	/** Start of the labels in front of the statement being walked (null: it has none). */
+	take_label(): number | null {
+		const at = this.label_start;
+		this.label_start = null;
+		return at;
+	}
+
 	walk_statement(st: Node): boolean {
+		// labels belong to the statement right after them, not to statements nested in it
+		if (st.type !== 'LabeledStatement' && st.type !== 'ForOfStatement') this.label_start = null;
 		switch (st.type) {
 			case 'ExpressionStatement': {
 				const e = get(st, 'expression');
@@ -661,18 +681,18 @@ class Instrumenter {
 				}
 				const update = get(st, 'update');
 				if (update) this.expr_block(update);
-				this.walk_branch(get(st, 'body')!);
+				this.walk_branch(get(st, 'body')!, this.cap_check());
 				return true;
 			}
 			case 'WhileStatement': {
 				const test = get(st, 'test')!;
 				const b = this.expr_block(test);
 				this.op('branch', test.start, 1, b);
-				this.walk_branch(get(st, 'body')!);
+				this.walk_branch(get(st, 'body')!, this.cap_check());
 				return true;
 			}
 			case 'DoWhileStatement': {
-				this.walk_branch(get(st, 'body')!);
+				this.walk_branch(get(st, 'body')!, this.cap_check());
 				const test = get(st, 'test')!;
 				const b = this.expr_block(test);
 				this.op('branch', test.start, 1, b);
@@ -680,7 +700,7 @@ class Instrumenter {
 			}
 			case 'ForInStatement':
 			case 'ForOfStatement':
-				this.walk_for_in_of(st);
+				this.walk_for_in_of(st, this.take_label());
 				return true;
 			case 'SwitchStatement': {
 				this.walk_expr(get(st, 'discriminant')!);
@@ -715,7 +735,9 @@ class Instrumenter {
 			}
 			case 'LabeledStatement':
 				// `break label` lands right after the statement: the code there is a block of its own
+				this.label_start ??= st.start;
 				this.walk_statement(get(st, 'body')!);
+				this.label_start = null;
 				return true;
 			case 'WithStatement':
 				this.walk_expr(get(st, 'object')!);
@@ -769,7 +791,8 @@ class Instrumenter {
 		}
 	}
 
-	walk_for_in_of(st: Node): void {
+	/** `label_start`: where the labels in front of the loop start (the loop's own start if none). */
+	walk_for_in_of(st: Node, label_start: number | null = null): void {
 		const of = st.type === 'ForOfStatement';
 		const right = get(st, 'right')!;
 		const left = get(st, 'left')!;
@@ -778,35 +801,46 @@ class Instrumenter {
 		// Outer edits are created before inner ones (see the edit-order note at the top): the
 		// resume after the loop must land outside braces the body may get.
 		if (is_await) {
-			this.close(st.end, () => `;${this.n.R}.resume_if(${this.n.r});`);
-			this.as_arg(right, () => `${this.n.R}.for_await(${this.n.r},`);
+			// The loop leaves with the frame suspended: its iterator's return() is awaited when the
+			// body breaks, returns or throws. Every way out (a `break` to an outer label too) passes
+			// the finally, which resumes it; the labels stay on the loop (`continue label`).
+			const { R, r } = this.n;
+			this.open(label_start ?? st.start, () => 'try{');
+			this.close(st.end, () => `}finally{${R}.resume_if(${r})}`);
+			this.as_arg(right, () => `${R}.for_await(${r},`);
 		}
 		this.walk_expr(right);
 		if (of) this.op('iter_init', right.start);
 		const body = get(st, 'body')!;
-		this.walk_branch(body, is_await ? this.resume_prefix() : undefined, () => {
-			// `for (await using x of xs)`: x is disposed (awaited) after each iteration's body.
-			if (of && is_using(left) && this.suspends()) {
-				const id = get(nodes(left, 'declarations')[0], 'id')!;
-				const block = body.type === 'BlockStatement';
-				const awaited = is_await_using(left);
-				// the scope's first statement registers the loop variable
-				this.dispose_scope(
-					block ? body.start + 1 : body.start,
-					block ? body.end - 1 : body.end,
-					(u) => `${u}.use(${text(id, 'name')},${awaited});`
-				);
-				this.edits.push({ pos: left.start, end: id.start, open: true, text: () => 'const ' });
-				if (awaited) this.op('await', left.start);
+		const resume = is_await ? this.resume_prefix() : undefined;
+		const cap = this.cap_check();
+		this.walk_branch(
+			body,
+			() => (resume ? resume() : '') + cap(),
+			() => {
+				// `for (await using x of xs)`: x is disposed (awaited) after each iteration's body.
+				if (of && is_using(left) && this.suspends()) {
+					const id = get(nodes(left, 'declarations')[0], 'id')!;
+					const block = body.type === 'BlockStatement';
+					const awaited = is_await_using(left);
+					// the scope's first statement registers the loop variable
+					this.dispose_scope(
+						block ? body.start + 1 : body.start,
+						block ? body.end - 1 : body.end,
+						(u) => `${u}.use(${text(id, 'name')},${awaited});`
+					);
+					this.edits.push({ pos: left.start, end: id.start, open: true, text: () => 'const ' });
+					if (awaited) this.op('await', left.start);
+				}
+				// The iterator protocol step of each iteration is a hidden cost of the body block.
+				this.op(of ? 'iter_step' : 'forin_step', left.start);
+				if (left.type === 'VariableDeclaration') {
+					for (const d of nodes(left, 'declarations')) this.walk_pattern(get(d, 'id')!, 'declare');
+				} else {
+					this.walk_pattern(left, 'assign');
+				}
 			}
-			// The iterator protocol step of each iteration is a hidden cost of the body block.
-			this.op(of ? 'iter_step' : 'forin_step', left.start);
-			if (left.type === 'VariableDeclaration') {
-				for (const d of nodes(left, 'declarations')) this.walk_pattern(get(d, 'id')!, 'declare');
-			} else {
-				this.walk_pattern(left, 'assign');
-			}
-		});
+		);
 	}
 
 	// ---------------------------------------------------------------- functions
@@ -894,7 +928,7 @@ class Instrumenter {
 			}
 			this.walk_statements(stmts.slice(first), false);
 		} else {
-			const arrow = this.code.lastIndexOf('=>', body.start);
+			const arrow = this.arrow_token(node, body);
 			this.open(arrow + 2, () => '{' + head() + 'return(');
 			this.close(node.end, () => ')' + tail() + '}');
 			this.walk_expr(body);
@@ -907,6 +941,26 @@ class Instrumenter {
 		this.block = prev_block;
 		this.scope_block = prev_scope;
 		return f;
+	}
+
+	/**
+	 * Offset of an arrow function's `=>`: the first one after its parameters (and TS return type)
+	 * that is not in a comment. A comment before the body may hold one of its own
+	 * (`() => /** @type {(x: X) => void} *\/ (fn)(x)`).
+	 */
+	arrow_token(node: Node, body: Node): number {
+		let i = node.start;
+		for (const p of nodes(node, 'params')) i = Math.max(i, p.end);
+		const rt = get(node, 'returnType');
+		if (rt) i = Math.max(i, rt.end);
+		const code = this.code;
+		while (i < body.start) {
+			if (code.startsWith('/*', i)) i = code.indexOf('*/', i + 2) + 2;
+			else if (code.startsWith('//', i)) i = code.indexOf('\n', i);
+			else if (code.startsWith('=>', i)) return i;
+			else i++;
+		}
+		return code.lastIndexOf('=>', body.start);
 	}
 
 	walk_class(node: Node, name: string): void {

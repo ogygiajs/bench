@@ -1,6 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { counts_by_line, fn_of, load_module, measure } from './helpers.ts';
+import { counts_by_line, fn_of, load_module, measure, rt } from './helpers.ts';
+import { StepCapError } from '../src/runtime/index.ts';
+import { Measurer } from '../src/growth/measure.ts';
+import { search_case } from '../src/search/index.ts';
+import type { BenchCase } from '../src/bench.ts';
 
 /*
  * Bugs the fuzzer (fuzz/) found, each as its minimized program: the instrumented code must do what
@@ -160,4 +164,96 @@ test('using errors are worded as the language words them', async () => {
 	for (const v of [5, {}, { [Symbol.dispose]: 1 }, { [Symbol.asyncDispose]: 1 }]) {
 		for (const a of [false, true]) assert.equal(await m.f(v, a), await p.f(v, a));
 	}
+});
+
+test('leaving a for await loop by a break to an outer label resumes the frame', async () => {
+	// minimized from seed 20: the break skipped the resume after the loop, and the function's
+	// next call was charged to the root
+	const m = await load_module(`function after() {
+	return 1;
+}
+export async function f() {
+	B: {
+		for await (const v of [6, Promise.resolve('x')]) {
+			if (v) break B;
+		}
+	}
+	L: for await (const v of [1, 2]) {
+		for (const w of [1]) {
+			if (v === 1) continue L;
+		}
+	}
+	return after();
+}`);
+	const r = await measure(() => m.f());
+	const callers = r.edges.filter((e) => e.to.endsWith('> after')).map((e) => e.from);
+	assert.deepEqual(callers, [fn_of(r, 'f').id]);
+});
+
+test("an arrow's => is found past comments that hold one", async () => {
+	// from the corpus run: svelte/src/internal/client/dom/elements/attachments.js casts with a
+	// JSDoc comment holding `=>`, and the body was opened there (code that does not parse)
+	const m = await load_module(
+		`export const f = (fn, node) => /** @type {(node: Element) => void} */ (fn)(node);
+export const g = (a) /* => */ => // and =>
+	a + 1;`,
+		'.js'
+	);
+	assert.equal(m.f(((n: number) => n * 2) as never, 4 as never), 8);
+	assert.equal(m.g(1 as never), 2);
+});
+
+test('a run past its step cap ends, in a loop or in recursion, even under a catch-all', async () => {
+	const m = await load_module(`export function spin(n: number) {
+	let i = 0;
+	while (n > 0) i++;
+	return i;
+}
+export function deep(n: number): number {
+	return n > 0 ? deep(n) + 1 : 0;
+}
+export function stubborn() {
+	for (;;) {
+		try {
+			spin(1);
+		} catch {
+			// keeps going, if it could
+		}
+	}
+}`);
+	for (const run of [() => m.spin(1 as never), () => m.deep(1 as never), () => m.stubborn()]) {
+		rt.reset();
+		rt.cap = 5000;
+		try {
+			assert.throws(run, (e: unknown) => e instanceof StepCapError && e.steps > 5000);
+		} finally {
+			rt.cap = Infinity;
+		}
+	}
+	// without a cap nothing changes
+	rt.reset();
+	assert.equal(m.spin(0 as never), 0);
+});
+
+test('the slow-input search finds an input the code never finishes on, and stops there', async () => {
+	const m = await load_module(`export function count_down(n: number) {
+	let steps = 0;
+	while (n !== 0) {
+		n--;
+		steps++;
+	}
+	return steps;
+}`);
+	const c: BenchCase<{ n: number }> = {
+		name: 'count down',
+		file: '',
+		fn: (ctx) => m.count_down(ctx.n as never),
+		setup: () => ({ n: 5 })
+	};
+	const s = await search_case(c as BenchCase, new Measurer(), { evals: 200, steps: 2e5, seed: 1 });
+	assert.equal(s.error, null);
+	assert.equal(s.runaway, true);
+	assert.equal(s.stopped, 'steps');
+	assert.ok(s.worst > 1e5);
+	assert.equal(rt.cap, Infinity);
 });

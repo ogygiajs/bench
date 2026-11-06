@@ -58,10 +58,14 @@ export class Measurer {
 		this.det = new Determinism();
 	}
 
-	/** One run of `c` on `ctx`. Throws what the case throws. */
-	async once(c: BenchCase, ctx: unknown, mode: IoMode): Promise<Snapshot> {
+	/**
+	 * One run of `c` on `ctx`. Throws what the case throws; past `cap` steps, a StepCapError (the
+	 * input makes it run forever, or close to it).
+	 */
+	async once(c: BenchCase, ctx: unknown, mode: IoMode, cap = Infinity): Promise<Snapshot> {
 		const { rt, det, builtins } = this;
 		rt.reset();
+		rt.cap = cap;
 		det.open(mode);
 		builtins.install();
 		let failure: unknown = null;
@@ -79,6 +83,7 @@ export class Measurer {
 		} catch (e) {
 			failure = e;
 		} finally {
+			rt.cap = Infinity;
 			builtins.uninstall();
 			det.close();
 		}
