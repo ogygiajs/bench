@@ -308,7 +308,12 @@ export class Generator {
 				[1, () => `(${this.e('str', d)}).padStart(${r.int(8)}, '.')`],
 				[1, () => `(${this.e('str', d)}).repeat(${r.int(3)})`],
 				[1, () => this.tagged(d)],
-				[1, () => `(${this.e('str', d)}).trim()`]
+				[1, () => `(${this.e('str', d)}).trim()`],
+				// Built-in call shapes whose receiver the transform wraps (or cannot): an optional
+				// call, a receiver that is a sequence, a receiver inside an optional chain.
+				[1, () => `((${r.pick(['null', "'abc'"])})?.slice(1) ?? '')`],
+				[1, () => `(0, ${this.e('str', d)}).slice(1)`],
+				[1, () => `(((${this.e('obj', d)})?.${r.pick(KEYS)} ?? 'xy') + '').slice(1)`]
 			],
 			bool: [
 				[
@@ -333,6 +338,7 @@ export class Generator {
 				[2, () => `(${this.e('arr', d)}).map((x, i) => (${this.callback('any', d)}))`],
 				[2, () => `(${this.e('arr', d)}).filter((x) => ${this.callback('bool', d)})`],
 				[1, () => `(${this.e('arr', d)}).slice(${this.lit('num')})`],
+				[1, () => `Array.prototype.slice.call(${this.e('arr', d)}, ${this.lit('num')})`],
 				[1, () => `(${this.e('str', d)}).split(${r.pick(["''", "','", "'a'", '/b/'])})`],
 				[1, () => `Object.keys(${this.e('obj', d)})`],
 				[

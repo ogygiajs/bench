@@ -63,6 +63,10 @@ on:
         description: 'the repository of that PR'
         type: string
         default: ogygiajs/ogygia
+      app_weights:
+        description: 'also count the app scenarios into real-app weights (kept as an artifact only)'
+        type: boolean
+        default: false
   schedule:
     - cron: '41 3 * * *'
 
@@ -212,7 +216,8 @@ jobs:
   # failure here costs only the weights, and the counts are not held up by it.
   app-weights:
     needs: plan
-    if: needs.plan.outputs.kind == 'main'
+    # A manual run counts them when asked (`app_weights`); only main and nightly runs store them.
+    if: needs.plan.outputs.kind == 'main' || (needs.plan.outputs.kind == 'manual' && inputs.app_weights)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -224,10 +229,11 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
-      # The Node the PR counts are taken on: weights from another Node are not used for ranking.
+      # The apps build on the Node the app benchmark builds them on (bench.yml); the counting below
+      # switches to the Node the PR counts are taken on.
       - uses: actions/setup-node@v4
         with:
-          node-version: 26
+          node-version: 22
 
       - name: Locate the runner's pre-installed Chrome
         run: |
@@ -254,6 +260,11 @@ jobs:
       - name: Build the ogygia apps
         working-directory: suites/apps
         run: node build-all.ts --only ogygia
+
+      # The Node the PR counts are taken on: weights from another Node are not used for ranking.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
 
       # Every phase counted twice; an unstable phase or a scenario that did not run is a warning,
       # and the weights come from what did run.
@@ -282,6 +293,7 @@ jobs:
   # Stores what the app-weights job counted, checked like the counts.
   publish-weights:
     needs: [plan, app-weights]
+    if: needs.plan.outputs.kind == 'main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:

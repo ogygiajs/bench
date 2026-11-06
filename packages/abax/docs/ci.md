@@ -121,11 +121,13 @@ table: steps, allocations, estimated and real bytes, p50 and leaks per case. It 
 
 A main or nightly run also counts the real apps, in an `app-weights` job beside the full run
 (read-only like it, 60 minutes): it waits for the commit's pkg.pr.new build, builds the ogygia app
-of the blog and of every scenario (`build-all.ts --only ogygia`), counts every scenario with
-`suites/apps/abax/run.ts`, and turns the app report into weights with
-`suites/ogygia/src/app-weights.ts`: the same file `abax weights` writes, labelled with the commit
-and stamped with the Node and V8 that counted it. A `publish-weights` job checks the artifact
-(schema, the commit) and stores it on the `results` branch.
+of the blog and of every scenario (`build-all.ts --only ogygia`) on Node 22, as the app benchmark
+does, counts every scenario with `suites/apps/abax/run.ts` on Node 26, the Node PR counts are
+taken on, and turns the app report into weights with `suites/ogygia/src/app-weights.ts`: the same
+file `abax weights` writes, labelled with the commit and stamped with the Node and V8 that counted
+it. A `publish-weights` job checks the artifact (schema, the commit) and stores it on the
+`results` branch. A manual run with `app_weights` counts them too and keeps them as an artifact
+only.
 
 Every main push has its own concurrency group, and the nightly run has another, so no full run
 cancels or replaces another (GitHub keeps only one waiting run per group, so a shared group would
