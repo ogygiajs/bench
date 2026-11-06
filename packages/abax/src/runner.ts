@@ -66,6 +66,8 @@ export async function run_case(
 	fresh?: () => Promise<BenchCase>
 ): Promise<{
 	a: RunResult;
+	/** The second measured run (the self-check compares it with `a`). */
+	b: RunResult;
 	stable: boolean;
 }> {
 	const rt = builtins.runtime;
@@ -104,7 +106,7 @@ export async function run_case(
 	await once('record');
 	const a = await once('replay');
 	const b = await once('replay');
-	return { a, stable: same_counts(a.snap, b.snap) };
+	return { a, b, stable: same_counts(a.snap, b.snap) };
 }
 
 export async function run_benches(opts: RunOptions): Promise<Report> {
