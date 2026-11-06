@@ -161,7 +161,8 @@ export function run_tree(
 	files: string[],
 	out_dir: string,
 	log: (line: string) => void,
-	measure: string | null = null
+	measure: string | null = null,
+	commands: readonly Command[] = ['run', 'health', 'growth']
 ): TreeRun {
 	mkdirSync(out_dir, { recursive: true });
 	const log_file = join(out_dir, 'abax.log');
@@ -170,7 +171,7 @@ export function run_tree(
 	files.forEach((file, i) => {
 		const out = join(out_dir, `${i}.json`);
 		rmSync(out, { force: true });
-		for (const command of ['run', 'health', 'growth'] as const) {
+		for (const command of commands) {
 			log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
 			const error = abax(tree, command, file, out, log_file, measure);
 			if (error !== null) {
@@ -194,7 +195,8 @@ export function run_time(
 	base: Tree,
 	files: string[],
 	out_dir: string,
-	log: (line: string) => void
+	log: (line: string) => void,
+	o: { repeats?: number; time_ms?: number; limit_min?: number } = {}
 ): TimeRun | null {
 	if (files.length === 0) return null;
 	mkdirSync(out_dir, { recursive: true });
@@ -203,6 +205,10 @@ export function run_time(
 	log(
 		`time ${files.length} bench file(s): ${base.sha.slice(0, 12)} and ${head.sha.slice(0, 12)} in turns`
 	);
+	const extra = [
+		...(o.repeats !== undefined ? ['--repeats', String(o.repeats)] : []),
+		...(o.time_ms !== undefined ? ['--time-ms', String(o.time_ms)] : [])
+	];
 	const r = spawn_abax(
 		head,
 		[
@@ -215,10 +221,11 @@ export function run_time(
 			'--out',
 			out,
 			'--md',
-			join(out_dir, 'time.md')
+			join(out_dir, 'time.md'),
+			...extra
 		],
 		join(out_dir, 'abax.log'),
-		LIMIT_MIN.time
+		o.limit_min ?? LIMIT_MIN.time
 	);
 	if (!existsSync(out)) {
 		const error = tail_of(r);

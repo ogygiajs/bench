@@ -37,6 +37,8 @@ export interface Weights {
 	/** Price file the builtin / dynamic features were priced with. */
 	prices: { version: number; hash: string };
 	node: string;
+	/** The machine the points were measured on (cpu, cores, os, node, v8, load). */
+	machine?: import('./points.ts').Machine;
 	/** ns per unit of each feature. */
 	ns: Record<string, number>;
 	/** Families below this R^2 are time-led. */
