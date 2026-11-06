@@ -106,13 +106,8 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 	registerHooks({
 		load(url, context, next) {
 			if (!core.should_instrument(url)) {
-				const r = next(url, context);
-				if (r.format !== 'module-typescript' || r.source == null) return r;
-				const src =
-					typeof r.source === 'string'
-						? r.source
-						: Buffer.from(r.source as Uint8Array).toString('utf8');
-				return { format: 'module', source: core.plain_typescript(url, src), shortCircuit: true };
+				if (!core.is_plain_typescript(url)) return next(url, context);
+				return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
 			}
 			if (core.needs_own_read(url)) {
 				return {

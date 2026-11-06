@@ -9,6 +9,7 @@ import {
 } from '../transform/index.ts';
 import { load_prices } from '../prices.ts';
 import type { Report } from '../report.ts';
+import { cell, code } from '../md.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
 
 /*
@@ -158,6 +159,11 @@ export function measurement_sources(
 export interface Exemption {
 	id: string;
 	reason: string;
+	/**
+	 * An exemption covers the function and every function nested in it (its closures and
+	 * callbacks, `total > reduce:0`). `false`: only the function itself.
+	 */
+	nested?: boolean;
 }
 
 export function read_exemptions(path: string): Exemption[] {
@@ -166,8 +172,31 @@ export function read_exemptions(path: string): Exemption[] {
 	for (const e of list) {
 		if (typeof e.id !== 'string' || typeof e.reason !== 'string' || e.reason.trim() === '')
 			throw new Error(`abax: every exemption needs an id and a reason (${JSON.stringify(e)})`);
+		if (e.nested !== undefined && typeof e.nested !== 'boolean')
+			throw new Error(`abax: an exemption's "nested" is true or false (${JSON.stringify(e)})`);
 	}
 	return list;
+}
+
+/** The exemption that covers `id`: its own, else the closest enclosing one that covers nested. */
+function exemption_for(id: string, exempt: ReadonlyMap<string, Exemption>): Exemption | undefined {
+	const own = exempt.get(id);
+	if (own) return own;
+	let at = id.lastIndexOf(' > ');
+	while (at !== -1) {
+		const outer = exempt.get(id.slice(0, at));
+		// `module > fn`: the module part is never an exemption on its own
+		if (outer && outer.nested !== false) return outer;
+		at = id.lastIndexOf(' > ', at - 1);
+	}
+	return undefined;
+}
+
+export interface GateOptions {
+	/** Base module -> PR module for files the PR moved or renamed (git rename detection). */
+	renames?: ReadonlyMap<string, string>;
+	/** Files of the PR's tree the transform could not read and the base could (they fail the gate). */
+	unreadable?: ReadonlyArray<{ file: string; error: string }>;
 }
 
 export interface GateResult {
@@ -180,16 +209,27 @@ export interface GateResult {
 	exempted: Array<MeasuredFunction & { exemption: string }>;
 	/** Exemptions that name no unmeasured function any more (measured now, or gone). */
 	stale_exemptions: Exemption[];
+	/** New files nothing could read: their functions are unknown, so the gate cannot pass. */
+	unreadable: Array<{ file: string; error: string }>;
 	pass: boolean;
 }
 
 export function gate(
 	head: readonly MeasuredFunction[],
 	base_ids: ReadonlySet<string> | null,
-	exemptions: readonly Exemption[] = []
+	exemptions: readonly Exemption[] = [],
+	o: GateOptions = {}
 ): GateResult {
-	const exempt = new Map(exemptions.map((e) => [e.id, e.reason]));
+	const exempt = new Map(exemptions.map((e) => [e.id, e]));
 	const used = new Set<string>();
+	// A function in a moved file was on the base under its old module.
+	const moved_from = new Map<string, string>();
+	for (const [from, to] of o.renames ?? []) moved_from.set(to, from);
+	const on_base = (f: MeasuredFunction): boolean => {
+		if (base_ids === null || base_ids.has(f.id)) return true;
+		const from = moved_from.get(f.module);
+		return from !== undefined && base_ids.has(`${from} > ${f.path}`);
+	};
 	const out: GateResult = {
 		functions: head.length,
 		measured: 0,
@@ -197,6 +237,7 @@ export function gate(
 		old_unmeasured: [],
 		exempted: [],
 		stale_exemptions: [],
+		unreadable: [...(o.unreadable ?? [])],
 		pass: true
 	};
 	for (const f of head) {
@@ -204,19 +245,19 @@ export function gate(
 			out.measured++;
 			continue;
 		}
-		const why = exempt.get(f.id);
-		if (why !== undefined) {
-			used.add(f.id);
-			out.exempted.push({ ...f, exemption: why });
-		} else if (base_ids === null || base_ids.has(f.id)) out.old_unmeasured.push(f);
+		const e = exemption_for(f.id, exempt);
+		if (e !== undefined) {
+			used.add(e.id);
+			out.exempted.push({ ...f, exemption: e.reason });
+		} else if (on_base(f)) out.old_unmeasured.push(f);
 		else out.new_unmeasured.push(f);
 	}
 	out.stale_exemptions = exemptions.filter((e) => !used.has(e.id));
-	out.pass = out.new_unmeasured.length === 0;
+	out.pass = out.new_unmeasured.length === 0 && out.unreadable.length === 0;
 	return out;
 }
 
-const loc = (f: SourceFunction) => `\`${f.module}:${f.line}\` \`${f.path}\``;
+const loc = (f: SourceFunction) => `${code(`${f.module}:${f.line}`)} ${code(f.path)}`;
 
 export function render_gate(g: GateResult, o: { top?: number } = {}): string {
 	const top = o.top ?? 30;
@@ -247,6 +288,14 @@ export function render_gate(g: GateResult, o: { top?: number } = {}): string {
 		out.push('');
 	} else {
 		out.push('No new function without a measurement source.', '');
+	}
+	if (g.unreadable.length > 0) {
+		out.push(
+			`**${g.unreadable.length} new file${g.unreadable.length === 1 ? '' : 's'} Abax could not read**, so their functions are unknown:`,
+			''
+		);
+		for (const u of g.unreadable) out.push(`- ${code(u.file)}: ${cell(u.error)}`);
+		out.push('');
 	}
 	if (g.stale_exemptions.length > 0) {
 		out.push('Exemptions that no longer apply (measured now, or gone):', '');

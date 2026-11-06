@@ -109,13 +109,14 @@ test('sources and the gate: only new unmeasured functions fail; exemptions need 
 		{ id: m + 'gone', reason: 'removed' }
 	]);
 	assert.equal(g.pass, false);
+	// exempting `arrow` covers the closure nested in it
 	assert.deepEqual(
 		g.new_unmeasured.map((f) => f.path),
-		['arrow > map:0', 'stateful']
+		['stateful']
 	);
 	assert.deepEqual(
 		g.exempted.map((f) => f.path),
-		['arrow']
+		['arrow', 'arrow > map:0']
 	);
 	assert.deepEqual(
 		g.stale_exemptions.map((e) => e.id),
@@ -123,10 +124,38 @@ test('sources and the gate: only new unmeasured functions fail; exemptions need 
 	);
 	assert.deepEqual(g.old_unmeasured.map((f) => f.path).sort(), ['later', 'nothing']);
 	const md = render_gate(g);
-	assert.ok(md.includes('2 new functions with no measurement source'), md);
+	assert.ok(md.includes('1 new function with no measurement source'), md);
 	assert.ok(md.includes('`stateful`'), md);
+	// `nested: false` exempts the function alone
+	const own = gate(measured, base, [{ id: m + 'arrow', reason: 'startup', nested: false }]);
+	assert.deepEqual(
+		own.new_unmeasured.map((f) => f.path),
+		['arrow > map:0', 'stateful']
+	);
 	// without a base (a full run), nothing is new
 	assert.equal(gate(measured, null).pass, true);
+});
+
+test('the gate: a moved file keeps its history; a new file nothing can read fails', () => {
+	const root = temp_dir('abax-gate-');
+	write_files(root, { 'packages/p/src/moved.ts': LIB });
+	const inv = source_inventory(root, [join(root, 'packages/p/src/moved.ts')]);
+	const measured = measurement_sources(inv, new Set(), [], [], new Set());
+	const base = new Set(inv.functions.map((f) => f.id.replace('moved.ts', 'lib.ts')));
+	assert.equal(gate(measured, base).pass, false, 'without the rename every function is new');
+	const renames = new Map([['packages/p/src/lib.ts', 'packages/p/src/moved.ts']]);
+	const g = gate(measured, base, [], { renames });
+	assert.equal(g.pass, true);
+	assert.equal(g.new_unmeasured.length, 0);
+
+	const bad = gate(measured, base, [], {
+		renames,
+		unreadable: [{ file: 'packages/p/src/new.ts', error: 'cannot parse | here' }]
+	});
+	assert.equal(bad.pass, false);
+	const md = render_gate(bad);
+	assert.ok(md.includes('1 new file Abax could not read'), md);
+	assert.ok(md.includes('cannot parse \\| here'), md);
 });
 
 test('merge_records: one record per function, samples deduplicated, conflicts counted', () => {

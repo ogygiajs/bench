@@ -49,6 +49,29 @@ function git(root: string, args: string[]): string | null {
 	}
 }
 
+const real_set_timeout = setTimeout;
+const real_clear_timeout = clearTimeout;
+
+/**
+ * How long setup, teardown or a fresh import may take (outside the measuring window, on the real
+ * clock). The measured call has its own check: a call that waits on nothing the fake loop
+ * controls is reported as never finishing.
+ */
+export const OUTSIDE_LIMIT_MS = 5 * 60_000;
+
+/** `p`, or an error naming `what` when it has not settled within OUTSIDE_LIMIT_MS. */
+function within<T>(p: Promise<T>, what: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const limit = new Promise<never>((_, reject) => {
+		timer = real_set_timeout(
+			() => reject(new Error(`abax: ${what} did not finish within ${OUTSIDE_LIMIT_MS / 1000} s`)),
+			OUTSIDE_LIMIT_MS
+		);
+		timer.unref?.();
+	});
+	return Promise.race([p, limit]).finally(() => real_clear_timeout(timer));
+}
+
 interface RunResult {
 	snap: Snapshot;
 	timers: number;
@@ -73,8 +96,8 @@ export async function run_case(
 }> {
 	const rt = builtins.runtime;
 	const once = async (mode: IoMode): Promise<RunResult> => {
-		const c = fresh ? await fresh() : case_;
-		const ctx = c.setup ? await c.setup() : undefined;
+		const c = fresh ? await within(fresh(), 'loading a fresh copy of the bench file') : case_;
+		const ctx = c.setup ? await within(Promise.resolve(c.setup()), 'setup') : undefined;
 		rt.reset();
 		det.open(mode);
 		builtins.install();
@@ -99,7 +122,7 @@ export async function run_case(
 			det.close();
 		}
 		const snap = rt.snapshot();
-		if (c.teardown) await c.teardown(ctx);
+		if (c.teardown) await within(Promise.resolve(c.teardown(ctx)), 'teardown');
 		det.drain_finalizers();
 		if (failure) throw failure;
 		return { snap, timers: settled.timers, runaway: settled.runaway };
@@ -133,8 +156,10 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		const abs = resolve(f);
 		const file = relative(root, abs).split(sep).join('/');
 		set_current_file(file);
+		const before = cases().length;
 		try {
 			await import(pathToFileURL(abs).href + gen);
+			if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
 		} catch (e) {
 			const error = one_line(e);
 			load_errors.push({ file, error });

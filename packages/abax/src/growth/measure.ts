@@ -9,6 +9,7 @@ import type { Runtime, Snapshot } from '../runtime/index.ts';
 import { Builtins } from '../runtime/builtins.ts';
 import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
+import { one_line } from '../report.ts';
 
 /*
  * Counting a case on an input of our choosing (growth and slow-input search). The case runs in the
@@ -24,6 +25,7 @@ export interface LoadOptions {
 	deps?: LoaderConfig['deps'];
 	svelte?: LoaderConfig['svelte'];
 	filter?: string;
+	log?: (line: string) => void;
 }
 
 /** Register the counting loader (once per process) and import the bench files. */
@@ -39,8 +41,14 @@ export async function load_cases(opts: LoadOptions): Promise<BenchCase[]> {
 	const start = cases().length;
 	for (const f of opts.files) {
 		const abs = resolve(f);
-		set_current_file(relative(root, abs).split(sep).join('/'));
-		await import(pathToFileURL(abs).href);
+		const file = relative(root, abs).split(sep).join('/');
+		set_current_file(file);
+		try {
+			await import(pathToFileURL(abs).href);
+		} catch (e) {
+			// One file that does not load costs only its own cases.
+			(opts.log ?? console.error)(`FAILED   ${file}: ${one_line(e)}`);
+		}
 	}
 	let list = cases().slice(start);
 	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));

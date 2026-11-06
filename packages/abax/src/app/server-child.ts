@@ -15,6 +15,10 @@ import { unstable_functions } from './stability.ts';
 import { add_loaded } from './types.ts';
 import type { LoadedModules } from './types.ts';
 import type { AppRequest, ChildMessage, CountedServerCase, ParentMessage } from './server.ts';
+import { watch_parent } from '../proc.ts';
+
+// The parent gone (its IPC channel closed): the listening server must not keep this alive.
+watch_parent();
 
 /*
  * The counted SvelteKit server, in a process of its own (server.ts starts it).

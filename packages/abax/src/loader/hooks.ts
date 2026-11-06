@@ -53,13 +53,8 @@ export async function load(url: string, context: object, next: NextLoad): Promis
 	if (c.is_virtual(url))
 		return { format: 'module', source: c.virtual_source(url), shortCircuit: true };
 	if (!c.should_instrument(url)) {
-		const r = await next(url, context);
-		if (r.format !== 'module-typescript' || r.source == null) return r;
-		const src =
-			typeof r.source === 'string'
-				? r.source
-				: Buffer.from(r.source as Uint8Array).toString('utf8');
-		return { format: 'module', source: c.plain_typescript(url, src), shortCircuit: true };
+		if (!c.is_plain_typescript(url)) return next(url, context);
+		return { format: 'module', source: c.plain_typescript(url), shortCircuit: true };
 	}
 	if (c.needs_own_read(url)) {
 		return {

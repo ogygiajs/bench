@@ -22,13 +22,8 @@ export function register_abax(config: LoaderConfig): LoaderCore {
 				return { format: 'module', source: core.virtual_source(url), shortCircuit: true };
 			}
 			if (!core.should_instrument(url)) {
-				const r = next(url, context);
-				if (r.format !== 'module-typescript' || r.source == null) return r;
-				const src =
-					typeof r.source === 'string'
-						? r.source
-						: Buffer.from(r.source as Uint8Array).toString('utf8');
-				return { format: 'module', source: core.plain_typescript(url, src), shortCircuit: true };
+				if (!core.is_plain_typescript(url)) return next(url, context);
+				return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
 			}
 			if (core.needs_own_read(url)) {
 				const code = core.instrument(url, core.read(url), null);

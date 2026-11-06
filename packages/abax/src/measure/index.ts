@@ -1,4 +1,5 @@
 import { relative, resolve, sep } from 'node:path';
+import { one_line } from '../report.ts';
 import type { CaseReport, Report } from '../report.ts';
 import { with_measured } from '../calibrate/estimate.ts';
 import { run_child } from './spawn.ts';
@@ -31,20 +32,32 @@ function rel_files(root: string, files: string[]): string[] {
 	return files.map((f) => relative(root, resolve(f)).split(sep).join('/'));
 }
 
+/**
+ * One layer's results by case. A child that crashed or ran out of time fails the layer for every
+ * case of the report (the error is in each case's `measure.errors`), and the next layer still runs.
+ */
 async function layer<T>(
 	kind: Layer,
 	o: MeasureOptions,
-	options: object | undefined
+	options: object | undefined,
+	report: Report
 ): Promise<Map<string, CaseResult<T>>> {
 	const root = resolve(o.root);
-	const res = await run_child<Array<CaseResult<T>>>({
-		kind,
-		roots: [root],
-		files: [rel_files(root, o.files)],
-		filter: o.filter ?? null,
-		options: options ?? {}
-	});
-	return new Map(res.map((c) => [`${c.file} > ${c.name}`, c]));
+	try {
+		const res = await run_child<Array<CaseResult<T>>>({
+			kind,
+			roots: [root],
+			files: [rel_files(root, o.files)],
+			filter: o.filter ?? null,
+			options: options ?? {}
+		});
+		return new Map(res.map((c) => [`${c.file} > ${c.name}`, c]));
+	} catch (e) {
+		const msg = one_line(e);
+		o.log?.(`FAILED   ${kind}: ${msg}`);
+		for (const c of report.cases) if (!c.error) fail(c, kind, msg);
+		return new Map();
+	}
 }
 
 function fail(c: CaseReport, layer: Layer, error: string): void {
@@ -55,7 +68,7 @@ function fail(c: CaseReport, layer: Layer, error: string): void {
 export async function measure_layers(report: Report, o: MeasureOptions): Promise<Report> {
 	const key = (c: CaseReport) => `${c.file} > ${c.name}`;
 	if (o.layers.includes('time')) {
-		const r = await layer<TimeStats>('time', o, o.time);
+		const r = await layer<TimeStats>('time', o, o.time, report);
 		for (const c of report.cases) {
 			const t = r.get(key(c));
 			if (!t) continue;
@@ -73,7 +86,7 @@ export async function measure_layers(report: Report, o: MeasureOptions): Promise
 		}
 	}
 	if (o.layers.includes('bytes')) {
-		const r = await layer<BytesResult>('bytes', o, o.bytes);
+		const r = await layer<BytesResult>('bytes', o, o.bytes, report);
 		for (const c of report.cases) {
 			const b = r.get(key(c));
 			if (!b) continue;
@@ -90,7 +103,7 @@ export async function measure_layers(report: Report, o: MeasureOptions): Promise
 		}
 	}
 	if (o.layers.includes('leaks')) {
-		const r = await layer<LeakResult>('leaks', o, o.leaks);
+		const r = await layer<LeakResult>('leaks', o, o.leaks, report);
 		for (const c of report.cases) {
 			const l = r.get(key(c));
 			if (!l) continue;

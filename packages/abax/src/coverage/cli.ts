@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Report } from '../report.ts';
+import { git_diff } from '../diff/git.ts';
+import { UsageError } from '../usage.ts';
 import {
 	bench_reached,
 	gate,
@@ -32,7 +34,7 @@ import type { ReplayResult } from './recorder.ts';
 
 export const COVERAGE_USAGE = `abax inventory [files...] [--list files.txt] --root dir --out inventory.json [--reports a.json,b.json --targets targets.json]
 abax replay --records dir --root dir --out replay.json
-abax unmeasured --inventory inventory.json [--reports a.json] [--records dir] [--replay replay.json] [--skipped skipped.json] [--base-inventory base.json] [--exempt file] [--out gate.json] [--md gate.md]`;
+abax unmeasured --inventory inventory.json [--reports a.json] [--records dir] [--replay replay.json] [--skipped skipped.json] [--base-inventory base.json] [--repo dir --base sha --head sha] [--exempt file] [--out gate.json] [--md gate.md]`;
 
 type Flags = Map<string, string>;
 
@@ -57,10 +59,8 @@ export async function coverage_command(
 			: [];
 		const files = [...positional, ...list].map((f) => (isAbsolute(f) ? f : join(root, f)));
 		const out = flags.get('out');
-		if (!out || files.length === 0) {
-			console.error(COVERAGE_USAGE);
-			return 2;
-		}
+		if (!out) throw new UsageError('--out <inventory.json> is required');
+		if (files.length === 0) throw new UsageError('which files? (none given, and no --list)');
 		const inv = source_inventory(root, files);
 		writeFileSync(out, JSON.stringify(inv, null, '\t') + '\n');
 		console.log(
@@ -79,10 +79,8 @@ export async function coverage_command(
 	if (cmd === 'replay') {
 		const dir = flags.get('records');
 		const out = flags.get('out');
-		if (!dir || !out) {
-			console.error(COVERAGE_USAGE);
-			return 2;
-		}
+		if (!dir) throw new UsageError('--records <dir> is required');
+		if (!out) throw new UsageError('--out <replay.json> is required');
 		const records = read_record_dir(dir);
 		const results = await replay_records(
 			resolve(flags.get('root') ?? process.cwd()),
@@ -99,10 +97,7 @@ export async function coverage_command(
 	}
 	if (cmd === 'unmeasured') {
 		const inv_path = flags.get('inventory');
-		if (!inv_path) {
-			console.error(COVERAGE_USAGE);
-			return 2;
-		}
+		if (!inv_path) throw new UsageError('--inventory <inventory.json> is required');
 		const inv = read<SourceInventory>(inv_path);
 		const records = flags.has('records') ? read_record_dir(flags.get('records')!) : [];
 		const replays = flags.has('replay') ? read<ReplayResult[]>(flags.get('replay')!) : [];
@@ -117,10 +112,23 @@ export async function coverage_command(
 			skipped
 		);
 		const base = flags.get('base-inventory');
-		const base_ids = base ? new Set(read<SourceInventory>(base).functions.map((f) => f.id)) : null;
+		const base_inv = base ? read<SourceInventory>(base) : null;
+		const base_ids = base_inv ? new Set(base_inv.functions.map((f) => f.id)) : null;
 		const exempt_path = flags.get('exempt');
 		const exemptions = exempt_path && existsSync(exempt_path) ? read_exemptions(exempt_path) : [];
-		const g = gate(measured, base_ids, exemptions);
+		// Files the PR moved keep their functions' history (git rename detection).
+		const repo = flags.get('repo');
+		const renames = new Map<string, string>();
+		if (repo && flags.get('base') && flags.get('head')) {
+			for (const f of git_diff(resolve(repo), flags.get('base')!, flags.get('head')!)) {
+				if (f.old_path && f.new_path && f.old_path !== f.new_path)
+					renames.set(f.old_path, f.new_path);
+			}
+		}
+		// A file nothing could read on the PR's tree, that the base could read (or did not have).
+		const base_unreadable = new Set((base_inv?.errors ?? []).map((e) => e.file));
+		const unreadable = inv.errors.filter((e) => !base_unreadable.has(e.file));
+		const g = gate(measured, base_ids, exemptions, { renames, unreadable });
 		const md = render_gate(g);
 		const out = flags.get('out');
 		if (out) writeFileSync(out, JSON.stringify({ ...g, all: measured }, null, '\t') + '\n');

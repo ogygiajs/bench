@@ -96,9 +96,15 @@ export class LoaderCore {
 		return src;
 	}
 
-	/** True when the load hook must read the file itself (the default loader rejects .svelte). */
+	/**
+	 * True when the load hook must read the file itself: the default loader rejects .svelte, and
+	 * strips TypeScript only (it throws on an `enum` before a hook sees the source).
+	 */
 	needs_own_read(url: string): boolean {
-		return url.startsWith('file:') && fileURLToPath(url).endsWith('.svelte');
+		return (
+			url.startsWith('file:') &&
+			(fileURLToPath(url).endsWith('.svelte') || this.is_plain_typescript(url))
+		);
 	}
 
 	read(url: string): string {
@@ -106,11 +112,23 @@ export class LoaderCore {
 	}
 
 	/**
-	 * A TypeScript module that is not counted (a bench file): as JS, compiled when type stripping
-	 * cannot run it (an `enum` in a bench file must not stop the run).
+	 * A TypeScript ES module this loader reads itself although it is not counted (a bench file):
+	 * Node's own loader strips types only, and an `enum` in a bench file must not stop the run.
+	 * Packages in node_modules are left to Node (it does not strip types there at all).
 	 */
-	plain_typescript(url: string, source: string): string {
-		const out = ts_to_js(source, fileURLToPath(url));
+	is_plain_typescript(url: string): boolean {
+		if (!url.startsWith('file:')) return false;
+		const path = fileURLToPath(url);
+		return (
+			(path.endsWith('.ts') || path.endsWith('.mts')) &&
+			!path.endsWith('.d.ts') &&
+			package_name(path) === null
+		);
+	}
+
+	/** That module as JS: types stripped, or compiled when stripping cannot run it. */
+	plain_typescript(url: string): string {
+		const out = ts_to_js(this.read(url), fileURLToPath(url));
 		return out.map === null ? out.code : out.code + inline_map(out.map as object);
 	}
 

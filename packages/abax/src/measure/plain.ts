@@ -87,41 +87,44 @@ export function register_plain(config: PlainConfig): void {
 		load(url, context, next) {
 			if (!url.startsWith('file:')) return next(url, context);
 			const path = fileURLToPath(url);
-			if (!is_plain_source(path, cfg.roots)) return compiled_if_needed(next(url, context), path);
+			// TypeScript is read here, not by Node's loader: it throws on an `enum` before a hook
+			// sees the source. What stripping can run goes back to Node as TypeScript (it keeps every
+			// offset); the rest is the same compile the counting build used.
+			const ts = is_own_typescript(path);
+			const plain = is_plain_source(path, cfg.roots);
+			if (!plain && !ts) return next(url, context);
 			if (is_svelte_module(path)) {
 				const { code, map } = executed_code(path, readFileSync(path, 'utf8'), cfg.svelte);
 				const js = code + expose_suffix(code, path, 'js');
 				return { format: 'module', source: js + inline_map(map!), shortCircuit: true };
 			}
+			if (ts) {
+				const src = readFileSync(path, 'utf8');
+				const { code, map } = ts_to_js(src, path);
+				if (map !== null) {
+					const js = plain ? code + expose_suffix(code, path, 'js') : code;
+					return { format: 'module', source: js + inline_map(map as object), shortCircuit: true };
+				}
+				const source = plain ? src + expose_suffix(src, path) : src;
+				return { format: 'module-typescript', source, shortCircuit: true };
+			}
 			const r = next(url, context);
 			if (r.source == null) return r;
-			if (r.format !== 'module' && r.format !== 'module-typescript') return r;
+			if (r.format !== 'module') return r;
 			const src =
 				typeof r.source === 'string'
 					? r.source
 					: Buffer.from(r.source as Uint8Array).toString('utf8');
-			if (r.format === 'module-typescript') {
-				// TypeScript stripping cannot run (an enum): the same compile the counting build used.
-				const { code, map } = executed_code(path, src);
-				if (map !== null) {
-					const js = code + expose_suffix(code, path, 'js');
-					return { format: 'module', source: js + inline_map(map), shortCircuit: true };
-				}
-			}
 			return { ...r, source: src + expose_suffix(src, path), shortCircuit: true };
 		}
 	});
 }
 
-/** A TypeScript module Node's stripping cannot run, compiled; anything else as loaded. */
-function compiled_if_needed<R extends { format?: string | null; source?: unknown }>(
-	r: R,
-	path: string
-): R | { format: 'module'; source: string; shortCircuit: true } {
-	if (r.format !== 'module-typescript' || r.source == null) return r;
-	const src =
-		typeof r.source === 'string' ? r.source : Buffer.from(r.source as Uint8Array).toString('utf8');
-	const { code, map } = ts_to_js(src, path);
-	if (map === null) return r;
-	return { format: 'module', source: code + inline_map(map as object), shortCircuit: true };
+/** An ES module in TypeScript outside node_modules (Node does not strip types in packages). */
+function is_own_typescript(path: string): boolean {
+	return (
+		(path.endsWith('.ts') || path.endsWith('.mts')) &&
+		!path.endsWith('.d.ts') &&
+		!path.includes(`${sep}node_modules${sep}`)
+	);
 }

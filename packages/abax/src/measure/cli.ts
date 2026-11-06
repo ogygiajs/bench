@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { UsageError } from '../usage.ts';
 import { relative, resolve, sep } from 'node:path';
 import type { Report } from '../report.ts';
 import { measure_layers, parse_layers } from './index.ts';
@@ -68,13 +69,13 @@ export async function measure_command(
 	if (cmd === 'time') {
 		const base = flags.get('base');
 		const pr = flags.get('pr');
-		if (!base || !pr || positional.length === 0) {
-			console.error(MEASURE_USAGE);
-			return 2;
-		}
+		if (!base || !pr) throw new UsageError('--base <dir> and --pr <dir> are required');
 		const roots = [resolve(base), resolve(pr)];
 		const rel = (root: string) =>
 			positional.map((f) => relative(root, resolve(root, f)).split(sep).join('/'));
+		// The files are named once and read on both trees; the PR's are the ones that must exist.
+		for (const f of positional)
+			if (!existsSync(resolve(roots[1], f))) throw new UsageError(`no such file in --pr: ${f}`);
 		const t = await run_child<TimeComparison>({
 			kind: 'time_ab',
 			roots,
@@ -123,10 +124,7 @@ export async function measure_command(
 			return 0;
 		}
 		if (what === 'agree') {
-			if (files.length !== 2) {
-				console.error(MEASURE_USAGE);
-				return 2;
-			}
+			if (files.length !== 2) throw new UsageError('calibrate agree takes two files');
 			const tol = { shape_pct: num(flags, 'tolerance') ?? 3, shift_pct: num(flags, 'shift') ?? 5 };
 			const a = agree_files(files[0], files[1], tol);
 			for (const line of a.lines) log(line);
@@ -150,8 +148,9 @@ export async function measure_command(
 			log(`weights v${weights.version}: R^2 ${weights.fit.r2} over ${weights.fit.points} points`);
 			return 0;
 		}
-		console.error(MEASURE_USAGE);
-		return 2;
+		throw new UsageError(
+			`calibrate takes prices, points, agree or weights, not ${JSON.stringify(what)}`
+		);
 	}
 	return null;
 }

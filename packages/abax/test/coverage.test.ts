@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { package_inventory } from '../src/coverage/inventory.ts';
+import { installed_packages, package_inventory } from '../src/coverage/inventory.ts';
 import { build_coverage, render_coverage } from '../src/coverage/report.ts';
 import type { AppReport } from '../src/app/types.ts';
 import type { FunctionReport } from '../src/report.ts';
@@ -46,6 +46,30 @@ function fn(module: string, path: string, calls: number): FunctionReport {
 		lines: []
 	};
 }
+
+test('the inventory is the union of every scenario app: a package one app installs is listed', () => {
+	const a = app_dir();
+	const b = temp_dir('abax-cov-b-');
+	write_files(b, {
+		'package.json': '{"name":"blog","private":true}',
+		'node_modules/@x/content/package.json': '{"name":"@x/content","version":"1.0.0"}',
+		'node_modules/@x/content/index.js': 'export function render(md) { return md; }'
+	});
+	assert.deepEqual(installed_packages([a, b], ['@x/*', 'other']), [
+		'@x/content',
+		'@x/core',
+		'other'
+	]);
+	const inv = package_inventory([a, b], installed_packages([a, b], ['@x/*']));
+	assert.deepEqual(Object.keys(inv).sort(), [
+		'@x/content/index.js',
+		'@x/core/dist/build-time.js',
+		'@x/core/dist/used.js'
+	]);
+	// No report reached @x/content: it is listed, not loaded
+	const cov = build_coverage([], ['@x/*'], inv);
+	assert.equal(cov.packages['@x/content']?.not_loaded, 1);
+});
 
 test('the inventory lists every function of a package, nested ones too, and nothing else', () => {
 	const inv = package_inventory(app_dir(), ['@x/core']);

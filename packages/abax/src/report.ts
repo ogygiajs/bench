@@ -48,10 +48,12 @@ export interface SiteReport {
 
 export interface BuiltinReport {
 	name: string;
-	/** 0 when the call shape gave no site (charged to the function, not a line). */
+	/** The call's line (0 in reports from before every charge had a site). */
 	line: number;
 	calls: number;
 	steps: number;
+	/** This site's size units (a recount prices them again: two sites on one line stay apart). */
+	units?: Units;
 }
 
 export interface LineReport {
@@ -337,7 +339,8 @@ export function build_case_report(
 				name: bs.name,
 				line: bs.line,
 				calls: snap.bsite_calls[mod.b + k],
-				steps: round(steps)
+				steps: round(steps),
+				...(u ? { units: rounded(u) } : {})
 			});
 		}
 		for (const f of per_fn) {

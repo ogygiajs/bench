@@ -40,11 +40,23 @@ function recount_function(f: FunctionReport, prices: Prices): FunctionReport {
 		steps: l.units ? price_units(l.units, prices) : l.steps
 	}));
 	const line_units = new Map(f.lines.map((l) => [l.line, l.units ?? {}]));
+	// Entries that share a line and a name (`xs.map(f).map(g)`) split their line's units; a report
+	// that keeps units per site prices each one exactly.
+	const group = (b: { line: number; name: string }) => `${b.line} ${b.name}`;
+	const counted = new Map<string, number>();
+	for (const b of f.builtins) counted.set(group(b), (counted.get(group(b)) ?? 0) + b.steps);
 	const sited = new Map<string, number>();
 	const builtins = f.builtins.map((b) => {
 		if (b.line === 0) return b;
-		const u = pick(line_units.get(b.line) ?? {}, (k) => builtin_name_of_unit(k) === b.name);
-		const steps = price_units(u, prices);
+		let steps: number;
+		if (b.units) {
+			steps = price_units(b.units, prices);
+		} else {
+			const u = pick(line_units.get(b.line) ?? {}, (k) => builtin_name_of_unit(k) === b.name);
+			const all = counted.get(group(b)) ?? 0;
+			const share = all > 0 ? b.steps / all : 1;
+			steps = Math.round(price_units(u, prices) * share * 1e6) / 1e6;
+		}
 		sited.set(b.name, (sited.get(b.name) ?? 0) + steps);
 		return { ...b, steps };
 	});

@@ -1,6 +1,10 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import './warnings.ts';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { exit_on_signals } from './proc.ts';
+import { UsageError } from './usage.ts';
+import { REPORT_SCHEMA, one_line } from './report.ts';
 import { run_benches } from './runner.ts';
 import { diff_reports } from './diff/index.ts';
 import { render_markdown } from './diff/markdown.ts';
@@ -41,14 +45,14 @@ Layers (each writes its section into --out, default abax-report.json)
 
 Real apps and the measurement-source gate
   abax weights <app-report.json...> [--out app-weights.json]
-  abax coverage <app-report.json...> --app <installed app dir> [--packages ogygia,@ogygia/*]
+  abax coverage <app-report.json...> --app <app dir,app dir...> [--packages ogygia,@ogygia/*]
       [--out coverage.json] [--md coverage.md]
   abax inventory [files...] [--list files.txt] --root dir --out inventory.json
       [--reports a.json,b.json --targets targets.json]
   abax replay --records dir --root dir --out replay.json
   abax unmeasured --inventory inventory.json [--reports a.json,b.json] [--records dir]
       [--replay replay.json] [--skipped skipped.json] [--base-inventory base.json]
-      [--exempt unmeasured.json] [--out gate.json] [--md gate.md]
+      [--repo dir --base sha --head sha] [--exempt unmeasured.json] [--out gate.json] [--md gate.md]
 
 Calibration
   abax calibrate prices [--keys a,b] [--sizes 16,64,256] [--out prices.json] [--time-ms 100]
@@ -90,34 +94,242 @@ interface Parsed {
 	flags: Map<string, string>;
 }
 
-function parse(argv: string[]): Parsed {
+interface Spec {
+	/** Options that take a value. */
+	values: readonly string[];
+	/** How many positional arguments: [min, max]. */
+	args: [number, number];
+	/** The positional arguments are files that must exist (`calibrate`: after its subcommand). */
+	files?: boolean;
+}
+
+const BENCH = ['root', 'filter', 'out', 'deps', 'sha'];
+const MANY = Number.POSITIVE_INFINITY;
+
+const SPECS: Record<string, Spec> = {
+	run: {
+		values: [...BENCH, 'state', 'measure', 'time-ms'],
+		args: [1, MANY],
+		files: true
+	},
+	diff: {
+		values: ['repo', 'base', 'head', 'out', 'json', 'time', 'weights'],
+		args: [2, 2],
+		files: true
+	},
+	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
+	health: { values: [...BENCH, 'warmup', 'runs', 'check'], args: [1, MANY], files: true },
+	growth: { values: [...BENCH, 'sizes', 'scaled'], args: [1, MANY], files: true },
+	search: {
+		values: [...BENCH, 'evals', 'budget-steps', 'budget-ms', 'seed', 'size-factor'],
+		args: [1, MANY],
+		files: true
+	},
+	time: {
+		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md'],
+		args: [1, MANY]
+	},
+	weights: { values: ['out'], args: [1, MANY], files: true },
+	coverage: { values: ['app', 'packages', 'out', 'md'], args: [1, MANY], files: true },
+	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
+	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
+	unmeasured: {
+		values: [
+			'inventory',
+			'reports',
+			'records',
+			'replay',
+			'skipped',
+			'base-inventory',
+			'exempt',
+			'out',
+			'md',
+			'repo',
+			'base',
+			'head'
+		],
+		args: [0, 0]
+	},
+	calibrate: {
+		values: [
+			'keys',
+			'sizes',
+			'out',
+			'time-ms',
+			'root',
+			'filter',
+			'repeats',
+			'points',
+			'tolerance',
+			'shift'
+		],
+		args: [1, MANY],
+		files: true
+	},
+	verify: { values: ['layers', 'filter', 'jobs', 'md', 'json'], args: [0, 0] }
+};
+
+/** Options that take no value. */
+const SWITCHES = new Set(['help', 'debug']);
+
+/** Numeric options and what they accept. */
+const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
+	'time-ms': 'positive',
+	warmup: 'whole',
+	runs: 'count',
+	evals: 'count',
+	'budget-steps': 'positive',
+	'budget-ms': 'positive',
+	seed: 'integer',
+	'size-factor': 'positive',
+	repeats: 'count',
+	jobs: 'count',
+	tolerance: 'positive',
+	shift: 'positive'
+};
+
+const CHOICES: Record<string, readonly string[]> = {
+	state: ['fresh', 'shared'],
+	check: ['on', 'off'],
+	scaled: ['on', 'off']
+};
+
+function check_number(name: string, v: string): void {
+	const n = Number(v);
+	const kind = NUMBERS[name];
+	const ok =
+		v.trim() !== '' &&
+		Number.isFinite(n) &&
+		(kind === 'positive'
+			? n > 0
+			: kind === 'count'
+				? Number.isInteger(n) && n > 0
+				: kind === 'whole'
+					? Number.isInteger(n) && n >= 0
+					: Number.isInteger(n));
+	if (!ok) {
+		const want =
+			kind === 'positive'
+				? 'a number above 0'
+				: kind === 'count'
+					? 'a whole number above 0'
+					: kind === 'whole'
+						? 'a whole number'
+						: 'an integer';
+		throw new UsageError(`--${name} takes ${want}, not ${JSON.stringify(v)}`);
+	}
+}
+
+function parse(cmd: string, argv: string[]): Parsed {
+	const spec = SPECS[cmd];
 	const positional: string[] = [];
 	const flags = new Map<string, string>();
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
-		if (a.startsWith('--')) {
-			const eq = a.indexOf('=');
-			if (eq !== -1) flags.set(a.slice(2, eq), a.slice(eq + 1));
-			else flags.set(a.slice(2), argv[++i] ?? '');
-		} else {
+		if (a === '--') {
+			positional.push(...argv.slice(i + 1));
+			break;
+		}
+		if (a === '-h') {
+			flags.set('help', '');
+			continue;
+		}
+		if (!a.startsWith('-') || a === '-') {
 			positional.push(a);
+			continue;
+		}
+		if (!a.startsWith('--')) throw new UsageError(`unknown option ${a}`);
+		const eq = a.indexOf('=');
+		const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
+		if (SWITCHES.has(name)) {
+			flags.set(name, '');
+			continue;
+		}
+		if (!spec.values.includes(name)) {
+			const known = spec.values.map((v) => `--${v}`).join(', ');
+			throw new UsageError(`unknown option --${name}${known ? ` (it takes ${known})` : ''}`);
+		}
+		let value: string;
+		if (eq !== -1) {
+			value = a.slice(eq + 1);
+		} else {
+			const next = argv[i + 1];
+			// a value never looks like another option (a negative number does)
+			if (next === undefined || (next.startsWith('--') && next.length > 2))
+				throw new UsageError(`--${name} needs a value`);
+			value = next;
+			i++;
+		}
+		if (value === '') throw new UsageError(`--${name} needs a value`);
+		if (NUMBERS[name]) check_number(name, value);
+		const choices = CHOICES[name];
+		if (choices && !choices.includes(value))
+			throw new UsageError(`--${name} takes ${choices.join(' or ')}, not ${JSON.stringify(value)}`);
+		flags.set(name, value);
+	}
+	if (flags.has('help')) return { positional, flags };
+	const [min, max] = spec.args;
+	if (positional.length < min) {
+		throw new UsageError(
+			min === 1 ? 'which files? (none given)' : `needs ${min} files, got ${positional.length}`
+		);
+	}
+	if (positional.length > max) {
+		throw new UsageError(
+			max === 0
+				? `takes no file arguments (got ${positional.join(' ')})`
+				: `takes ${max} files, got ${positional.length}`
+		);
+	}
+	if (spec.files) {
+		const files = cmd === 'calibrate' ? positional.slice(1) : positional;
+		for (const f of files) {
+			if (!existsSync(f)) throw new UsageError(`no such file: ${f}`);
+			if (!statSync(f).isFile()) throw new UsageError(`${f} is a directory, not a file`);
+		}
+	}
+	if (flags.has('sizes')) {
+		for (const s of flags.get('sizes')!.split(',')) {
+			if (!(Number(s) > 0))
+				throw new UsageError(`--sizes takes numbers above 0, not ${JSON.stringify(s)}`);
 		}
 	}
 	return { positional, flags };
 }
 
+/** An abax report from a file, or a clear error. */
+function read_report(path: string): Report {
+	let r: unknown;
+	try {
+		r = JSON.parse(readFileSync(path, 'utf8'));
+	} catch {
+		throw new UsageError(`${path} is not JSON`);
+	}
+	if (r === null || typeof r !== 'object' || (r as Report).schema !== REPORT_SCHEMA)
+		throw new UsageError(`${path} is not an abax report (no "schema": "${REPORT_SCHEMA}")`);
+	const rep = r as Report;
+	if (!Array.isArray(rep.cases)) throw new UsageError(`${path} has no cases`);
+	return rep;
+}
+
 async function main(argv: string[]): Promise<number> {
 	const [cmd, ...rest] = argv;
-	const { positional, flags } = parse(rest);
-	if (cmd === 'help' || cmd === '--help' || cmd === '-h' || flags.has('help')) {
+	if (cmd === undefined || cmd === 'help' || cmd === '--help' || cmd === '-h') {
+		console.log(HELP);
+		return cmd === undefined ? 2 : 0;
+	}
+	if (!(cmd in SPECS)) {
+		throw new UsageError(
+			cmd.startsWith('-') ? `give a command before ${cmd}` : `unknown command ${cmd}`
+		);
+	}
+	const { positional, flags } = parse(cmd, rest);
+	if (flags.has('help')) {
 		console.log(HELP);
 		return 0;
 	}
+	check_dirs(cmd, flags);
 	if (cmd === 'run') {
-		if (positional.length === 0) {
-			console.error(HELP);
-			return 2;
-		}
 		const deps_flag = flags.get('deps');
 		const deps =
 			deps_flag === undefined ? false : deps_flag === 'all' ? true : deps_flag.split(',');
@@ -132,8 +344,13 @@ async function main(argv: string[]): Promise<number> {
 			log: (l) => console.log(l)
 		});
 		await measure_run(report, positional, flags);
-		const bad = report.cases.filter((c) => c.error !== null);
-		return bad.length > 0 ? 1 : 0;
+		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
+			console.error('abax run: no bench cases (no file calls bench(), or --filter matched none)');
+		const bad =
+			report.cases.length === 0 ||
+			(report.load_errors ?? []).length > 0 ||
+			report.cases.some((c) => c.error !== null || c.measure?.errors !== undefined);
+		return bad ? 1 : 0;
 	}
 	const measured = await measure_command(cmd, positional, flags);
 	if (measured !== null) return measured;
@@ -143,12 +360,8 @@ async function main(argv: string[]): Promise<number> {
 	const coverage = await coverage_command(cmd, positional, flags);
 	if (coverage !== null) return coverage;
 	if (cmd === 'diff') {
-		if (positional.length !== 2) {
-			console.error(HELP);
-			return 2;
-		}
-		const base = JSON.parse(readFileSync(positional[0], 'utf8')) as Report;
-		const pr = JSON.parse(readFileSync(positional[1], 'utf8')) as Report;
+		const base = read_report(positional[0]);
+		const pr = read_report(positional[1]);
 		const repo = flags.get('repo');
 		const base_sha = flags.get('base') ?? base.git.sha;
 		const head_sha = flags.get('head') ?? pr.git.sha;
@@ -174,10 +387,6 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search') {
-		if (positional.length === 0) {
-			console.error(HELP);
-			return 2;
-		}
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'abax-report.json';
 		const deps_flag = flags.get('deps');
@@ -220,10 +429,7 @@ async function main(argv: string[]): Promise<number> {
 	}
 	if (cmd === 'dts') {
 		const out = flags.get('out');
-		if (!out || positional.length === 0) {
-			console.error(HELP);
-			return 2;
-		}
+		if (!out) throw new UsageError('--out <file> is required');
 		write_private_dts({
 			files: positional.map((f) => resolve(f)),
 			out: resolve(out),
@@ -231,8 +437,80 @@ async function main(argv: string[]): Promise<number> {
 		});
 		return 0;
 	}
-	console.error(cmd === undefined ? HELP : `abax: unknown command ${cmd}\n\n${HELP}`);
-	return 2;
+	throw new UsageError(`unknown command ${cmd}`);
 }
 
-process.exitCode = await main(process.argv.slice(2));
+/** `--root` must be a directory, and the directories `--out`, `--md` and `--json` write into must exist. */
+function check_dirs(cmd: string, flags: Map<string, string>): void {
+	const root = flags.get('root');
+	if (root !== undefined && !(existsSync(root) && statSync(root).isDirectory()))
+		throw new UsageError(`--root ${root} is not a directory`);
+	for (const k of ['out', 'md', 'json', 'targets']) {
+		const f = flags.get(k);
+		if (f === undefined) continue;
+		const dir = dirname(resolve(f));
+		if (!existsSync(dir)) throw new UsageError(`--${k} ${f}: no directory ${dir}`);
+		if (existsSync(f) && statSync(f).isDirectory())
+			throw new UsageError(`--${k} ${f} is a directory, not a file`);
+	}
+	for (const k of ['base', 'pr']) {
+		if (cmd !== 'time') continue;
+		const d = flags.get(k);
+		if (d === undefined) throw new UsageError(`--${k} <dir> is required`);
+		if (!(existsSync(d) && statSync(d).isDirectory()))
+			throw new UsageError(`--${k} ${d} is not a directory`);
+	}
+	if (cmd === 'diff' && flags.has('repo')) {
+		const repo = flags.get('repo')!;
+		if (!(existsSync(repo) && statSync(repo).isDirectory()))
+			throw new UsageError(`--repo ${repo} is not a directory`);
+	}
+}
+
+/** Errors as Abax prints them: one line, `abax <cmd>: ...`; the stack only with --debug. */
+function message_of(e: unknown): string {
+	const m = one_line(e);
+	return m.startsWith('abax: ') ? m.slice(6) : m;
+}
+
+const argv = process.argv.slice(2);
+const debug = argv.includes('--debug') || process.env.ABAX_DEBUG === '1';
+const command = argv[0] !== undefined && argv[0] in SPECS ? argv[0] : null;
+const prefix = command ? `abax ${command}` : 'abax';
+let stray = 0;
+// Code a bench file started and nobody awaited (a rejected promise, a throwing timer) is reported
+// and the run goes on; the exit code says something went wrong.
+const stray_error = (e: unknown): void => {
+	stray++;
+	console.error(
+		`${prefix}: an error outside any case: ${debug && e instanceof Error ? e.stack : message_of(e)}`
+	);
+};
+process.on('unhandledRejection', stray_error);
+process.on('uncaughtException', stray_error);
+exit_on_signals();
+
+let code: number;
+try {
+	code = await main(argv);
+} catch (e) {
+	if (e instanceof UsageError) {
+		console.error(`${prefix}: ${e.message}\nRun \`abax --help\` for every command and option.`);
+		code = 2;
+	} else {
+		// Abax's own errors say what to fix; anything else may need the stack.
+		const own = one_line(e).startsWith('abax');
+		console.error(
+			debug && e instanceof Error
+				? (e.stack ?? e.message)
+				: `${prefix}: ${message_of(e)}${own ? '' : ' (--debug shows where)'}`
+		);
+		code = 1;
+	}
+}
+if (stray > 0 && code === 0) code = 1;
+// Wait for the output to drain, then exit: a timer or socket a bench left open must not keep
+// the process alive after its work is written.
+await new Promise<void>((r) => process.stdout.write('', () => r()));
+await new Promise<void>((r) => process.stderr.write('', () => r()));
+process.exit(code);
