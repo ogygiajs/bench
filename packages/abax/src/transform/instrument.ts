@@ -155,6 +155,31 @@ export interface InstrumentResult {
 	code: string;
 	map: ReturnType<MagicString['generateMap']>;
 	meta: ModuleMeta;
+	/** Where each block (aligned with meta.blocks) starts in the code given to the transform. */
+	origins: BlockOrigin[];
+}
+
+/**
+ * What starts a block, for checking its count against an independent counter (the fuzzer reads
+ * V8's block coverage at `start`):
+ *
+ *   top       the module body
+ *   entry     a function body (`start` is the body's first character)
+ *   next      the statement after one that may jump or branch (return, if, a loop...)
+ *   body      a branch body: if/else, loop body, try, catch, finally
+ *   case      the first statement of a switch case
+ *   static    a class static block
+ *   expr      an expression that runs on its own (`start`..`end`): the right of && || ?? and of
+ *             logical assignment, a ternary arm, a loop test or update, a case test, a default
+ *             value, an instance field initialiser
+ *   optional  the rest of an optional chain (`start` is its `?.`)
+ */
+export type BlockKind = 'top' | 'entry' | 'next' | 'body' | 'case' | 'static' | 'expr' | 'optional';
+
+export interface BlockOrigin {
+	kind: BlockKind;
+	start: number;
+	end: number;
 }
 
 interface FnRec {
@@ -178,6 +203,7 @@ interface BlockRec {
 	ops: number[];
 	/** key = line * 64 + op kind */
 	line_ops: Map<number, number>;
+	origin: BlockOrigin;
 }
 
 interface SiteRec {
@@ -228,6 +254,8 @@ class Instrumenter {
 	/** Disposal scope variable of the statement list being walked (`await using`), if any. */
 	using: string | null = null;
 	using_count = 0;
+	/** Start of the labels in front of the statement being walked (see take_label). */
+	label_start: number | null = null;
 
 	constructor(code: string, opts: InstrumentOptions) {
 		this.code = code;
@@ -281,7 +309,7 @@ class Instrumenter {
 		return f;
 	}
 
-	new_block(offset: number): BlockRec {
+	new_block(offset: number, kind: BlockKind, end = offset): BlockRec {
 		const at = this.pos.original(offset);
 		const b: BlockRec = {
 			id: this.blocks.length,
@@ -290,7 +318,8 @@ class Instrumenter {
 			line: at.line,
 			col: at.col,
 			ops: Array.from({ length: OP_KINDS.length }, () => 0),
-			line_ops: new Map()
+			line_ops: new Map(),
+			origin: { kind, start: offset, end }
 		};
 		this.blocks.push(b);
 		return b;
@@ -364,21 +393,46 @@ class Instrumenter {
 		return this.counter_expr(b) + ';';
 	}
 
+	/**
+	 * Put an expression in an argument of a runtime call: `R.f(...,` + node + `)`. The parser drops
+	 * parentheses, so a comma expression (`(a, b)`) gets its own back, or it would become two
+	 * arguments.
+	 */
+	as_arg(node: Node, open: () => string, close: () => string = () => ')'): void {
+		const seq = node.type === 'SequenceExpression';
+		this.open(node.start, () => open() + (seq ? '(' : ''));
+		this.close(node.end, () => (seq ? ')' : '') + close());
+	}
+
 	/** Start a block whose counter is a statement inserted at `pos`. */
-	start_block_at(pos: number, origin: number, prefix?: () => string): BlockRec {
-		const b = this.new_block(origin);
+	start_block_at(
+		pos: number,
+		origin: number,
+		prefix?: () => string,
+		kind: BlockKind = 'next'
+	): BlockRec {
+		const b = this.new_block(origin, kind);
 		this.block = b;
 		this.open(pos, () => (prefix ? prefix() : '') + this.counter_stmt(b));
 		if (this.scope_block === null) this.scope_block = b;
 		return b;
 	}
 
-	/** Wrap an expression so it counts a block of its own: `(c[i]++, expr)`. */
-	expr_block(node: Node, hint?: string): BlockRec {
+	/**
+	 * Wrap an expression so it counts a block of its own: `(c[i]++, expr)`.
+	 *
+	 * `naming`: the expression sits where the language names an anonymous function or class after
+	 * its target (`#f = () => {}` is named `#f`, `x = () => {}` as a default value `x`). Wrapped in
+	 * a comma it would lose that name, so it is wrapped as `(c[i]++, {"#f": () => {}}["#f"])`,
+	 * which names it the same way.
+	 */
+	expr_block(node: Node, hint?: string, naming?: string | null): BlockRec {
 		const prev = this.block;
-		const b = this.new_block(node.start);
-		this.open(node.start, () => `(${this.counter_expr(b)},`);
-		this.close(node.end, () => ')');
+		const b = this.new_block(node.start, 'expr', node.end);
+		const named = naming != null && is_anonymous_definition(node);
+		const key = named ? JSON.stringify(naming) : '';
+		this.open(node.start, () => `(${this.counter_expr(b)},${named ? `{${key}:` : ''}`);
+		this.close(node.end, () => (named ? `}[${key}])` : ')'));
 		this.block = b;
 		this.walk_expr(node, hint);
 		this.block = prev;
@@ -460,10 +514,10 @@ class Instrumenter {
 		);
 		this.scope_block = null;
 		if (first < body.length) {
-			this.start_block_at(header_pos, header_pos);
+			this.start_block_at(header_pos, header_pos, undefined, 'top');
 			this.walk_statements(body.slice(first), false);
 		} else {
-			this.block = this.new_block(header_pos);
+			this.block = this.new_block(header_pos, 'top');
 		}
 	}
 
@@ -478,7 +532,7 @@ class Instrumenter {
 		this.scope_block = need_block ? null : this.block;
 		this.using = null;
 		const present = stmts.filter((s): s is Node => s !== null);
-		if (scope && this.fn.framed && this.fn.meta.async && present.some(is_await_using)) {
+		if (scope && this.suspends() && present.some(is_using)) {
 			this.using = this.dispose_scope(present[0].start, present[present.length - 1].end);
 		}
 		let split = need_block;
@@ -495,18 +549,35 @@ class Instrumenter {
 		return split;
 	}
 
+	/** A counted function that can suspend (async or a generator): its frame leaves the stack. */
+	suspends(): boolean {
+		const f = this.fn;
+		return f.framed && (f.meta.async || f.meta.generator);
+	}
+
 	/**
 	 * Wrap `start..end` in a disposal scope (runtime/dispose.ts) whose awaits suspend and resume
 	 * the frame. Returns the scope's variable name; `first` is code to run first inside the try.
+	 *
+	 * The disposals run in its finally, which first resumes the frame: a generator resumed by
+	 * `return()` or `throw()`, or an await that rejects, leaves through the finally without passing
+	 * the resume the transform put after the `yield` or `await`. Each disposal awaits exactly what
+	 * the language awaits (DisposeScope.step), so concurrent async code interleaves the same; a
+	 * rejection is recorded and the next resource still disposed.
 	 */
 	dispose_scope(start: number, end: number, first?: (u: string) => string): string {
 		const u = `${this.n.R}u${this.using_count++}`;
 		const { R, r } = this.n;
+		const awaits = this.fn.meta.async;
 		this.open(start, () => `const ${u}=${R}.scope();try{${first ? first(u) : ''}`);
 		this.close(
 			end,
 			() =>
-				`}catch(${u}e){${u}.fail(${u}e)}finally{for(let ${u}p;(${u}p=${u}.step())!==${u};)${R}.resume(${r},await ${R}.suspend(${r},${u}p));${u}.finish()}`
+				`}catch(${u}e){${u}.fail(${u}e)}finally{${R}.resume_if(${r});` +
+				(awaits
+					? `for(let ${u}p;(${u}p=${u}.step())!==${u};)try{${R}.resume(${r},await ${R}.suspend(${r},${u}p))}catch(${u}x){${R}.resume_if(${r});${u}.record(${u}x)}`
+					: `${u}.step();`) +
+				`${u}.finish()}`
 		);
 		return u;
 	}
@@ -520,8 +591,11 @@ class Instrumenter {
 		for (const d of decls) {
 			const init = get(d, 'init');
 			if (!init) continue;
-			this.open(init.start, () => `${u}.use(`);
-			this.close(init.end, () => `,${awaited})`);
+			this.as_arg(
+				init,
+				() => `${u}.use(`,
+				() => `,${awaited})`
+			);
 			if (awaited) this.op('await', d.start);
 		}
 	}
@@ -530,11 +604,11 @@ class Instrumenter {
 	walk_branch(st: Node, prefix?: () => string, before?: () => void): void {
 		const prev = this.block;
 		if (st.type === 'BlockStatement') {
-			this.start_block_at(st.start + 1, st.start, prefix);
+			this.start_block_at(st.start + 1, st.start, prefix, 'body');
 			before?.();
 			this.walk_statements(list(st, 'body'), false);
 		} else {
-			const b = this.new_block(st.start);
+			const b = this.new_block(st.start, 'body');
 			this.block = b;
 			this.open(st.start, () => '{' + (prefix ? prefix() : '') + this.counter_stmt(b));
 			this.close(st.end, () => '}');
@@ -544,13 +618,31 @@ class Instrumenter {
 		this.block = prev;
 	}
 
+	/**
+	 * First thing in a loop body: stop a run that went past the runtime's step cap (Runtime.cap,
+	 * Infinity unless a caller sets one), so an input that makes a loop run forever ends the run.
+	 * Function entries check it too (Runtime.enter).
+	 */
+	cap_check(): () => string {
+		return () => `${this.n.s}[0]>${this.n.R}.cap&&${this.n.R}.over();`;
+	}
+
 	resume_prefix(): (() => string) | undefined {
 		const f = this.fn;
 		if (!f.framed || !(f.meta.async || f.meta.generator)) return undefined;
 		return () => `${this.n.R}.resume_if(${this.n.r});`;
 	}
 
+	/** Start of the labels in front of the statement being walked (null: it has none). */
+	take_label(): number | null {
+		const at = this.label_start;
+		this.label_start = null;
+		return at;
+	}
+
 	walk_statement(st: Node): boolean {
+		// labels belong to the statement right after them, not to statements nested in it
+		if (st.type !== 'LabeledStatement' && st.type !== 'ForOfStatement') this.label_start = null;
 		switch (st.type) {
 			case 'ExpressionStatement': {
 				const e = get(st, 'expression');
@@ -581,6 +673,14 @@ class Instrumenter {
 			}
 			case 'ReturnStatement': {
 				const a = get(st, 'argument');
+				const f = this.fn;
+				if (a && f.framed && f.meta.async && f.meta.generator) {
+					// An async generator awaits the value it returns, an await the code does not spell
+					// out: the frame is suspended around it (catch and finally blocks resume it).
+					const { R, r } = this.n;
+					this.as_arg(a, () => `${R}.suspend(${r},`);
+					this.op('await', st.start);
+				}
 				if (a) this.walk_expr(a);
 				return true;
 			}
@@ -617,18 +717,18 @@ class Instrumenter {
 				}
 				const update = get(st, 'update');
 				if (update) this.expr_block(update);
-				this.walk_branch(get(st, 'body')!);
+				this.walk_branch(get(st, 'body')!, this.cap_check());
 				return true;
 			}
 			case 'WhileStatement': {
 				const test = get(st, 'test')!;
 				const b = this.expr_block(test);
 				this.op('branch', test.start, 1, b);
-				this.walk_branch(get(st, 'body')!);
+				this.walk_branch(get(st, 'body')!, this.cap_check());
 				return true;
 			}
 			case 'DoWhileStatement': {
-				this.walk_branch(get(st, 'body')!);
+				this.walk_branch(get(st, 'body')!, this.cap_check());
 				const test = get(st, 'test')!;
 				const b = this.expr_block(test);
 				this.op('branch', test.start, 1, b);
@@ -636,7 +736,7 @@ class Instrumenter {
 			}
 			case 'ForInStatement':
 			case 'ForOfStatement':
-				this.walk_for_in_of(st);
+				this.walk_for_in_of(st, this.take_label());
 				return true;
 			case 'SwitchStatement': {
 				this.walk_expr(get(st, 'discriminant')!);
@@ -649,7 +749,7 @@ class Instrumenter {
 					}
 					const cons = nodes(c, 'consequent');
 					if (cons.length > 0) {
-						this.start_block_at(cons[0].start, cons[0].start);
+						this.start_block_at(cons[0].start, cons[0].start, undefined, 'case');
 						this.walk_statements(cons, false, false);
 					}
 					this.block = prev;
@@ -670,7 +770,11 @@ class Instrumenter {
 				return true;
 			}
 			case 'LabeledStatement':
-				return this.walk_statement(get(st, 'body')!);
+				// `break label` lands right after the statement: the code there is a block of its own
+				this.label_start ??= st.start;
+				this.walk_statement(get(st, 'body')!);
+				this.label_start = null;
+				return true;
 			case 'WithStatement':
 				this.walk_expr(get(st, 'object')!);
 				return this.walk_statement(get(st, 'body')!);
@@ -723,7 +827,8 @@ class Instrumenter {
 		}
 	}
 
-	walk_for_in_of(st: Node): void {
+	/** `label_start`: where the labels in front of the loop start (the loop's own start if none). */
+	walk_for_in_of(st: Node, label_start: number | null = null): void {
 		const of = st.type === 'ForOfStatement';
 		const right = get(st, 'right')!;
 		const left = get(st, 'left')!;
@@ -732,35 +837,46 @@ class Instrumenter {
 		// Outer edits are created before inner ones (see the edit-order note at the top): the
 		// resume after the loop must land outside braces the body may get.
 		if (is_await) {
-			this.close(st.end, () => `;${this.n.R}.resume_if(${this.n.r});`);
-			this.open(right.start, () => `${this.n.R}.for_await(${this.n.r},`);
-			this.close(right.end, () => ')');
+			// The loop leaves with the frame suspended: its iterator's return() is awaited when the
+			// body breaks, returns or throws. Every way out (a `break` to an outer label too) passes
+			// the finally, which resumes it; the labels stay on the loop (`continue label`).
+			const { R, r } = this.n;
+			this.open(label_start ?? st.start, () => 'try{');
+			this.close(st.end, () => `}finally{${R}.resume_if(${r})}`);
+			this.as_arg(right, () => `${R}.for_await(${r},`);
 		}
 		this.walk_expr(right);
 		if (of) this.op('iter_init', right.start);
 		const body = get(st, 'body')!;
-		this.walk_branch(body, is_await ? this.resume_prefix() : undefined, () => {
-			// `for (await using x of xs)`: x is disposed (awaited) after each iteration's body.
-			if (of && is_await_using(left) && f.framed && f.meta.async) {
-				const id = get(nodes(left, 'declarations')[0], 'id')!;
-				const block = body.type === 'BlockStatement';
-				// the scope's first statement registers the loop variable
-				this.dispose_scope(
-					block ? body.start + 1 : body.start,
-					block ? body.end - 1 : body.end,
-					(u) => `${u}.use(${text(id, 'name')},true);`
-				);
-				this.edits.push({ pos: left.start, end: id.start, open: true, text: () => 'const ' });
-				this.op('await', left.start);
+		const resume = is_await ? this.resume_prefix() : undefined;
+		const cap = this.cap_check();
+		this.walk_branch(
+			body,
+			() => (resume ? resume() : '') + cap(),
+			() => {
+				// `for (await using x of xs)`: x is disposed (awaited) after each iteration's body.
+				if (of && is_using(left) && this.suspends()) {
+					const id = get(nodes(left, 'declarations')[0], 'id')!;
+					const block = body.type === 'BlockStatement';
+					const awaited = is_await_using(left);
+					// the scope's first statement registers the loop variable
+					this.dispose_scope(
+						block ? body.start + 1 : body.start,
+						block ? body.end - 1 : body.end,
+						(u) => `${u}.use(${text(id, 'name')},${awaited});`
+					);
+					this.edits.push({ pos: left.start, end: id.start, open: true, text: () => 'const ' });
+					if (awaited) this.op('await', left.start);
+				}
+				// The iterator protocol step of each iteration is a hidden cost of the body block.
+				this.op(of ? 'iter_step' : 'forin_step', left.start);
+				if (left.type === 'VariableDeclaration') {
+					for (const d of nodes(left, 'declarations')) this.walk_pattern(get(d, 'id')!, 'declare');
+				} else {
+					this.walk_pattern(left, 'assign');
+				}
 			}
-			// The iterator protocol step of each iteration is a hidden cost of the body block.
-			this.op(of ? 'iter_step' : 'forin_step', left.start);
-			if (left.type === 'VariableDeclaration') {
-				for (const d of nodes(left, 'declarations')) this.walk_pattern(get(d, 'id')!, 'declare');
-			} else {
-				this.walk_pattern(left, 'assign');
-			}
-		});
+		);
 	}
 
 	// ---------------------------------------------------------------- functions
@@ -788,7 +904,7 @@ class Instrumenter {
 		if (own_id && node.type === 'FunctionExpression') this.declare(text(own_id, 'name'));
 
 		const body = get(node, 'body')!;
-		const entry = this.new_block(body.start);
+		const entry = this.new_block(body.start, 'entry');
 		this.block = entry;
 		this.scope_block = entry;
 
@@ -904,13 +1020,13 @@ class Instrumenter {
 				const prev_fn = this.fn;
 				const prev_block = this.block;
 				this.fn = fields_fn;
-				this.expr_block(value, nm);
+				this.expr_block(value, nm, computed ? null : nm);
 				this.fn = prev_fn;
 				this.block = prev_block;
 			} else if (m.type === 'StaticBlock') {
 				const prev = this.block;
 				const brace = find_token(this.code, '{', m.start);
-				this.start_block_at(brace + 1, m.start);
+				this.start_block_at(brace + 1, m.start, undefined, 'static');
 				this.walk_statements(list(m, 'body'), false);
 				this.block = prev;
 			}
@@ -954,10 +1070,8 @@ class Instrumenter {
 				const left = get(node, 'left')!;
 				this.walk_pattern(left, mode);
 				this.op('compare', node.start);
-				this.expr_block(
-					get(node, 'right')!,
-					left.type === 'Identifier' ? text(left, 'name') : undefined
-				);
+				const name = left.type === 'Identifier' ? text(left, 'name') : undefined;
+				this.expr_block(get(node, 'right')!, name, name);
 				return;
 			}
 			case 'RestElement':
@@ -1151,8 +1265,7 @@ class Instrumenter {
 			if (e.type === 'SpreadElement') {
 				const arg = get(e, 'argument')!;
 				// The wrapper's edits before the argument's own (outer first at a shared position).
-				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${site.index},`);
-				this.close(arg.end, () => ')');
+				this.as_arg(arg, () => `${this.n.R}.spread_iter(${this.n.d},${site.index},`);
 				this.walk_expr(arg);
 				this.op('iter_init', e.start);
 			} else {
@@ -1180,8 +1293,7 @@ class Instrumenter {
 		for (const p of props) {
 			if (p.type === 'SpreadElement') {
 				const arg = get(p, 'argument')!;
-				this.open(arg.start, () => `${this.n.R}.spread_obj(${this.n.d},${site.index},`);
-				this.close(arg.end, () => ')');
+				this.as_arg(arg, () => `${this.n.R}.spread_obj(${this.n.d},${site.index},`);
 				this.walk_expr(arg);
 				continue;
 			}
@@ -1205,8 +1317,7 @@ class Instrumenter {
 			if (a.type === 'SpreadElement') {
 				const arg = get(a, 'argument')!;
 				let s: SiteRec | null = null;
-				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${s!.index},`);
-				this.close(arg.end, () => ')');
+				this.as_arg(arg, () => `${this.n.R}.spread_iter(${this.n.d},${s!.index},`);
 				this.walk_expr(arg);
 				this.op('iter_init', a.start);
 				s = this.site('spread_args', a.start, 0, true, false);
@@ -1239,8 +1350,7 @@ class Instrumenter {
 				// The site is set after every argument is evaluated, right before the call.
 				const last = args[args.length - 1];
 				const target = last.type === 'SpreadElement' ? get(last, 'argument')! : last;
-				this.open(target.start, () => `${this.n.R}.site_last(${base}+${k},`);
-				this.close(target.end, () => ')');
+				this.as_arg(target, () => `${this.n.R}.site_last(${base}+${k},`);
 			}
 		}
 		if (is_member && name === 'bind') {
@@ -1259,16 +1369,31 @@ class Instrumenter {
 		}
 		links.reverse();
 		const prev = this.block;
-		this.walk_expr(cur);
 		const { R, c } = this.n;
+		// A `?.` member link wraps its object in `R.opt(...)`. Every object starts where the chain
+		// does, so the outermost link's wrapper must be created first (see the edit-order note at
+		// the top), before the links inside it and before the chain's head, which may be a chain
+		// of its own (`(a?.b)?.c`). The blocks are made below, in the order the links run.
+		const opt_blocks = new Map<Node, BlockRec>();
+		for (let i = links.length - 1; i >= 0; i--) {
+			const link = links[i];
+			if (!flag(link, 'optional') || link.type !== 'MemberExpression') continue;
+			this.as_arg(get(link, 'object')!, () => {
+				const b = opt_blocks.get(link)!;
+				return `${R}.opt(${c},${b.id},${this.price(b)},`;
+			});
+		}
+		this.walk_expr(cur);
 		for (const link of links) {
 			if (flag(link, 'optional')) {
 				this.op('compare', link.start);
-				const b = this.new_block(link.start);
+				const inner =
+					link.type === 'MemberExpression' ? get(link, 'object')! : get(link, 'callee')!;
+				const b = this.new_block(link.start, 'optional');
+				b.origin.start = find_token(this.code, '?.', inner.end);
+				b.origin.end = link.end;
 				if (link.type === 'MemberExpression') {
-					const obj = get(link, 'object')!;
-					this.open(obj.start, () => `${R}.opt(${c},${b.id},${this.price(b)},`);
-					this.close(obj.end, () => ')');
+					opt_blocks.set(link, b);
 				} else {
 					const args = nodes(link, 'arguments');
 					if (args.length > 0) {
@@ -1310,7 +1435,7 @@ class Instrumenter {
 		this.op('assign', node.start);
 		if (op === '&&=' || op === '||=' || op === '??=') {
 			this.op('logical', node.start);
-			this.expr_block(right, hint);
+			this.expr_block(right, hint, left.type === 'Identifier' ? hint : null);
 			return;
 		}
 		if (op === '+=' && is_string_expr(right)) {
@@ -1448,6 +1573,14 @@ function free_refs(f: FnRec): Set<string> {
 	return out;
 }
 
+/** An anonymous function or class expression: the language may name it after where it is put. */
+function is_anonymous_definition(node: Node): boolean {
+	let n = node;
+	while (TS_EXPRESSION_WRAPPERS.has(n.type)) n = get(n, 'expression')!;
+	if (n.type === 'ArrowFunctionExpression') return true;
+	return (n.type === 'FunctionExpression' || n.type === 'ClassExpression') && !get(n, 'id');
+}
+
 function is_string_expr(node: Node): boolean {
 	if (node.type === 'Literal') return typeof node.value === 'string';
 	if (node.type === 'TemplateLiteral') return true;
@@ -1535,6 +1668,12 @@ export function private_bindings(program: Node): Array<{ name: string; live: boo
 	return res;
 }
 
+function is_using(st: Node): boolean {
+	if (st.type !== 'VariableDeclaration') return false;
+	const kind = text(st, 'kind');
+	return kind === 'using' || kind === 'await using';
+}
+
 function is_await_using(st: Node): boolean {
 	return st.type === 'VariableDeclaration' && text(st, 'kind') === 'await using';
 }
@@ -1586,5 +1725,5 @@ export function instrument(code: string, opts: InstrumentOptions): InstrumentRes
 		const chained = remapping([map, opts.input_map] as Parameters<typeof remapping>[0], () => null);
 		map = chained as unknown as typeof map;
 	}
-	return { code: s.toString(), map, meta };
+	return { code: s.toString(), map, meta, origins: ins.blocks.map((b) => b.origin) };
 }

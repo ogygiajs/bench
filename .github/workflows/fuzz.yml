@@ -1,0 +1,66 @@
+name: fuzz
+
+# Abax's fuzzer (packages/abax/fuzz) for longer, every night, on seeds that change every day:
+# random programs checked against V8, abax diff on rewrites and planted costs, block lines through
+# TypeScript and Svelte, runs cut short, and the corpus pass over ogygia's packages and the
+# dependencies Abax instruments. Failing programs and their minimized repros are uploaded as an
+# artifact; the run opens nothing (no issue, no PR). check.yml runs a short slice on fixed seeds.
+
+on:
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'first seed (default: one per day)'
+        type: string
+        default: ''
+      minutes:
+        description: 'how long to draw new programs'
+        type: string
+        default: '50'
+
+permissions:
+  contents: read
+
+env:
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - run: pnpm install --frozen-lockfile --filter '@bench/abax...'
+      # ogygia's packages for the corpus pass (the transform must take every file of them)
+      - name: Check out ogygia
+        run: git clone --quiet --depth 1 https://github.com/ogygiajs/ogygia.git "$RUNNER_TEMP/ogygia"
+      - name: Fuzz
+        env:
+          SEED: ${{ inputs.seed }}
+          MINUTES: ${{ inputs.minutes || '50' }}
+          OGYGIA_DIR: ${{ runner.temp }}/ogygia
+        run: |
+          set -euo pipefail
+          # a new range of seeds every day: program i of day d is seed d * 1000000 + i
+          seed="${SEED:-$(( $(date -u +%s) / 86400 * 1000000 ))}"
+          echo "### fuzz from seed $seed" >> "$GITHUB_STEP_SUMMARY"
+          pnpm --filter @bench/abax fuzz -- --seed "$seed" --runs 1000000 --time "$(( MINUTES * 60 ))" \
+            --jobs 4 --corpus default --out "$RUNNER_TEMP/fuzz" | tee "$RUNNER_TEMP/fuzz.log"
+      - name: Summary
+        if: always()
+        run: |
+          tail -5 "$RUNNER_TEMP/fuzz.log" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuzz-out
+          path: |
+            ${{ runner.temp }}/fuzz
+            ${{ runner.temp }}/fuzz.log
+          if-no-files-found: ignore

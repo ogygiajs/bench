@@ -24,6 +24,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { diffReports, diffSections, gitDiff } from '@bench/abax';
@@ -122,14 +123,26 @@ async function main(): Promise<void> {
 	};
 
 	if (selection.selected.length > 0) {
-		const head_run = run_tree(head, selection.selected, join(out, 'head'), log, measure);
+		// Both trees side by side, each on half the cores (one at a time when measuring time). A PR's
+		// engine health runs each case once; main and nightly runs check V8 does the same twice.
+		const base_tree = mb ? prepare_tree(repo, work, mb, ABAX_DIR, log) : null;
+		const present = new Set(base_tree?.benches ?? []);
+		const base_files = selection.selected.filter((f) => present.has(f));
+		const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
+		const jobs = Math.max(1, Math.floor(availableParallelism() / (base_tree ? 2 : 1)));
+		const tree_o = { jobs, check: !mb };
+		const run_head = () =>
+			run_tree(head, selection.selected, join(out, 'head'), log, measure, undefined, tree_o);
+		const run_base = () =>
+			base_tree
+				? run_tree(base_tree, base_files, join(out, 'base'), log, measure, undefined, tree_o)
+				: Promise.resolve(null);
+		const [head_run, base_run] = timed
+			? [await run_head(), await run_base()]
+			: await Promise.all([run_head(), run_base()]);
 		result.head = head_run.report;
 		result.load_errors.head = head_run.load_errors;
-		if (mb) {
-			const base_tree = prepare_tree(repo, work, mb, ABAX_DIR, log);
-			const present = new Set(base_tree.benches);
-			const base_files = selection.selected.filter((f) => present.has(f));
-			const base_run = run_tree(base_tree, base_files, join(out, 'base'), log, measure);
+		if (mb && base_tree && base_run) {
 			result.load_errors.base = base_run.load_errors;
 			result.base = base_run.report;
 			if (result.head) {
