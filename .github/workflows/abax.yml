@@ -59,11 +59,16 @@ on:
   schedule:
     - cron: '41 3 * * *'
 
-# A newer push to the same PR cancels the older run. Main runs queue, so every push lands its result.
+# A newer push to the same PR cancels the older run. GitHub keeps one running and ONE pending run
+# per group, and a newer pending run cancels the one already waiting, so a shared main group would
+# drop every push but the newest that arrive during a run. Each main push has its own group (they
+# may run side by side; latest.json only moves to a newer commit, see "Store the result"), and the
+# nightly run has its own, so it never cancels a waiting push.
 concurrency:
   group: >-
     abax-${{ github.event.action == 'ogygia-abax' && format('pr-{0}', github.event.client_payload.pr)
-    || (github.event.action == 'ogygia-main' || github.event_name == 'schedule') && 'main'
+    || github.event.action == 'ogygia-main' && format('main-{0}', github.event.client_payload.sha)
+    || github.event_name == 'schedule' && 'nightly'
     || github.run_id }}
   cancel-in-progress: ${{ github.event.action == 'ogygia-abax' }}
 
@@ -236,9 +241,12 @@ jobs:
           git -C "$RUNNER_TEMP/results" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
       # Only files under abax/: the app benchmark's paths and the README (bench.yml writes it) stay.
+      # Main runs can overlap (each push has its own concurrency group), so latest.json moves only
+      # to a commit that is not behind the one it holds, as GitHub's compare API says.
       - name: Store the result
         if: needs.measure.result == 'success' && needs.plan.outputs.kind != 'manual'
         env:
+          GH_TOKEN: ${{ github.token }}
           KIND: ${{ needs.plan.outputs.kind }}
           PR: ${{ needs.plan.outputs.pr }}
           SHA: ${{ needs.plan.outputs.sha }}
@@ -255,7 +263,19 @@ jobs:
           else
             mkdir -p abax/main
             cp "$RESULT" "abax/main/$SHA.json"
-            cp "$RESULT" abax/main/latest.json
+            old=''
+            if [ -f abax/main/latest.json ]; then
+              old="$(node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.meta?.sha; process.stdout.write(/^[0-9a-f]{40}$/.test(s) ? s : "")' abax/main/latest.json || true)"
+            fi
+            order=''
+            if [ -n "$old" ] && [ "$old" != "$SHA" ]; then
+              order="$(gh api "repos/$UPSTREAM/compare/$old...$SHA" --jq .status 2>/dev/null || true)"
+            fi
+            if [ "$order" = behind ]; then
+              echo "::notice::latest.json keeps ${old:0:7}: ${SHA:0:7} is an older commit"
+            else
+              cp "$RESULT" abax/main/latest.json
+            fi
             msg="abax: main ${SHA:0:7}"
           fi
           git add -A abax

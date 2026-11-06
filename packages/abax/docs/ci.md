@@ -94,6 +94,11 @@ A full run takes every bench file of one commit through `run`, `health` and `gro
 plain-build layer on `run` (`--measure all`: time, real bytes, leaks), and writes one summary
 table: steps, allocations, estimated and real bytes, p50 and leaks per case. It has 120 minutes.
 
+Every main push has its own concurrency group, and the nightly run has another, so no full run
+cancels or replaces another (GitHub keeps only one waiting run per group, so a shared group would
+drop pushes). Full runs can overlap; `abax/main/latest.json` moves only to a commit that is not
+behind the one it holds.
+
 ## The comment
 
 Each ogygia PR has one benchmark comment, found by the marker on its first line:

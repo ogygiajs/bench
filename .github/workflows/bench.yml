@@ -67,12 +67,15 @@ on:
   schedule:
     - cron: '17 4 * * 1'
 
-# A newer push to the same PR cancels the older run. Baseline runs queue instead, so every main
-# push that gets to run lands its result.
+# A newer push to the same PR cancels the older run. Main pushes run one at a time, never
+# cancelled once running; GitHub keeps one pending run per group, so of the pushes that arrive
+# during a run only the newest waits and the ones between are skipped. The weekly run has its own
+# group, so it never takes a waiting push's place.
 concurrency:
   group: >-
     bench-${{ github.event.action == 'ogygia-pr' && format('pr-{0}', github.event.client_payload.pr)
-    || (github.event.action == 'ogygia-main' || github.event_name == 'schedule') && 'main'
+    || github.event.action == 'ogygia-main' && 'main'
+    || github.event_name == 'schedule' && 'weekly'
     || github.run_id }}
   cancel-in-progress: ${{ github.event.action == 'ogygia-pr' }}
 
