@@ -23,7 +23,8 @@ import type { RawSnapshot, Step } from './snapshot.ts';
  * 3. For one object of that type: the shortest strong retainer chain from the GC roots. Walking it
  *    back from the object, the first context variable (a `let`/`const` a closure or the module
  *    keeps alive) names the variable; a closure holding that context gives the module and
- *    function, and the variable's declaration gives the source line.
+ *    function, and the variable's declaration gives the source line. (For a compiled .svelte
+ *    file the line is a line of the compiled output.)
  */
 
 export interface LeakOptions {

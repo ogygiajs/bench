@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import type { Report } from '../src/report.ts';
 import { run_child } from '../src/measure/spawn.ts';
 import type { CaseResult } from '../src/measure/child.ts';
 import type { TimeComparison, TimeStats } from '../src/measure/time.ts';
@@ -203,4 +208,69 @@ bench('bounded cache', () => m.bounded_memo());
 	assert.ok(cache.chain!.some((s) => s.edge_type === 'context' && s.edge === 'cache'));
 	assert.equal(by('no leak').leaked, false);
 	assert.equal(by('bounded cache').leaked, false);
+});
+
+test('CLI: abax run --measure all, abax time, abax diff --time', async () => {
+	const run = promisify(execFile);
+	const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+	const base = temp_dir('abax-cli-base-');
+	const pr = temp_dir('abax-cli-pr-');
+	const body = `bench('work', () => lib.slow());\nbench('alloc', () => lib.makes(8));\n`;
+	write_files(base, { 'lib.ts': LIB, 'lib.bench.ts': bench_file(body) });
+	write_files(pr, {
+		'lib.ts': LIB.replace('spin(20000)', 'spin(100000)'),
+		'lib.bench.ts': bench_file(body)
+	});
+	const node = (args: string[], cwd: string) =>
+		run(process.execPath, ['--no-warnings', cli, ...args], { cwd, maxBuffer: 1 << 26 });
+	const quick = ['--time-ms', '40'];
+	await node(
+		['run', 'lib.bench.ts', '--root', base, '--out', 'r.json', '--measure', 'all', ...quick],
+		base
+	);
+	await node(
+		['run', 'lib.bench.ts', '--root', pr, '--out', 'r.json', '--measure', 'time', ...quick],
+		pr
+	);
+	const report = JSON.parse(readFileSync(join(base, 'r.json'), 'utf8')) as Report;
+	const alloc = report.cases.find((c) => c.name === 'alloc')!;
+	assert.ok(alloc.measure?.time && alloc.measure.time.p50_ns > 0);
+	assert.ok(
+		alloc.measure?.bytes && alloc.measure.bytes.functions.some((f) => f.id === 'lib.ts > makes')
+	);
+	assert.equal(alloc.measure?.leak?.leaked, false);
+	assert.ok(alloc.measure?.estimate && alloc.measure.estimate.ns > 0);
+	assert.ok(alloc.measure.estimate.ratio !== null, 'measured time next to the estimate');
+
+	const time_json = join(pr, 'time.json');
+	await node(
+		[
+			'time',
+			'lib.bench.ts',
+			'--base',
+			base,
+			'--pr',
+			pr,
+			'--repeats',
+			'5',
+			'--out',
+			time_json,
+			'--md',
+			join(pr, 'time.md'),
+			...quick
+		],
+		pr
+	);
+	const t = JSON.parse(readFileSync(time_json, 'utf8')) as TimeComparison;
+	assert.equal(t.cases.find((c) => c.name === 'work')!.verdicts.p50_ns.regressed, true);
+	const md = readFileSync(join(pr, 'time.md'), 'utf8');
+	assert.ok(md.includes('#### Time') && md.includes('`work`') && md.includes('⚠️'), md);
+
+	const { stdout } = await node(
+		['diff', join(base, 'r.json'), join(pr, 'r.json'), '--time', time_json],
+		pr
+	);
+	assert.ok(stdout.includes('### Abax: steps per function'));
+	assert.ok(stdout.includes('#### Time'));
+	assert.ok(stdout.includes('≈'), 'estimated ns next to the step delta');
 });

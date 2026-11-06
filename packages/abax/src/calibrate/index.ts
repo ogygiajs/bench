@@ -47,18 +47,25 @@ export async function calibrate_weights(
 	return { weights, points };
 }
 
-/** ns per step, from the corpus reference function (no built-ins: plain ops only). */
+/**
+ * The time one step takes on typical code: the median ns per step over the corpus cases that call
+ * no priced built-in, at the largest size. One hot loop alone is no reference (the JIT can fold it
+ * to a fraction of a nanosecond per step); the median over many kinds of code is.
+ */
 export async function step_ns(o: { time_ms?: number; repeats?: number } = {}): Promise<number> {
 	const points = await measure_corpus({
 		root: CORPUS_ROOT,
 		files: CORPUS_FILES,
-		filter: 'reference @512',
+		filter: '@512',
 		time_ms: o.time_ms,
 		repeats: o.repeats
 	});
-	const p = points[0];
-	if (!p || p.steps === 0) throw new Error('abax: the reference case did not run');
-	return p.ns / p.steps;
+	const ratios = points
+		.filter((p) => p.steps > 0 && !Object.keys(p.units).some((k) => k.startsWith('bi.')))
+		.map((p) => p.ns / p.steps)
+		.sort((a, b) => a - b);
+	if (ratios.length === 0) throw new Error('abax: no built-in-free corpus case ran');
+	return ratios[ratios.length >> 1];
 }
 
 export interface CalibratePricesOptions {

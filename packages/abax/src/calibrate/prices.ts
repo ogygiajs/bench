@@ -11,7 +11,7 @@ import { nnls, r_squared } from './nnls.ts';
  * of sizes, and its curve fitted: ns = base + k * f(n) for f in const, n, n log2 n, n^2, with
  * base, k >= 0 (relative least squares, so small sizes count as much as large ones). The simplest
  * model within 0.02 R^2 of the best one wins. Times become steps through the time one step takes
- * (`step_ns`, measured on a reference function whose steps are counted: calibrate/weights.ts).
+ * (`step_ns`: the median ns per step of the corpus cases with no priced built-in, calibrate/index.ts).
  *
  * prices.json is versioned: when any built-in price changes, `version` goes up by one. A price
  * change makes every comparison between reports of two price files recount both sides
@@ -97,10 +97,22 @@ export async function time_builtins(
 				retainSamples: false,
 				throws: true
 			});
+			// A fresh input per call is built outside the timing, which tinybench's time budget does
+			// not see: each call declares the whole iteration's cost (as time.ts does for setups).
+			let cost: { overriddenIterationCost: number } | undefined;
+			if (input.fresh) {
+				const t0 = performance.now();
+				for (let i = 0; i < 8; i++) {
+					const x = input.make(size);
+					Reflect.apply(fn, x.self, x.args);
+				}
+				cost = { overriddenIterationCost: Math.max((performance.now() - t0) / 8, 1e-6) };
+			}
 			bench.add(
 				key,
 				() => {
 					Reflect.apply(fn, cur.self, cur.args);
+					return cost;
 				},
 				input.fresh
 					? {
@@ -114,7 +126,8 @@ export async function time_builtins(
 			const r = bench.tasks[0].result;
 			if (r.state !== 'completed')
 				throw new Error(`abax: timing ${key} at ${size} ended ${r.state}`);
-			out.push({ key, n, ns: r.latency.p50 * 1e6 });
+			// the mean: short calls quantize to the timer's tick, which the p50 would keep
+			out.push({ key, n, ns: r.latency.mean * 1e6 });
 		}
 	}
 	return out;
