@@ -12,6 +12,7 @@ import type { FunctionMeta } from '../meta.ts';
 import { fn_key, parse_v8_log } from './log.ts';
 import type { LogFacts, LogFunction } from './log.ts';
 import type { ChildConfig, ChildModule, ChildResult } from './child.ts';
+import { merge_runs, same_runs, unstable_entries } from './stability.ts';
 import { ENGINE_SCHEMA, IC_RANK, TIER_RANK, is_optimized } from './types.ts';
 import type { EngineCase, EngineDeopt, EngineReport, EngineSite, IcState, Tier } from './types.ts';
 
@@ -20,7 +21,17 @@ const CHILD = fileURLToPath(new URL('./child.ts', import.meta.url));
 
 /**
  * Flags of the health child. Single-threaded, no concurrent recompilation and no bytecode flushing:
- * V8 tiers code up at the same points on every run, so two runs decode to the same result.
+ * V8 tiers code up at the same points on every run.
+ *
+ * The garbage collector is the other half. A collection kills maps and closure contexts that
+ * optimized code points at and changes the representation of strings that inline caches see, so
+ * what V8 reports depends on when one runs; on V8's own schedule that follows the clock
+ * (incremental marking paces itself by elapsed time, the heap limit and the young generation's
+ * size by measured speeds), so it moves from run to run. A large initial old space keeps full
+ * collections out of a normal protocol altogether, and a young generation of one fixed size
+ * makes young collections follow allocation alone. If a case allocates past the old space
+ * anyway, the collection is atomic (no incremental marking) and moves nothing (no compaction),
+ * so maps keep the addresses the inline-cache log names them by.
  */
 export const HEALTH_FLAGS = [
 	'--no-warnings',
@@ -29,6 +40,11 @@ export const HEALTH_FLAGS = [
 	'--single-threaded',
 	'--predictable',
 	'--no-flush-bytecode',
+	'--initial-old-space-size=1024',
+	'--min-semi-space-size=16',
+	'--max-semi-space-size=16',
+	'--no-incremental-marking',
+	'--no-compact',
 	'--random-seed=1',
 	'--hash-seed=1',
 	'--log-code',
@@ -49,6 +65,11 @@ export interface HealthOptions {
 	runs?: number;
 	/** Run every case twice and compare (default true). */
 	check?: boolean;
+	/**
+	 * Extra runs of a case whose first two runs differ (default 2), so every function and site that
+	 * varies shows up and is marked unstable.
+	 */
+	retries?: number;
 	deps?: boolean | string[];
 	svelte?: 'server' | 'client';
 	log?: (line: string) => void;
@@ -416,7 +437,11 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 	return kase;
 }
 
-/** Engine health of every case: one child per case (twice, to check determinism). */
+/**
+ * Engine health of every case: one child per case, twice to check determinism. When the two
+ * differ, `retries` more runs find everything that varies, and the merged case marks those
+ * functions and sites unstable (stability.ts) instead of failing the whole case.
+ */
 export async function engine_health(opts: HealthOptions): Promise<EngineReport> {
 	const root = resolve(opts.root ?? process.cwd());
 	const log = opts.log ?? (() => {});
@@ -441,6 +466,7 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 		runs,
 		cases: []
 	};
+	const retries = opts.retries ?? 2;
 	try {
 		const listed = await spawn_child(dir, base, 'list');
 		const seen = new Map<string, number>();
@@ -450,14 +476,21 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 			seen.set(c.name, index + 1);
 			if (opts.filter && !c.name.includes(opts.filter)) continue;
 			const config = { ...base, case: { name: c.name, index } };
+			const once = async (): Promise<EngineCase> => {
+				const child = await spawn_child(dir, config, `case${tag}`);
+				rmSync(join(dir, `case${tag++}.log`), { force: true });
+				return analyze(child, c.name, c.file);
+			};
 			let kase: EngineCase;
 			try {
-				const a = analyze(await spawn_child(dir, config, `case${tag++}`), c.name, c.file);
-				kase = a;
+				const runs = [await once()];
 				if (opts.check ?? true) {
-					const b = analyze(await spawn_child(dir, config, `case${tag++}`), c.name, c.file);
-					kase.stable = JSON.stringify(a) === JSON.stringify(b);
+					runs.push(await once());
+					// they differ: more runs, so that every entry that varies is caught
+					if (!same_runs(runs[0], runs[1]))
+						for (let i = 0; i < retries; i++) runs.push(await once());
 				}
+				kase = merge_runs(runs);
 			} catch (e) {
 				kase = {
 					name: c.name,
@@ -471,8 +504,13 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 			report.cases.push(kase);
 			const optimized = kase.functions.filter((f) => f.optimized).length;
 			const bad = kase.sites.filter((s) => IC_RANK[s.state] >= 2).length;
+			const u = unstable_entries(kase);
+			const shaky =
+				u.functions + u.sites > 0
+					? `; not repeatable in ${kase.repeats} runs: ${u.functions} function(s), ${u.sites} site(s) (marked unstable)`
+					: '';
 			log(
-				`${kase.error ? 'FAILED  ' : kase.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${optimized}/${kase.functions.length} optimized, ${bad} poly/megamorphic site(s)${kase.error ? ': ' + kase.error : ''}`
+				`${kase.error ? 'FAILED  ' : kase.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${optimized}/${kase.functions.length} optimized, ${bad} poly/megamorphic site(s)${shaky}${kase.error ? ': ' + kase.error : ''}`
 			);
 		}
 	} finally {

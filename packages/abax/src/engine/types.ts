@@ -72,6 +72,11 @@ export interface EngineFunction {
 	/** The child could reach the function object (export or `__abax`) and forced it to optimize. */
 	forced: boolean;
 	deopts: EngineDeopt[];
+	/**
+	 * Set when the runs of the case did not agree on this function: what differed, in plain words.
+	 * The values are the first run's. The engine diff never makes a finding of it.
+	 */
+	unstable?: string;
 }
 
 export interface EngineSite {
@@ -90,13 +95,21 @@ export interface EngineSite {
 	state: IcState;
 	/** Distinct object shapes (maps) the site saw. */
 	maps: number;
+	/** Set when the runs of the case did not agree on this site (see EngineFunction.unstable). */
+	unstable?: string;
 }
 
 export interface EngineCase {
 	name: string;
 	file: string;
-	/** Two runs of the child decoded to exactly the same result. */
+	/**
+	 * Every run of the child decoded to exactly the same result. When false, the functions and sites
+	 * that differed carry `unstable` (a report from before per-entry marks has none: then the whole
+	 * case counts as unstable).
+	 */
 	stable: boolean;
+	/** Child runs decoded and compared (1 with the check off; more after a mismatch). */
+	repeats?: number;
 	error: string | null;
 	functions: EngineFunction[];
 	sites: EngineSite[];
