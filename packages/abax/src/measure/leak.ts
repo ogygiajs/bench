@@ -179,9 +179,17 @@ export async function find_leaks(
 	await session.post('Debugger.disable');
 	session.disconnect();
 
+	// An object that only compiled code holds (a constant or a name of a function V8 compiled
+	// during the rounds) is the engine's, not the program's: a memoized flag read "leaked" 5 B a
+	// call of such strings, held by Node's own stream code.
+	const held = new Uint8Array(b.node_count);
+	for (let n = 0; n < b.node_count; n++) {
+		if (b.type(n) === 'code') continue;
+		for (const [type, , to] of b.edges(n)) if (type !== 'weak' && type !== 'shortcut') held[to] = 1;
+	}
 	const groups = new Map<string, { count: number; bytes: number; nodes: number[] }>();
 	for (let n = 0; n < b.node_count; n++) {
-		if (b.id(n) <= max_id) continue;
+		if (b.id(n) <= max_id || held[n] === 0) continue;
 		const t = b.type(n);
 		if (t === 'hidden' || t === 'code' || t === 'synthetic' || t === 'object shape') continue;
 		const k = b.kind(n);
