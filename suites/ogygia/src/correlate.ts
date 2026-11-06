@@ -42,7 +42,7 @@ import { changed_files, clone, prepare_tree, rev_parse } from './checkout.ts';
 import type { Tree } from './checkout.ts';
 import { import_graphs } from './graph.ts';
 import { ABAX_DIR, run_time, run_tree } from './run.ts';
-import { select_changed } from './select.ts';
+import { is_shared, select_changed } from './select.ts';
 
 /** The time rule's floor (packages/abax TIME_RULES.p50_ns): a smaller step change is "unchanged". */
 export const STEPS_FLOOR_PCT = 3;
@@ -232,9 +232,9 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 		);
 		const b = run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
 		const h = run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
-		const changed = changed_files(repo, parent, commit).filter(
-			(f) => f !== 'pnpm-lock.yaml' && f !== 'pnpm-workspace.yaml'
-		);
+		// What every bench file shares does not pick the timed ones here: the bench files and the
+		// harness are laid over both trees, and a lockfile change times nothing in particular.
+		const changed = changed_files(repo, parent, commit).filter((f) => !is_shared(f));
 		const loaded = (r: Report | null) => new Set((r?.cases ?? []).map((c) => c.file));
 		const both = [...loaded(b.report)].filter((f) => loaded(h.report).has(f));
 		const selection = select_changed(import_graphs(head.dir, both), changed);

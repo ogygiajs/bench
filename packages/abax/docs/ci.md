@@ -49,7 +49,10 @@ In this repository:
 5. **Selection.** The changed files between the merge base and the head. For each bench file, its
    static import graph through Node's own resolver (`import.meta.resolve`, so package `exports`
    and workspace links resolve as they will at run time), into `.svelte` script blocks, stopping at
-   `node_modules`. A bench file runs when its graph reaches a changed file. A change to
+   `node_modules`. A bench file runs when its graph reaches a changed file. A manifest
+   (`package.json`, `tsconfig*.json`) is in no graph but decides how the files under it resolve
+   (an `exports` or `imports` map), so a changed one runs every bench file whose graph has a file
+   under its directory. A change to the root `package.json`, a root `tsconfig*.json`, `.npmrc`,
    `pnpm-lock.yaml`, `pnpm-workspace.yaml` or anything under `internal/abax/` runs them all.
 6. **Counting.** Each selected bench file runs in its own processes on the head tree, then on the
    base tree: `abax run`, `abax health`, and `abax growth --scaled on`. One bad file costs only its
