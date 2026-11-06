@@ -34,6 +34,8 @@ export interface FunctionRecord {
 	calls: number;
 	/** Calls whose inputs or output could not be cloned. */
 	uncloneable: number;
+	/** Calls with the inputs of an earlier sample but another output: state the inputs miss. */
+	inconsistent: number;
 	samples: Sample[];
 }
 
@@ -65,6 +67,24 @@ interface Frame {
 
 const NOT_CLONED = Symbol('not cloned');
 
+function error_of(e: unknown): { name: string; message: string } {
+	const err = e as { name?: unknown; message?: unknown } | null;
+	return { name: String(err?.name ?? 'Error'), message: String(err?.message ?? e) };
+}
+
+/** Same output, or the same error. */
+function same_result(a: Sample, b: Sample): boolean {
+	if (a.threw || b.threw) {
+		return (
+			a.threw !== undefined &&
+			b.threw !== undefined &&
+			a.threw.name === b.threw.name &&
+			a.threw.message === b.threw.message
+		);
+	}
+	return b.out !== NOT_CLONED && a.out !== NOT_CLONED && isDeepStrictEqual(a.out, b.out);
+}
+
 function clone(v: unknown): unknown {
 	if (v === globalThis) return undefined;
 	try {
@@ -80,14 +100,15 @@ export class Recorder {
 	/** While true (a replay runs), calls are not recorded. */
 	replaying = false;
 	#records = new Map<string, FunctionRecord>();
-	#keys = new Map<string, Set<string>>();
+	/** Per function: inputs key -> the sample kept for those inputs. */
+	#keys = new Map<string, Map<string, Sample>>();
 
 	#record(id: string): FunctionRecord {
 		let r = this.#records.get(id);
 		if (!r) {
-			r = { id, calls: 0, uncloneable: 0, samples: [] };
+			r = { id, calls: 0, uncloneable: 0, inconsistent: 0, samples: [] };
 			this.#records.set(id, r);
-			this.#keys.set(id, new Set());
+			this.#keys.set(id, new Map());
 		}
 		return r;
 	}
@@ -133,8 +154,7 @@ export class Recorder {
 	fail(f: Frame | null, e: unknown): void {
 		if (f && !f.done) {
 			f.done = true;
-			const err = e as { name?: unknown; message?: unknown } | null;
-			f.threw = { name: String(err?.name ?? 'Error'), message: String(err?.message ?? e) };
+			f.threw = error_of(e);
 		}
 	}
 
@@ -149,11 +169,16 @@ export class Recorder {
 			return;
 		}
 		const keys = this.#keys.get(f.rec.id)!;
-		if (keys.has(f.key) || f.rec.samples.length >= this.max_samples) return;
-		keys.add(f.key);
 		const s: Sample = { args: f.args, this_value: f.this_value };
 		if (f.threw) s.threw = f.threw;
 		else s.out = f.out;
+		const earlier = keys.get(f.key);
+		if (earlier) {
+			if (!same_result(earlier, s)) f.rec.inconsistent++;
+			return;
+		}
+		if (f.rec.samples.length >= this.max_samples) return;
+		keys.set(f.key, s);
 		f.rec.samples.push(s);
 	}
 
@@ -206,23 +231,23 @@ export function replay(
 				continue;
 			}
 			let mismatches = 0;
-			for (const s of r.samples) {
-				let got: unknown;
-				let threw: { name: string; message: string } | undefined;
-				try {
-					got = clone(
-						Reflect.apply(fn, structuredClone(s.this_value), structuredClone(s.args) as unknown[])
-					);
-				} catch (e) {
-					const err = e as { name?: unknown; message?: unknown } | null;
-					threw = { name: String(err?.name ?? 'Error'), message: String(err?.message ?? e) };
+			// Twice per sample: a function that keeps state of its own answers differently the
+			// second time even when the first replay happens to match.
+			for (let round = 0; round < 2; round++) {
+				for (const s of r.samples) {
+					const got: Sample = { args: s.args, this_value: s.this_value };
+					try {
+						got.out = clone(
+							Reflect.apply(fn, structuredClone(s.this_value), structuredClone(s.args) as unknown[])
+						);
+					} catch (e) {
+						got.threw = error_of(e);
+					}
+					if (!same_result(s, got)) mismatches++;
 				}
-				const same = s.threw
-					? threw !== undefined && threw.name === s.threw.name && threw.message === s.threw.message
-					: threw === undefined && got !== NOT_CLONED && isDeepStrictEqual(got, s.out);
-				if (!same) mismatches++;
 			}
-			out.push({ ...base, mismatches, status: mismatches > 0 ? 'hidden state' : 'reproduced' });
+			const hidden = mismatches > 0 || r.inconsistent > 0;
+			out.push({ ...base, mismatches, status: hidden ? 'hidden state' : 'reproduced' });
 		}
 	} finally {
 		recorder.replaying = was;

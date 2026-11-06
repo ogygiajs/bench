@@ -58,6 +58,11 @@ export interface CountedPluginOptions {
 	overlay?: Record<string, string>;
 	/** Report root for files outside node_modules (default cwd). */
 	root?: string;
+	/**
+	 * Which build this is. Default: Vite tells (the environment's consumer, or `ssr`); a bundler
+	 * that does not (plain Rolldown) needs it said.
+	 */
+	target?: 'server' | 'client';
 }
 
 const BROWSER_SHIMS: Record<string, string> = {
@@ -95,7 +100,8 @@ export function counted_plugins(o: CountedPluginOptions): object[] {
 			importer: string | undefined,
 			options?: ResolveOptions
 		): string | null {
-			if (!is_client(this, options)) return null;
+			const client = o.target ? o.target === 'client' : is_client(this, options);
+			if (!client) return null;
 			if (id === RUNTIME_PATH) return PAGE_RUNTIME;
 			if (importer && importer.startsWith(ABAX_SRC) && id in BROWSER_SHIMS) return SHIM + id;
 			return null;

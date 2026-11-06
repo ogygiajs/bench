@@ -152,10 +152,21 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 		}
 		const returns: Node[] = [];
 		let new_target = false;
+		let uses_this = false;
 		if (body.type === 'BlockStatement') {
 			own_nodes(body, (x) => {
 				if (x.type === 'ReturnStatement') returns.push(x);
 				if (x.type === 'MetaProperty') new_target = true;
+				if (x.type === 'ThisExpression') uses_this = true;
+				return true;
+			});
+		} else if (!is_arrow) {
+			uses_this = true;
+		}
+		for (const p of params) {
+			// a default value may read `this` too
+			own_nodes(p, (x) => {
+				if (x.type === 'ThisExpression') uses_this = true;
 				return true;
 			});
 		}
@@ -166,7 +177,9 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 		const r = `$abax_r${++n}`;
 		const e = `$abax_e${n}`;
 		const args = is_arrow ? `[${params.map((p) => p.name as string).join(',')}]` : 'arguments';
-		const self = is_arrow ? 'undefined' : 'this';
+		// `this` is an input only when the function reads it (a method called on a module
+		// namespace or a class instance would otherwise make every call uncloneable).
+		const self = !is_arrow && uses_this ? 'this' : 'undefined';
 		const head = `const ${r}=__abax_rec.enter(${JSON.stringify(id)},${args},${self});try{`;
 		const tail = `}catch(${e}){__abax_rec.fail(${r},${e});throw ${e}}finally{__abax_rec.exit(${r})}`;
 		if (body.type === 'BlockStatement') {
