@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { register_plain } from './plain.ts';
 import { load_cases } from './cases.ts';
 import { compare_time, time_case } from './time.ts';
-import type { TimeOptions } from './time.ts';
+import type { CompareOptions, TimeOptions } from './time.ts';
 import { real_bytes } from './alloc.ts';
 import type { BytesOptions } from './alloc.ts';
 import { find_leaks } from './leak.ts';
@@ -64,7 +64,14 @@ async function main(): Promise<void> {
 		case 'time_ab': {
 			const base = await load_cases(job.roots[0], job.files[0], job.filter);
 			const pr = await load_cases(job.roots[1], job.files[1], job.filter);
-			result = await compare_time(base, pr, o as TimeOptions & { repeats?: number });
+			// every round after the first on fresh copies of both builds (see time.ts)
+			let generation = 0;
+			const load = async (side: 'base' | 'pr', round: number) => {
+				if (round === 0) return side === 'base' ? base : pr;
+				const i = side === 'base' ? 0 : 1;
+				return load_cases(job.roots[i], job.files[i], job.filter, `t${++generation}`);
+			};
+			result = await compare_time(base, pr, { ...(o as CompareOptions), load });
 			break;
 		}
 		case 'bytes':

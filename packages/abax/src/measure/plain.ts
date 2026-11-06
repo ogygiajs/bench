@@ -11,6 +11,7 @@ import {
 	strip_types
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
+import { GENERATION } from '../loader/core.ts';
 
 /*
  * The plain build: the code as it ships, for the layers that need the real engine (time, real
@@ -82,6 +83,19 @@ export function register_plain(config: PlainConfig): void {
 	const cfg: PlainConfig = { roots: [...config.roots], svelte: config.svelte };
 	installed = cfg;
 	registerHooks({
+		// a fresh copy (`?abax_gen=N`, cases.ts) passes its query on to what it imports, so the whole
+		// graph is new; Abax's own files stay shared
+		resolve(specifier, context, next) {
+			const r = next(specifier, context);
+			const parent = context.parentURL;
+			if (!parent || !r.url.startsWith('file:') || r.url.includes(GENERATION)) return r;
+			const q = parent.indexOf('?');
+			const at = q === -1 ? -1 : parent.indexOf(GENERATION, q);
+			if (at === -1 || fileURLToPath(r.url).startsWith(ABAX_DIR)) return r;
+			const end = parent.indexOf('&', at);
+			const gen = parent.slice(at, end === -1 ? undefined : end);
+			return { ...r, url: r.url + (r.url.includes('?') ? '&' : '?') + gen };
+		},
 		load(url, context, next) {
 			if (!url.startsWith('file:')) return next(url, context);
 			const path = fileURLToPath(url);

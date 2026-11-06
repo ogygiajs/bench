@@ -2,18 +2,25 @@ import { relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
+import { GENERATION } from '../loader/core.ts';
 
-/** Import bench files of one root (with whatever loader is registered) and return their cases. */
+/**
+ * Import bench files of one root (with whatever loader is registered) and return their cases.
+ * `generation`: a fresh copy of the files and of what they import (the loader passes the query on,
+ * see plain.ts), with its own module state and its own compiled code.
+ */
 export async function load_cases(
 	root: string,
 	files: readonly string[],
-	filter?: string | null
+	filter?: string | null,
+	generation?: string
 ): Promise<BenchCase[]> {
 	const start = cases().length;
 	for (const f of files) {
 		const abs = resolve(root, f);
 		set_current_file(relative(root, abs).split(sep).join('/'));
-		await import(pathToFileURL(abs).href);
+		const query = generation ? `?${GENERATION}${generation}` : '';
+		await import(pathToFileURL(abs).href + query);
 	}
 	const list = cases().slice(start);
 	return filter ? list.filter((c) => c.name.includes(filter)) : list;
