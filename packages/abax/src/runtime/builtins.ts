@@ -99,6 +99,11 @@ const SIZES: Record<string, Size> = {
 	'Set.prototype.delete': constant
 };
 
+/** The size a priced built-in is charged for (what calibration fits its curve against). */
+export function builtin_size(key: string, self: unknown, args: unknown[], result: unknown): number {
+	return (SIZES[key] ?? this_len)(self, args, result);
+}
+
 interface Installed {
 	owner: Record<string, unknown>;
 	prop: string;
@@ -120,6 +125,7 @@ function make_wrapper(
 	rt: Runtime,
 	orig: (...args: unknown[]) => unknown,
 	name_id: number,
+	key_id: number,
 	price: BuiltinPrice,
 	size: Size
 ): (...args: unknown[]) => unknown {
@@ -133,7 +139,8 @@ function make_wrapper(
 		try {
 			const result = reflect_apply(orig, this, args);
 			// Sizing and charging run with the guard still up: nothing they touch is charged again.
-			rt.charge(site, name_id, builtin_cost(price, size(this, args, result)));
+			const n = size(this, args, result);
+			rt.charge(site, name_id, builtin_cost(price, n), key_id, n);
 			return result;
 		} finally {
 			rt.bdepth = prev;
@@ -158,7 +165,8 @@ export class Builtins {
 			if (!desc || typeof desc.value !== 'function') continue;
 			const name_id = rt.name_ids.get(builtin_call_name(key));
 			if (name_id === undefined) continue;
-			const wrapper = make_wrapper(rt, desc.value, name_id, price, SIZES[key] ?? this_len);
+			const key_id = rt.bkeys.indexOf(key);
+			const wrapper = make_wrapper(rt, desc.value, name_id, key_id, price, SIZES[key] ?? this_len);
 			this.#installed.push({ owner: at.owner, prop: at.prop, desc });
 			this.#wrappers.push({ owner: at.owner, prop: at.prop, desc: { ...desc, value: wrapper } });
 		}

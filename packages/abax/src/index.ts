@@ -31,3 +31,16 @@ export { scale_input as scaleInput } from './growth/scale.ts';
 export { run_search as runSearch, diff_search as diffSearch } from './search/index.ts';
 export type { SearchReport, SearchCase, SearchOptions } from './search/index.ts';
 export { diff_sections as diffSections, render_sections as renderSections } from './sections.ts';
+export { measure_layers as measureLayers } from './measure/index.ts';
+export type { Layer, MeasureOptions } from './measure/index.ts';
+export type { CaseMeasure, Estimate, BytesMeasure } from './measure/types.ts';
+export { render_time as renderTime } from './measure/markdown.ts';
+export type { TimeComparison, TimeStats } from './measure/time.ts';
+export type { LeakResult } from './measure/leak.ts';
+export { recount, align_prices as alignPrices } from './recount.ts';
+export type { Units } from './units.ts';
+export {
+	calibrate_prices as calibratePrices,
+	calibrate_weights as calibrateWeights
+} from './calibrate/index.ts';
+export type { Weights } from './calibrate/weights.ts';

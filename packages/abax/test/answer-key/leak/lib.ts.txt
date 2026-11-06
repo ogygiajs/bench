@@ -1,0 +1,23 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+
+const seen: Row[] = [];
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (const r of rows) {
+		seen.push(r);
+		out.push(score(r));
+	}
+	return out;
+}

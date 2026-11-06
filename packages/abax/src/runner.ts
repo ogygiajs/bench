@@ -13,6 +13,9 @@ import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
 import { REPORT_SCHEMA, build_case_report } from './report.ts';
 import { load_prices } from './prices.ts';
+import { apply_estimates } from './calibrate/estimate.ts';
+import { fresh_copy, next_generation, positions } from './fresh.ts';
+import { GENERATION } from './loader/core.ts';
 import type { CaseReport, Report } from './report.ts';
 
 export interface RunOptions {
@@ -21,6 +24,8 @@ export interface RunOptions {
 	root?: string;
 	deps?: LoaderConfig['deps'];
 	svelte?: LoaderConfig['svelte'];
+	/** Fresh module state for every run of a case (fresh.ts). Default true. */
+	fresh?: boolean;
 	/** Only cases whose name contains this. */
 	filter?: string;
 	/** Commit the code was measured at (default: `git rev-parse HEAD` in root, if any). */
@@ -54,15 +59,18 @@ interface RunResult {
  * measured runs in identical fresh environments. Counts must match exactly, else "unstable".
  */
 export async function run_case(
-	c: BenchCase,
+	case_: BenchCase,
 	det: Determinism,
-	builtins: Builtins
+	builtins: Builtins,
+	/** A fresh copy of the case (fresh.ts), taken before each run; none: one copy for all runs. */
+	fresh?: () => Promise<BenchCase>
 ): Promise<{
 	a: RunResult;
 	stable: boolean;
 }> {
 	const rt = builtins.runtime;
 	const once = async (mode: IoMode): Promise<RunResult> => {
+		const c = fresh ? await fresh() : case_;
 		const ctx = c.setup ? await c.setup() : undefined;
 		rt.reset();
 		det.open(mode);
@@ -113,18 +121,24 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	const det = new Determinism();
 
 	const start = cases().length;
+	// Each call imports its own copy of the bench files (and what they import): a second call in
+	// the same process finds its cases again and starts from fresh module state.
+	const gen = `?${GENERATION}${next_generation()}`;
 	for (const f of opts.files) {
 		const abs = resolve(f);
 		set_current_file(relative(root, abs).split(sep).join('/'));
-		await import(pathToFileURL(abs).href);
+		await import(pathToFileURL(abs).href + gen);
 	}
 	let list = cases().slice(start);
+	const position = positions(list);
 	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));
 
 	const results: CaseReport[] = [];
 	for (const c of list) {
 		try {
-			const { a, stable } = await run_case(c, det, builtins);
+			const fresh =
+				opts.fresh === false ? undefined : () => fresh_copy(c, root, position.get(c) ?? 0);
+			const { a, stable } = await run_case(c, det, builtins, fresh);
 			results.push(
 				build_case_report(rt, a.snap, {
 					name: c.name,
@@ -164,6 +178,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		},
 		cases: results
 	};
+	apply_estimates(report);
 	if (opts.out) writeFileSync(opts.out, JSON.stringify(report, null, '\t') + '\n');
 	return report;
 }

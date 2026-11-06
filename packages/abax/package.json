@@ -18,20 +18,25 @@
 		"./report": "./src/report.ts",
 		"./diff": "./src/diff/index.ts",
 		"./dts": "./src/dts.ts",
-		"./prices.json": "./prices.json"
+		"./prices.json": "./prices.json",
+		"./weights.json": "./weights.json"
 	},
 	"scripts": {
 		"test": "node --test --test-concurrency=1 \"test/*.test.ts\"",
-		"slowdown": "node scripts/slowdown.ts"
+		"slowdown": "node scripts/slowdown.ts",
+		"calibrate": "node scripts/calibrate.ts"
 	},
 	"dependencies": {
+		"@bench/compare": "workspace:*",
 		"@jridgewell/remapping": "2.3.5",
 		"@jridgewell/trace-mapping": "0.3.31",
 		"magic-string": "1.4.5",
-		"oxc-parser": "0.157.0"
+		"oxc-parser": "0.157.0",
+		"tinybench": "catalog:measure"
 	},
 	"devDependencies": {
 		"@types/node": "26.1.2",
+		"devalue": "5.9.4",
 		"rolldown": "catalog:",
 		"svelte": "5.57.3",
 		"typescript": "6.0.3"

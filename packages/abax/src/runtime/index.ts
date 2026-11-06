@@ -2,6 +2,7 @@ import type { ModuleMeta } from '../meta.ts';
 import { load_prices, builtin_names } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import { array_bytes, object_bytes, string_bytes } from '../layout.ts';
+import { DisposeScope } from './dispose.ts';
 
 /*
  * The counting runtime. Everything the instrumented code calls per block or per call lives here and
@@ -21,6 +22,9 @@ export const EMPTY: readonly never[] = Object.freeze([]);
 
 // Originals captured at load, before any wrapping, so the runtime never charges itself.
 const object_keys = Object.keys;
+const own_symbols = Object.getOwnPropertySymbols;
+const is_enumerable = Object.prototype.propertyIsEnumerable;
+const reflect_apply = Reflect.apply;
 const is_array = Array.isArray;
 
 export interface ModuleRecord {
@@ -62,6 +66,9 @@ export interface Snapshot {
 	/** `fid * 256 + name id` -> steps (and calls in `unsited_calls`) for built-ins with no site. */
 	unsited: Table;
 	unsited_calls: Table;
+	/** Built-in size units per site / per function (see BUILTIN_UNIT_SHIFT). */
+	bunits: Table;
+	uunits: Table;
 	/** `(caller + 1) * 2^26 + callee` -> count. Caller -1 is the root (uninstrumented code). */
 	edges: Table;
 	steps: number;
@@ -72,6 +79,20 @@ export function table(): Table {
 }
 
 export const EDGE_KEY_SHIFT = 2 ** 26;
+
+/**
+ * Built-in size units: `(site or fid) * BUILTIN_UNIT_SHIFT + key id` -> 4 slots at `key * 4`:
+ * calls, sum n, sum n log2 n (n when n <= 1, like builtin_cost), sum n^2.
+ */
+export const BUILTIN_UNIT_SHIFT = 512;
+
+function add_units(t: Table, key: number, n: number): void {
+	const k = key * 4;
+	t[k] = (t[k] ?? 0) + 1;
+	t[k + 1] = (t[k + 1] ?? 0) + n;
+	t[k + 2] = (t[k + 2] ?? 0) + (n > 1 ? n * Math.log2(n) : n);
+	t[k + 3] = (t[k + 3] ?? 0) + n * n;
+}
 
 function grow_f64(a: Float64Array, n: number): Float64Array {
 	if (a.length >= n) return a;
@@ -113,6 +134,11 @@ export class Runtime {
 	bsite_calls: Float64Array = new Float64Array(64);
 	unsited = table();
 	unsited_calls = table();
+	/** Built-in keys (`Array.prototype.sort`...); a key's id is its index. */
+	bkeys: string[];
+	/** Built-in size units per site and per function (no site); see BUILTIN_UNIT_SHIFT. */
+	bunits = table();
+	uunits = table();
 
 	stack: Int32Array = new Int32Array(1024);
 	depth = 0;
@@ -131,6 +157,7 @@ export class Runtime {
 		this.prices = prices ?? load_prices().prices;
 		this.names = builtin_names(this.prices);
 		this.name_ids = new Map(this.names.map((n, i) => [n, i]));
+		this.bkeys = Object.keys(this.prices.builtins);
 		const d = this.prices.dynamic;
 		this.price_spread_key = d.spread_key;
 		this.price_spread_element = d.spread_element;
@@ -265,6 +292,11 @@ export class Runtime {
 		return v;
 	}
 
+	/** The disposal scope of a block with `await using` (dispose.ts). */
+	scope(): DisposeScope {
+		return new DisposeScope();
+	}
+
 	resume_if(fr: AsyncFrame): void {
 		if (!fr.running) this.resume(fr, undefined);
 	}
@@ -351,21 +383,30 @@ export class Runtime {
 
 	// ------------------------------------------------------------ dynamic costs (spec 2 + 4)
 
+	// Per dynamic site, d[2i] holds bytes and d[2i+1] the size units (characters, keys, elements):
+	// the report prices units with the site kind's dynamic price, so a price change can recount.
+
 	str(d: Float64Array, i: number, v: string): string {
 		const n = v.length;
-		const steps = n * this.price_string_char;
 		d[2 * i] += string_bytes(n);
-		d[2 * i + 1] += steps;
-		this.s[0] += steps;
+		d[2 * i + 1] += n;
+		this.s[0] += n * this.price_string_char;
 		return v;
 	}
 
 	spread_obj<T>(d: Float64Array, i: number, o: T): T {
-		const n = o == null ? 0 : object_keys(o).length;
-		const steps = n * this.price_spread_key;
+		let n = 0;
+		if (o != null) {
+			n = object_keys(o).length;
+			// Object spread copies own enumerable symbol keys too.
+			if (typeof o === 'object' || typeof o === 'function') {
+				const syms = own_symbols(o);
+				for (let k = 0; k < syms.length; k++) if (reflect_apply(is_enumerable, o, [syms[k]])) n++;
+			}
+		}
 		d[2 * i] += 4 * n;
-		d[2 * i + 1] += steps;
-		this.s[0] += steps;
+		d[2 * i + 1] += n;
+		this.s[0] += n * this.price_spread_key;
 		return o;
 	}
 
@@ -374,40 +415,44 @@ export class Runtime {
 		if (is_array(x)) out = x as unknown[];
 		else out = [...x];
 		const n = out.length;
-		const steps = n * this.price_spread_element;
 		d[2 * i] += 4 * n;
-		d[2 * i + 1] += steps;
-		this.s[0] += steps;
+		d[2 * i + 1] += n;
+		this.s[0] += n * this.price_spread_element;
 		return out;
 	}
 
 	rest(d: Float64Array, i: number, n: number): void {
-		const steps = n * this.price_rest_element;
 		d[2 * i] += array_bytes(n);
-		d[2 * i + 1] += steps;
-		this.s[0] += steps;
+		d[2 * i + 1] += n;
+		this.s[0] += n * this.price_rest_element;
 	}
 
 	args(d: Float64Array, i: number, n: number): void {
-		const steps = n * this.price_arguments_element;
 		d[2 * i] += object_bytes(1) + (n > 0 ? 8 + 4 * n : 0);
-		d[2 * i + 1] += steps;
-		this.s[0] += steps;
+		d[2 * i + 1] += n;
+		this.s[0] += n * this.price_arguments_element;
 	}
 
 	// ------------------------------------------------------------ built-ins
 
-	/** Charge a priced built-in call (called by the wrappers in builtins.ts). */
-	charge(site: number, name_id: number, cost: number): void {
+	/**
+	 * Charge a priced built-in call (called by the wrappers in builtins.ts). `key_id` is the
+	 * built-in's index in `bkeys` and `n` its size: the size terms are kept per site (or function)
+	 * so a report can be recounted with other prices (units.ts).
+	 */
+	charge(site: number, name_id: number, cost: number, key_id = -1, n = 0): void {
 		this.s[0] += cost;
 		if (site >= 0 && this.bsite_name[site] === name_id) {
 			this.bsite_steps[site] += cost;
 			this.bsite_calls[site]++;
+			if (key_id >= 0) add_units(this.bunits, site * BUILTIN_UNIT_SHIFT + key_id, n);
 			return;
 		}
-		const key = this.stack[this.depth - 1] * 256 + name_id;
+		const fid = this.stack[this.depth - 1];
+		const key = fid * 256 + name_id;
 		this.unsited[key] = (this.unsited[key] ?? 0) + cost;
 		this.unsited_calls[key] = (this.unsited_calls[key] ?? 0) + 1;
+		if (key_id >= 0) add_units(this.uunits, fid * BUILTIN_UNIT_SHIFT + key_id, n);
 	}
 
 	// ------------------------------------------------------------ measuring
@@ -429,6 +474,8 @@ export class Runtime {
 		this.bsite_calls.fill(0);
 		this.unsited = table();
 		this.unsited_calls = table();
+		this.bunits = table();
+		this.uunits = table();
 		this.depth = 0;
 		this.site = -1;
 		this.bdepth = -1;
@@ -448,6 +495,8 @@ export class Runtime {
 			bsite_calls: this.bsite_calls.slice(0, this.bsite_count),
 			unsited: { ...this.unsited },
 			unsited_calls: { ...this.unsited_calls },
+			bunits: { ...this.bunits },
+			uunits: { ...this.uunits },
 			edges: { ...this.edges },
 			steps: this.s[0]
 		};
@@ -493,6 +542,8 @@ export function same_counts(a: Snapshot, b: Snapshot): boolean {
 	return (
 		same_table(a.edges, b.edges) &&
 		same_table(a.unsited, b.unsited) &&
-		same_table(a.unsited_calls, b.unsited_calls)
+		same_table(a.unsited_calls, b.unsited_calls) &&
+		same_table(a.bunits, b.bunits) &&
+		same_table(a.uunits, b.uunits)
 	);
 }
