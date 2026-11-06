@@ -739,8 +739,14 @@ class Instrumenter {
 			let first = 0;
 			while (first < stmts.length && typeof stmts[first].directive === 'string') first++;
 			const at = first > 0 ? stmts[first - 1].end : body.start + 1;
-			this.open(at, head);
-			this.close(body.end - 1, tail);
+			if (at === body.end - 1) {
+				// An empty body (`() => {}`): the opening and the closing text meet at one position,
+				// where appendRight / prependLeft would put the closing text first. One edit, in order.
+				this.open(at, () => head() + tail());
+			} else {
+				this.open(at, head);
+				this.close(body.end - 1, tail);
+			}
 			this.walk_statements(stmts.slice(first), false);
 		} else {
 			const arrow = this.code.lastIndexOf('=>', body.start);
@@ -1045,10 +1051,11 @@ class Instrumenter {
 			if (!e) continue;
 			if (e.type === 'SpreadElement') {
 				const arg = get(e, 'argument')!;
-				this.walk_expr(arg);
-				this.op('iter_init', e.start);
+				// The wrapper's edits before the argument's own (outer first at a shared position).
 				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${site.index},`);
 				this.close(arg.end, () => ')');
+				this.walk_expr(arg);
+				this.op('iter_init', e.start);
 			} else {
 				this.walk_expr(e);
 			}
@@ -1074,9 +1081,9 @@ class Instrumenter {
 		for (const p of props) {
 			if (p.type === 'SpreadElement') {
 				const arg = get(p, 'argument')!;
-				this.walk_expr(arg);
 				this.open(arg.start, () => `${this.n.R}.spread_obj(${this.n.d},${site.index},`);
 				this.close(arg.end, () => ')');
+				this.walk_expr(arg);
 				continue;
 			}
 			const computed = flag(p, 'computed');
@@ -1098,11 +1105,12 @@ class Instrumenter {
 			if (!a) continue;
 			if (a.type === 'SpreadElement') {
 				const arg = get(a, 'argument')!;
+				let s: SiteRec | null = null;
+				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${s!.index},`);
+				this.close(arg.end, () => ')');
 				this.walk_expr(arg);
 				this.op('iter_init', a.start);
-				const s = this.site('spread_args', a.start, 0, true, false);
-				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${s.index},`);
-				this.close(arg.end, () => ')');
+				s = this.site('spread_args', a.start, 0, true, false);
 			} else {
 				this.walk_expr(a, `${callee}:${i}`);
 			}

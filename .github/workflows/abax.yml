@@ -1,0 +1,236 @@
+name: abax
+
+# Abax (packages/abax) on ogygia's own source: the bench files in ogygia's packages/*/bench, counted
+# exactly (steps, allocations and calls per function and line), with V8's engine health and, for
+# the cases that declare a scaler, how their steps grow with the input. suites/ogygia does the work.
+#
+#   repository_dispatch `ogygia-abax`  ogygia's CI, as soon as a PR is opened or pushed (Abax builds
+#                                      from source: no pkg.pr.new preview to wait for). The PR's
+#                                      commit against the commit it branched from, both counted in
+#                                      this job; only the bench files whose import graph reaches a
+#                                      file the PR changes. Posts the `abax` section of the PR's one
+#                                      benchmark comment (the first section; the app benchmark fills
+#                                      its own when it finishes).
+#   repository_dispatch `ogygia-main`  a push to ogygia's main: every bench file of that commit.
+#   schedule (nightly)                 every bench file of ogygia's main head.
+#   workflow_dispatch                  by hand: `sha`, plus `base_sha` for a PR-style comparison;
+#                                      with `pr`, the section is posted to that PR of `comment_repo`.
+#                                      Kept as an artifact only.
+#
+# Counts are exact, so one run of each side decides (no repeats, no noise rule). Results land on
+# the `results` branch next to the app benchmark's, under abax/: `abax/pr/<number>.json` (the
+# newest run of that PR), `abax/commit/<sha>.json` (the newest run of that commit),
+# `abax/main/<sha>.json` and `abax/main/latest.json` (main pushes and the nightly run).
+
+on:
+  repository_dispatch:
+    types: [ogygia-abax, ogygia-main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: 'ogygia commit to count (full sha)'
+        type: string
+        required: true
+      base_sha:
+        description: 'optional: the base it is compared with (a PR run: only bench files reaching the changes)'
+        type: string
+        default: ''
+      pr:
+        description: 'optional: post the section to this PR number of comment_repo'
+        type: string
+        default: ''
+      comment_repo:
+        description: 'the repository of that PR'
+        type: string
+        default: ogygiajs/ogygia
+  schedule:
+    - cron: '41 3 * * *'
+
+# A newer push to the same PR cancels the older run. Main runs queue, so every push lands its result.
+concurrency:
+  group: >-
+    abax-${{ github.event.action == 'ogygia-abax' && format('pr-{0}', github.event.client_payload.pr)
+    || (github.event.action == 'ogygia-main' || github.event_name == 'schedule') && 'main'
+    || github.run_id }}
+  cancel-in-progress: ${{ github.event.action == 'ogygia-abax' }}
+
+permissions:
+  contents: write
+  # a manual run may post its section to a PR of this repository (with the job's own token)
+  pull-requests: write
+
+env:
+  UPSTREAM: ogygiajs/ogygia
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  abax:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Plan the run
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          ACTION: ${{ github.event.action }}
+          PAYLOAD_PR: ${{ github.event.client_payload.pr }}
+          PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
+          PAYLOAD_BASE_SHA: ${{ github.event.client_payload.base_sha }}
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_BASE_SHA: ${{ inputs.base_sha }}
+          INPUT_PR: ${{ inputs.pr }}
+          INPUT_COMMENT_REPO: ${{ inputs.comment_repo }}
+        run: |
+          set -euo pipefail
+          pr=''; sha=''; base_sha=''; comment_repo="$UPSTREAM"
+          case "$EVENT/$ACTION" in
+            repository_dispatch/ogygia-abax)
+              kind=pr; pr="$PAYLOAD_PR"; sha="$PAYLOAD_SHA"; base_sha="${PAYLOAD_BASE_SHA:-}"
+              [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad pr in payload: $pr"; exit 1; }
+              [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::a PR run needs client_payload.base_sha"; exit 1; }
+              ;;
+            repository_dispatch/ogygia-main)
+              kind=main; sha="$PAYLOAD_SHA"
+              ;;
+            schedule/*)
+              kind=main
+              sha="$(git ls-remote "https://github.com/$UPSTREAM.git" refs/heads/main | cut -f1)"
+              ;;
+            *)
+              kind=manual; sha="$INPUT_SHA"; base_sha="${INPUT_BASE_SHA:-}"; pr="${INPUT_PR:-}"
+              comment_repo="${INPUT_COMMENT_REPO:-$UPSTREAM}"
+              if [ -n "$pr" ]; then [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::pr must be a number"; exit 1; }; fi
+              [[ "$comment_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || { echo "::error::bad comment_repo"; exit 1; }
+              ;;
+          esac
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad sha: $sha"; exit 1; }
+          if [ -n "$base_sha" ] && ! [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::bad base sha: $base_sha"; exit 1
+          fi
+          {
+            echo "kind=$kind"; echo "pr=$pr"; echo "sha=$sha"; echo "base_sha=$base_sha"
+            echo "comment_repo=$comment_repo"
+          } >> "$GITHUB_OUTPUT"
+          echo "### abax: $kind run of ogygia \`${sha:0:7}\`${base_sha:+ against \`${base_sha:0:7}\`}${pr:+ (PR #$pr)}" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: pnpm/action-setup@v4
+
+      # The Node Abax's own tests run on (check.yml): counts and engine health are taken on it.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      # Abax, the ogygia suite and what they import (typescript for the bench files' types).
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter '@bench/ogygia...' --config.confirmModulesPurge=false
+
+      # Clones ogygia, checks out and installs each commit, writes the bench files' types, selects
+      # the bench files and counts them; section.md and result.json land in suites/ogygia/out.
+      - name: Run Abax on ogygia
+        env:
+          SHA: ${{ steps.plan.outputs.sha }}
+          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
+          PR: ${{ steps.plan.outputs.pr }}
+          KIND: ${{ steps.plan.outputs.kind }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          node suites/ogygia/src/cli.ts --sha "$SHA" ${BASE_SHA:+--base "$BASE_SHA"} ${PR:+--pr "$PR"} \
+            --kind "$KIND" --work "$RUNNER_TEMP/abax" --out suites/ogygia/out --run-url "$RUN_URL"
+          cat suites/ogygia/out/section.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check out the results branch
+        if: steps.plan.outputs.kind != 'manual'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$url" results >/dev/null; then
+            git clone --quiet --branch results "$url" _results
+          else
+            git init --quiet -b results _results
+            git -C _results remote add origin "$url"
+          fi
+          git -C _results config user.name 'github-actions[bot]'
+          git -C _results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+      # Only files under abax/: the app benchmark's paths and the README (bench.yml writes it) stay.
+      - name: Store the result
+        if: steps.plan.outputs.kind != 'manual'
+        env:
+          KIND: ${{ steps.plan.outputs.kind }}
+          PR: ${{ steps.plan.outputs.pr }}
+          SHA: ${{ steps.plan.outputs.sha }}
+          RESULT: suites/ogygia/out/result.json
+        run: |
+          set -euo pipefail
+          mkdir -p _results/abax/commit
+          cp "$RESULT" "_results/abax/commit/$SHA.json"
+          if [ "$KIND" = pr ]; then
+            mkdir -p _results/abax/pr
+            cp "$RESULT" "_results/abax/pr/$PR.json"
+            msg="abax: pr #$PR @ ${SHA:0:7}"
+          else
+            mkdir -p _results/abax/main
+            cp "$RESULT" "_results/abax/main/$SHA.json"
+            cp "$RESULT" _results/abax/main/latest.json
+            msg="abax: main ${SHA:0:7}"
+          fi
+          cd _results
+          git add -A abax
+          git diff --cached --quiet && exit 0
+          git commit --quiet -m "$msg"
+          # Other runs push here too (the app benchmark, other PRs); their files never overlap ours
+          # except a rerun of the same commit, where this newer run keeps its file.
+          for i in 1 2 3 4 5; do
+            git push --quiet origin HEAD:results && exit 0
+            sleep $((i * 3))
+            git pull --quiet --rebase -X theirs origin results || true
+          done
+          echo "::error::could not push to the results branch"
+          exit 1
+
+      # The `abax` section of the PR's one benchmark comment; the app benchmark's section is kept.
+      # A PR of this repository (a manual test) takes the job's own token; ogygia's PRs, BENCH_TOKEN.
+      - name: Comment on the PR
+        if: steps.plan.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.plan.outputs.comment_repo == github.repository && github.token || secrets.BENCH_TOKEN }}
+          REPO: ${{ steps.plan.outputs.comment_repo }}
+          PR: ${{ steps.plan.outputs.pr }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the result was not posted to $REPO#$PR."
+            exit 0
+          fi
+          node packages/compare/src/upsert-comment.ts --repo "$REPO" --pr "$PR" --section abax \
+            --file suites/ogygia/out/section.md
+
+      # A failed run still updates its section, so the PR never shows counts for an older commit as
+      # if they were current. The upsert script needs no install, so this works whatever failed.
+      - name: Report a failed run on the PR
+        if: failure() && steps.plan.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.plan.outputs.comment_repo == github.repository && github.token || secrets.BENCH_TOKEN }}
+          REPO: ${{ steps.plan.outputs.comment_repo }}
+          PR: ${{ steps.plan.outputs.pr }}
+          SHA: ${{ steps.plan.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the failure was not posted."
+            exit 0
+          fi
+          node packages/compare/src/upsert-comment.ts --repo "$REPO" --pr "$PR" --section abax \
+            --body "$(printf '%s\n' '#### Abax: steps per function' '' \
+              "⚠️ The Abax run for \`${SHA:0:7}\` failed before it produced counts. [Abax run]($RUN_URL)")"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: abax-results
+          path: suites/ogygia/out/
+          if-no-files-found: ignore

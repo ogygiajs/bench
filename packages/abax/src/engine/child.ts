@@ -124,6 +124,22 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 	});
 }
 
+const fn_source = Function.prototype.toString;
+
+/**
+ * A function with source code: what V8 can be asked to optimize. A bound function, a function
+ * proxy or a built-in (an export like `const parse = JSON.parse`) prints `[native code]`, and
+ * handing one to %PrepareFunctionForOptimization aborts the process.
+ */
+function has_source(v: unknown): v is (...args: unknown[]) => unknown {
+	if (typeof v !== 'function') return false;
+	try {
+		return !fn_source.call(v).endsWith('[native code] }');
+	} catch {
+		return false;
+	}
+}
+
 /** Functions reachable from a module namespace: exports, `__abax` members and class members. */
 function reachable_from(ns: Record<string, unknown>, out: Set<unknown>): void {
 	const add_class_members = (c: object): void => {
@@ -133,13 +149,13 @@ function reachable_from(ns: Record<string, unknown>, out: Set<unknown>): void {
 				const d = Object.getOwnPropertyDescriptor(owner, key);
 				if (!d) continue;
 				for (const v of [d.value, d.get, d.set]) {
-					if (typeof v === 'function' && v !== c) out.add(v);
+					if (has_source(v) && v !== c) out.add(v);
 				}
 			}
 		}
 	};
 	const add = (v: unknown, depth: number): void => {
-		if (typeof v === 'function') {
+		if (has_source(v)) {
 			if (out.has(v)) return;
 			out.add(v);
 			add_class_members(v);

@@ -206,3 +206,34 @@ test('engine health reads .svelte components and .svelte.ts classes on their own
 	const add = counter.functions.find((f) => f.path === 'Counter > add')!;
 	assert.deepEqual([add.line, add.optimized], [3, true]);
 });
+
+test('engine health leaves exported bound functions, proxies and built-ins alone', async () => {
+	const abax = fileURLToPath(new URL('../', import.meta.url));
+	const dir = temp_dir('abax-engine-natives-');
+	write_files(dir, {
+		'lib.ts': [
+			'function sum(xs: number[]): number {',
+			'	let s = 0;',
+			'	for (const x of xs) s += x;',
+			'	return s;',
+			'}',
+			'export const bound = sum.bind(null);',
+			'export const proxied = new Proxy(sum, {});',
+			'export const parse = JSON.parse;',
+			'export { sum };',
+			''
+		].join('\n'),
+		'x.bench.ts': [
+			`import { bench } from ${JSON.stringify(join(abax, 'src/bench.ts'))};`,
+			"import { bound, proxied, sum } from './lib.ts';",
+			"bench('sum', ({ xs }) => sum(xs) + bound(xs) + proxied(xs), {",
+			'	setup: () => ({ xs: Array.from({ length: 200 }, (_, i) => i) })',
+			'});',
+			''
+		].join('\n')
+	});
+	const r = await engine_health({ files: [join(dir, 'x.bench.ts')], root: dir });
+	assert.equal(r.cases[0].error, null);
+	const sum = r.cases[0].functions.find((f) => f.path === 'sum')!;
+	assert.equal(sum.optimized, true);
+});

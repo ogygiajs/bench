@@ -100,11 +100,26 @@ interface SvelteCompiler {
 	compileModule(source: string, options: Record<string, unknown>): SvelteCompiled;
 }
 
-let svelte: SvelteCompiler | null = null;
+const compilers = new Map<string, SvelteCompiler>();
 
-function svelte_compiler(): SvelteCompiler {
-	if (!svelte) svelte = createRequire(import.meta.url)('svelte/compiler') as SvelteCompiler;
-	return svelte;
+/**
+ * The Svelte compiler of the project the file belongs to (its output imports that project's
+ * `svelte/internal/*`, so compiler and runtime must be one version); Abax's own when the project
+ * has none.
+ */
+function svelte_compiler(filename: string): SvelteCompiler {
+	let path: string;
+	try {
+		path = createRequire(filename).resolve('svelte/compiler');
+	} catch {
+		path = createRequire(import.meta.url).resolve('svelte/compiler');
+	}
+	let c = compilers.get(path);
+	if (!c) {
+		c = createRequire(import.meta.url)(path) as SvelteCompiler;
+		compilers.set(path, c);
+	}
+	return c;
 }
 
 /**
@@ -116,7 +131,7 @@ export function compile_svelte(
 	filename: string,
 	generate: 'server' | 'client' = 'server'
 ): { code: string; map: SourceMapInput } {
-	const c = svelte_compiler();
+	const c = svelte_compiler(filename);
 	if (filename.endsWith('.svelte')) {
 		const out = c.compile(source, { filename, generate, dev: false });
 		return { code: out.js.code, map: out.js.map };
