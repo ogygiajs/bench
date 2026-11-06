@@ -5,18 +5,18 @@ cannot see, or turns the count into an answer to a different question. Engine he
 bytes and leaks run on the **plain build**: the code as it ships, nothing counted. The plain build
 still compiles `.svelte` files and appends the `__abax` export, so the same bench files run on it.
 
-| Layer             | Command                                | Build    | On PRs             | On main and nightly |
-| ----------------- | -------------------------------------- | -------- | ------------------ | ------------------- |
-| Steps             | `abax run`                             | counting | yes                | yes                 |
-| Engine health     | `abax health`                          | plain    | yes                | yes                 |
-| Growth            | `abax growth`                          | counting | cases with `scale` | cases with `scale`  |
-| Time              | `abax time`, `abax run --measure time` | plain    | yes                | yes                 |
-| Real bytes        | `abax run --measure bytes`             | plain    | no                 | yes                 |
-| Leaks             | `abax run --measure leaks`             | plain    | no                 | yes                 |
-| Worst-case search | `abax search`                          | counting | no                 | no                  |
-| Real-app weight   | `abax weights`, `abax diff --weights`  | counting | no                 | no                  |
-| Coverage          | `abax coverage`                        | counting | no                 | no                  |
-| Gate              | `abax unmeasured`                      | counting | in ogygia's CI     | no                  |
+| Layer             | Command                                | Build    | On PRs                                     | On main and nightly  |
+| ----------------- | -------------------------------------- | -------- | ------------------------------------------ | -------------------- |
+| Steps             | `abax run`                             | counting | yes                                        | yes                  |
+| Engine health     | `abax health`                          | plain    | yes                                        | yes                  |
+| Growth            | `abax growth`                          | counting | cases with `scale`                         | cases with `scale`   |
+| Time              | `abax time`, `abax run --measure time` | plain    | yes                                        | yes                  |
+| Real bytes        | `abax run --measure bytes`             | plain    | no                                         | yes                  |
+| Leaks             | `abax run --measure leaks`             | plain    | no                                         | yes                  |
+| Worst-case search | `abax search`                          | counting | changed cases with a `setup`, 4 min budget | no                   |
+| Real-app weight   | `abax weights`, `abax diff --weights`  | counting | ranks the changes                          | produces the weights |
+| Coverage          | `abax coverage`                        | counting | no                                         | no                   |
+| Gate              | `abax unmeasured`                      | counting | in ogygia's CI                             | no                   |
 
 The examples on this page come from runs on an M4 Max with Node 26.4.0 at Abax `7b3d7a5`: the
 quick-start project in the [README](../README.md), the planted cases of `abax verify`, the planted
@@ -284,7 +284,11 @@ the change per call times the calls per unit. Whether a change is shown is decid
 From `abax verify`: a hot function that gained 4 steps per call is shown (14 calls per request), a
 cold one that gained 5 steps is suppressed, a cold one that gained 774 steps is shown.
 
-The ogygia PR comment does not rank by weight yet; this is a CLI step today.
+On ogygia, main pushes and the nightly run count every app scenario and store the weights on the
+results branch (`abax/main/app-weights.json`). A PR run reads the latest of them and ranks its
+changed functions by real-app weight in a short table above the step table. When the weights are
+missing or come from another environment, the comment says so in one line and does not rank.
+[ci.md](ci.md) has the details.
 
 ## Coverage of the app scenarios
 

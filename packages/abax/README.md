@@ -372,7 +372,8 @@ only comparable on one V8.
   measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
   app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
 - **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes and
-  leaks run on main and nightly. The worst-case search and real-app ranking are CLI only for now.
+  leaks run on main and nightly. The worst-case search runs on a PR only for changed cases that
+  declare a `setup`, within a 4 minute budget.
 
 ## How it compares
 

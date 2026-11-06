@@ -39,7 +39,8 @@ export interface EngineDiff {
 	unstable: string[];
 	/**
 	 * Functions and inline-cache sites left out of the comparison because V8 did not do the same
-	 * thing on every run of one side or the other: never a finding, never "better".
+	 * thing on every run of one side or the other: never a finding, never "better". (Results
+	 * stored before it existed have none: skipped_line reads that as zero.)
 	 */
 	skipped: { functions: number; sites: number };
 	failed: string[];
@@ -369,7 +370,7 @@ function plural(n: number, one: string, many: string): string {
 
 /** "3 functions and 1 inline cache skipped: V8 not repeatable (`case`)", or null. */
 export function skipped_line(d: EngineDiff): string | null {
-	const { functions, sites } = d.skipped;
+	const { functions, sites } = (d as Partial<EngineDiff>).skipped ?? { functions: 0, sites: 0 };
 	if (functions + sites === 0) return null;
 	const what = [
 		functions > 0 ? plural(functions, 'function', 'functions') : '',

@@ -1,5 +1,6 @@
 import type { BenchCase } from '../bench.ts';
 import { pair_cases } from '../cases.ts';
+import { code } from '../md.ts';
 import { GROWTH_RANK, fit_growth } from './fit.ts';
 import type { GrowthClass } from './fit.ts';
 import { Measurer, load_cases } from './measure.ts';
@@ -126,7 +127,7 @@ export function diff_growth(base: GrowthReport, pr: GrowthReport): GrowthDiff {
 			out.failed.push(b.name);
 			continue;
 		}
-		const text = `${'`'}${b.name}${'`'} grows ${b.class} -> ${p.class}`;
+		const text = `${code(b.name)} grows ${b.class} -> ${p.class}`;
 		if (GROWTH_RANK[p.class] > GROWTH_RANK[b.class]) {
 			out.findings.push({ case: b.name, base: b.class, pr: p.class, text });
 		} else if (GROWTH_RANK[p.class] < GROWTH_RANK[b.class]) {

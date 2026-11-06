@@ -1,4 +1,5 @@
 import type { BenchCase } from '../bench.ts';
+import { code } from '../md.ts';
 import { Measurer, load_cases } from '../growth/measure.ts';
 import type { LoadOptions } from '../growth/measure.ts';
 import { clone, input_size } from '../growth/scale.ts';
@@ -210,7 +211,7 @@ export function diff_search(base: SearchReport, pr: SearchReport, flag = 4): Sea
 		if (p.ratio >= flag && p.ratio >= 2 * base_ratio) {
 			out.push({
 				case: p.name,
-				text: `${'`'}${p.name}${'`'} has a slow input: ${Math.round(p.worst)} steps vs ${Math.round(p.typical)} typical (${p.ratio}x, base ${base_ratio}x)`
+				text: `${code(p.name)} has a slow input: ${Math.round(p.worst)} steps vs ${Math.round(p.typical)} typical (${p.ratio}x, base ${base_ratio}x)`
 			});
 		}
 	}
