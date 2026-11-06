@@ -98,7 +98,18 @@ test('time PR vs base: turns alternate, judged by the no-overlap rule', async ()
 	assert.equal(r.errors.length, 0);
 	const work = r.cases.find((c) => c.name === 'work')!;
 	// five rounds, then five more to confirm what looked changed: the order keeps alternating
-	assert.deepEqual(work.order, ['base', 'pr', 'base', 'pr', 'base', 'pr', 'base', 'pr', 'base', 'pr']);
+	assert.deepEqual(work.order, [
+		'base',
+		'pr',
+		'base',
+		'pr',
+		'base',
+		'pr',
+		'base',
+		'pr',
+		'base',
+		'pr'
+	]);
 	assert.equal(work.confirmed, 5);
 	assert.equal(work.base.length, 10);
 	assert.equal(work.verdicts.p50_ns.regressed, true);
