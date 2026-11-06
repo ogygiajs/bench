@@ -120,11 +120,86 @@ export function renderComment(sections: readonly Section[]): string {
 	return parts.join('\n\n') + '\n';
 }
 
-/** `body` with section `name` set to `content`; every other section stays as it was. */
+/** GitHub refuses a comment body longer than this (a PATCH or POST fails with 422). */
+export const COMMENT_LIMIT = 65_536;
+/** What a body is cut down to: below the limit, with room for the closing tags a cut adds. */
+export const COMMENT_TARGET = 65_000;
+
+export interface FitOptions {
+	/** The longest body (default COMMENT_TARGET). */
+	limit?: number;
+	/** The line that ends a cut section (default: a note that points to the run). */
+	note?: (name: string) => string;
+}
+
+const default_note = (name: string): string =>
+	`⚠️ The \`${name}\` section was cut here: it is longer than a GitHub comment holds. The full text is in the run that wrote it.`;
+
+/**
+ * `content` cut to at most `max` characters, at a line, with the `<details>` and code fences it
+ * opened closed again and `note` at the end.
+ */
+export function truncateSection(content: string, max: number, note: string): string {
+	if (content.length <= max) return content;
+	const closers = (text: string): string => {
+		let tail = '';
+		const fences = text.split('\n').filter((l) => l.trimStart().startsWith('```')).length;
+		if (fences % 2 === 1) tail += '\n```';
+		const open = (text.match(/<details\b/g) ?? []).length;
+		const closed = (text.match(/<\/details>/g) ?? []).length;
+		for (let i = closed; i < open; i++) tail += '\n\n</details>';
+		return tail;
+	};
+	let keep = Math.max(0, max - note.length - 2);
+	for (;;) {
+		let cut = content.slice(0, keep);
+		const nl = cut.lastIndexOf('\n');
+		if (nl !== -1) cut = cut.slice(0, nl);
+		const out = `${cut.trimEnd()}${closers(cut)}\n\n${note}`;
+		if (out.length <= max || keep === 0) return out.length <= max ? out : note.slice(0, max);
+		keep = Math.max(0, keep - (out.length - max));
+	}
+}
+
+/**
+ * Sections whose rendered comment fits in `limit`. Nothing changes when it fits already; else each
+ * section gets an equal share of the room, a section shorter than its share keeps all of it and
+ * leaves the rest to the others, and the ones over their share are cut (truncateSection).
+ */
+export function fitSections(sections: readonly Section[], o: FitOptions = {}): Section[] {
+	const limit = o.limit ?? COMMENT_TARGET;
+	const note = o.note ?? default_note;
+	const total = renderComment(sections).length;
+	if (total <= limit) return [...sections];
+	const content = sections.reduce((n, s) => n + tidy(s.content).length, 0);
+	let room = limit - (total - content);
+	const order = sections.map((s, i) => ({ i, len: tidy(s.content).length }));
+	order.sort((a, b) => a.len - b.len);
+	const share = new Map<number, number>();
+	order.forEach(({ i, len }, k) => {
+		const fair = Math.floor(room / (order.length - k));
+		const got = Math.min(len, Math.max(0, fair));
+		share.set(i, got);
+		room -= got;
+	});
+	return sections.map((s, i) => {
+		const text = tidy(s.content);
+		const max = share.get(i)!;
+		return text.length <= max
+			? s
+			: { name: s.name, content: truncateSection(text, max, note(s.name)) };
+	});
+}
+
+/**
+ * `body` with section `name` set to `content`; every other section stays as it was, unless the
+ * comment would be too long for GitHub, when the longest sections are cut (fitSections).
+ */
 export function upsertSection(
 	body: string | null | undefined,
 	name: string,
-	content: string
+	content: string,
+	fit: FitOptions = {}
 ): string {
 	check_name(name);
 	check_content(content);
@@ -133,7 +208,7 @@ export function upsertSection(
 	const i = sections.findIndex((s) => s.name === name);
 	if (i === -1) sections.push(next);
 	else sections[i] = next;
-	return renderComment(sections);
+	return renderComment(fitSections(sections, fit));
 }
 
 /** The content of section `name` in `body`, or null when it has none. */

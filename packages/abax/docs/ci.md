@@ -112,7 +112,13 @@ Each ogygia PR has one benchmark comment, found by the marker on its first line:
 ```
 
 `node packages/compare/src/upsert-comment.ts --repo <owner/name> --pr <n> --section abax --file section.md`
-finds the comment (or creates it), replaces only the named section, and keeps the others. `abax`
+finds the comment (or creates it), replaces only the named section, and keeps the others. It
+only takes a comment written by the token's own login: the login `GET /user` returns, or
+`github-actions[bot]` for a token that endpoint refuses. A GitHub App token comments as
+`<app>[bot]`, so pass `--bot-login` (or set the `BENCH_BOT_LOGIN` repository variable). A marker
+pasted into anyone else's comment is ignored. A body longer than GitHub's 65,536 characters is cut
+before it is sent: each section gets a fair share of the room, and a cut section ends with a note
+that links the run. `abax`
 comes before `apps`. A comment from before sections reads as one `apps` section and is migrated
 on the first upsert. If the Abax run fails, the publish job still rewrites its section with a line saying the
 run failed and a link, so a PR never shows counts for an older commit as if they were current.

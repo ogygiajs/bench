@@ -1,20 +1,41 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { upsertComment } from '../src/github.ts';
-import { MARKER, HEADING, parseComment, sectionOf, upsertSection } from '../src/sections.ts';
+import { ACTIONS_BOT, upsertComment } from '../src/github.ts';
+import {
+	COMMENT_LIMIT,
+	MARKER,
+	HEADING,
+	parseComment,
+	sectionOf,
+	upsertSection
+} from '../src/sections.ts';
 
 interface Comment {
 	id: number;
 	body: string;
+	user: { login: string };
 }
 
-/** A fake of the three GitHub endpoints the upsert uses, over one PR's comments. */
+const BOT = 'bench-bot';
+
+/** A comment by `login` (default: the token's own login). */
+const by = (id: number, body: string, login = BOT): Comment => ({ id, body, user: { login } });
+
+/**
+ * A fake of the GitHub endpoints the upsert uses, over one PR's comments. `me` is the login the
+ * token writes as; `user_status` what GET /user answers (200 with `me`, or an error status).
+ */
 function fake_github(
 	initial: Comment[],
-	hooks: { afterWrite?: (comments: Comment[]) => void } = {}
+	hooks: {
+		afterWrite?: (comments: Comment[]) => void;
+		me?: string;
+		user_status?: number;
+	} = {}
 ) {
 	const comments = initial.map((c) => ({ ...c }));
 	const calls: string[] = [];
+	const me = hooks.me ?? BOT;
 	let next_id = 1000;
 	const fetch_fn = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
 		const url = new URL(String(input));
@@ -27,13 +48,21 @@ function fake_github(
 			});
 		const list = url.pathname.match(/^\/repos\/o\/r\/issues\/(\d+)\/comments$/);
 		const one = url.pathname.match(/^\/repos\/o\/r\/issues\/comments\/(\d+)$/);
+		if (url.pathname === '/user' && method === 'GET') {
+			const status = hooks.user_status ?? 200;
+			return status === 200
+				? json({ login: me })
+				: json({ message: 'Resource not accessible by integration' }, status);
+		}
 		if (list && method === 'GET') {
 			const per_page = Number(url.searchParams.get('per_page'));
 			const page = Number(url.searchParams.get('page'));
 			return json(comments.slice((page - 1) * per_page, page * per_page));
 		}
 		if (list && method === 'POST') {
-			const c = { id: next_id++, body: JSON.parse(String(init?.body)).body };
+			const body = JSON.parse(String(init?.body)).body as string;
+			if (body.length > COMMENT_LIMIT) return json({ message: 'Body is too long' }, 422);
+			const c = by(next_id++, body, me);
 			comments.push(c);
 			hooks.afterWrite?.(comments);
 			return json(c, 201);
@@ -41,7 +70,12 @@ function fake_github(
 		if (one && method === 'PATCH') {
 			const c = comments.find((x) => x.id === Number(one[1]));
 			if (!c) return json({ message: 'Not Found' }, 404);
-			c.body = JSON.parse(String(init?.body)).body;
+			// GitHub logins are case-insensitive
+			if (c.user.login.toLowerCase() !== me.toLowerCase())
+				return json({ message: 'Forbidden' }, 403);
+			const body = JSON.parse(String(init?.body)).body as string;
+			if (body.length > COMMENT_LIMIT) return json({ message: 'Body is too long' }, 422);
+			c.body = body;
 			hooks.afterWrite?.(comments);
 			return json(c);
 		}
@@ -53,7 +87,7 @@ function fake_github(
 const base = { repo: 'o/r', issue: 7, token: 't', api: 'https://api.test', settleMs: 0 };
 
 test('no comment yet: one is created with the section', async () => {
-	const gh = fake_github([{ id: 1, body: 'unrelated' }]);
+	const gh = fake_github([by(1, 'unrelated', 'someone')]);
 	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'fast' });
 	assert.equal(r.created, true);
 	assert.equal(gh.comments.length, 2);
@@ -62,8 +96,8 @@ test('no comment yet: one is created with the section', async () => {
 
 test('the existing comment is edited in place and keeps the other section', async () => {
 	const gh = fake_github([
-		{ id: 1, body: 'unrelated' },
-		{ id: 2, body: upsertSection(null, 'abax', 'abax numbers') }
+		by(1, 'unrelated', 'someone'),
+		by(2, upsertSection(null, 'abax', 'abax numbers'))
 	]);
 	const r = await upsertComment({
 		...base,
@@ -71,7 +105,7 @@ test('the existing comment is edited in place and keeps the other section', asyn
 		section: 'apps',
 		content: 'app numbers'
 	});
-	assert.deepEqual(r, { id: 2, created: false, writes: 1 });
+	assert.deepEqual(r, { id: 2, created: false, writes: 1, login: BOT });
 	assert.equal(gh.comments.length, 2);
 	assert.equal(sectionOf(gh.comments[1].body, 'abax'), 'abax numbers');
 	assert.equal(sectionOf(gh.comments[1].body, 'apps'), 'app numbers');
@@ -79,7 +113,7 @@ test('the existing comment is edited in place and keeps the other section', asyn
 
 test('an old single-body comment is migrated: its body becomes the apps section', async () => {
 	const legacy = `${MARKER}\n${HEADING}\n\nold app numbers\n`;
-	const gh = fake_github([{ id: 5, body: legacy }]);
+	const gh = fake_github([by(5, legacy)]);
 	await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'abax numbers' });
 	assert.deepEqual(parseComment(gh.comments[0].body), [
 		{ name: 'abax', content: 'abax numbers' },
@@ -88,8 +122,8 @@ test('an old single-body comment is migrated: its body becomes the apps section'
 });
 
 test('the marker comment is found past the first page', async () => {
-	const filler = Array.from({ length: 150 }, (_, i) => ({ id: i + 1, body: `c${i}` }));
-	const gh = fake_github([...filler, { id: 500, body: upsertSection(null, 'apps', 'x') }]);
+	const filler = Array.from({ length: 150 }, (_, i) => by(i + 1, `c${i}`, 'someone'));
+	const gh = fake_github([...filler, by(500, upsertSection(null, 'apps', 'x'))]);
 	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'y' });
 	assert.equal(r.id, 500);
 	assert.ok(gh.calls.some((c) => c.includes('page=2')));
@@ -97,7 +131,7 @@ test('the marker comment is found past the first page', async () => {
 
 test('an unchanged section is not written again', async () => {
 	const body = upsertSection(null, 'apps', 'same');
-	const gh = fake_github([{ id: 3, body }]);
+	const gh = fake_github([by(3, body)]);
 	await upsertComment({ ...base, fetch: gh.fetch, section: 'apps', content: 'same' });
 	assert.equal(gh.calls.filter((c) => c.startsWith('PATCH')).length, 0);
 });
@@ -105,7 +139,7 @@ test('an unchanged section is not written again', async () => {
 test('a writer that saved its stale copy over ours is repaired by writing again', async () => {
 	const start = upsertSection(null, 'apps', 'app numbers');
 	let clobbered = false;
-	const gh = fake_github([{ id: 9, body: start }], {
+	const gh = fake_github([by(9, start)], {
 		// Right after our first write, another suite saves the body it read before it.
 		afterWrite: (comments) => {
 			if (clobbered) return;
@@ -126,7 +160,7 @@ test('a writer that saved its stale copy over ours is repaired by writing again'
 
 test('a newer write of the same section wins over ours', async () => {
 	let replaced = false;
-	const gh = fake_github([{ id: 9, body: upsertSection(null, 'apps', 'old') }], {
+	const gh = fake_github([by(9, upsertSection(null, 'apps', 'old'))], {
 		afterWrite: (comments) => {
 			if (replaced) return;
 			replaced = true;
@@ -139,9 +173,108 @@ test('a newer write of the same section wins over ours', async () => {
 });
 
 test('a failed request is an error', async () => {
-	const failing = (async () => new Response('nope', { status: 403 })) as typeof fetch;
+	const failing = (async () => new Response('nope', { status: 500 })) as typeof fetch;
 	await assert.rejects(
 		upsertComment({ ...base, fetch: failing, section: 'apps', content: 'x' }),
-		/403/
+		/500/
 	);
+});
+
+test('a marker planted by someone else is neither edited nor adopted', async () => {
+	const planted = upsertSection(null, 'abax', 'fake numbers');
+	const gh = fake_github([by(1, planted, 'mallory'), by(2, `${MARKER}\nme too`, 'mallory')]);
+	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'real' });
+	assert.equal(r.created, true);
+	assert.equal(gh.comments.length, 3);
+	assert.equal(gh.comments[0].body, planted);
+	assert.equal(sectionOf(gh.comments[2].body, 'abax'), 'real');
+	assert.equal(gh.calls.filter((c) => c.startsWith('PATCH')).length, 0);
+	// and the next run edits its own comment, not the planted one
+	await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'newer' });
+	assert.equal(gh.comments.length, 3);
+	assert.equal(sectionOf(gh.comments[2].body, 'abax'), 'newer');
+});
+
+test('logins compare without case', async () => {
+	const gh = fake_github([by(4, upsertSection(null, 'apps', 'x'), 'Bench-Bot')], {
+		me: 'bench-bot'
+	});
+	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'y' });
+	assert.equal(r.id, 4);
+});
+
+test('a token GET /user refuses (GITHUB_TOKEN, an App) comments as github-actions[bot]', async () => {
+	const gh = fake_github(
+		[
+			by(1, upsertSection(null, 'apps', 'planted'), 'mallory'),
+			by(2, upsertSection(null, 'apps', 'a'), ACTIONS_BOT)
+		],
+		{ me: ACTIONS_BOT, user_status: 403 }
+	);
+	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'b' });
+	assert.deepEqual(r, { id: 2, created: false, writes: 1, login: ACTIONS_BOT });
+});
+
+test('an explicit bot login wins, and GET /user is not asked', async () => {
+	const gh = fake_github([by(1, upsertSection(null, 'apps', 'a'), 'bench-app[bot]')], {
+		me: 'bench-app[bot]',
+		user_status: 403
+	});
+	const r = await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'abax',
+		content: 'b',
+		botLogin: 'bench-app[bot]'
+	});
+	assert.equal(r.id, 1);
+	assert.equal(gh.calls.filter((c) => c === 'GET /user').length, 0);
+});
+
+test('an App token without --bot-login: the created comment tells the real author', async () => {
+	const gh = fake_github([], { me: 'bench-app[bot]', user_status: 403 });
+	const r = await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'abax',
+		content: 'b',
+		tries: 2
+	});
+	// the read-back found the comment under its real author: one write, no second comment
+	assert.equal(r.login, 'bench-app[bot]');
+	assert.equal(r.writes, 1);
+	assert.equal(gh.comments.length, 1);
+});
+
+test('a section too long for GitHub is cut with a note, and the other section is kept', async () => {
+	const apps = '#### App benchmark\n\n| a |\n| --- |\n| 1 |';
+	const gh = fake_github([by(1, upsertSection(null, 'apps', apps))]);
+	const rows = Array.from({ length: 5000 }, (_, i) => `| row ${i} | ${'x'.repeat(20)} |`);
+	const huge = [
+		'#### Abax',
+		'',
+		'<details><summary>All</summary>',
+		'',
+		...rows,
+		'',
+		'</details>'
+	].join('\n');
+	await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'abax',
+		content: huge,
+		runUrl: 'https://example.test/run/9'
+	});
+	const body = gh.comments[0].body;
+	assert.ok(body.length <= COMMENT_LIMIT, `body is ${body.length}`);
+	assert.equal(sectionOf(body, 'apps'), apps);
+	const abax = sectionOf(body, 'abax')!;
+	assert.ok(abax.startsWith('#### Abax'));
+	assert.match(
+		abax,
+		/Cut here: .* \[The run\]\(https:\/\/example\.test\/run\/9\) has the full text\.$/
+	);
+	// the <details> the cut left open is closed before the note
+	assert.equal((abax.match(/<details>/g) ?? []).length, (abax.match(/<\/details>/g) ?? []).length);
 });

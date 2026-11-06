@@ -273,19 +273,23 @@ jobs:
 
       # The `abax` section of the PR's one benchmark comment; the app benchmark's section is kept.
       # A PR of this repository (a manual test) takes the job's own token; ogygia's PRs, BENCH_TOKEN.
+      # Only a comment by the token's own login is edited (BENCH_BOT_LOGIN names it when BENCH_TOKEN
+      # is a GitHub App's, `<app>[bot]`); a body past GitHub's size limit is cut, linking the run.
       - name: Comment on the PR
         if: needs.measure.result == 'success' && needs.plan.outputs.pr != ''
         env:
           GH_TOKEN: ${{ needs.plan.outputs.comment_repo == github.repository && github.token || secrets.BENCH_TOKEN }}
+          BENCH_BOT_LOGIN: ${{ needs.plan.outputs.comment_repo != github.repository && vars.BENCH_BOT_LOGIN || '' }}
           REPO: ${{ needs.plan.outputs.comment_repo }}
           PR: ${{ needs.plan.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the result was not posted to $REPO#$PR."
             exit 0
           fi
           node packages/compare/src/upsert-comment.ts --repo "$REPO" --pr "$PR" --section abax \
-            --file "$RUNNER_TEMP/checked/section.md"
+            --file "$RUNNER_TEMP/checked/section.md" --run-url "$RUN_URL"
 
       # A failed run still updates its section, so the PR never shows counts for an older commit as
       # if they were current: a measure job that failed, or an artifact this job did not accept.
@@ -293,6 +297,7 @@ jobs:
         if: ${{ !cancelled() && needs.plan.outputs.pr != '' && (failure() || needs.measure.result != 'success') }}
         env:
           GH_TOKEN: ${{ needs.plan.outputs.comment_repo == github.repository && github.token || secrets.BENCH_TOKEN }}
+          BENCH_BOT_LOGIN: ${{ needs.plan.outputs.comment_repo != github.repository && vars.BENCH_BOT_LOGIN || '' }}
           REPO: ${{ needs.plan.outputs.comment_repo }}
           PR: ${{ needs.plan.outputs.pr }}
           SHA: ${{ needs.plan.outputs.sha }}

@@ -403,18 +403,22 @@ jobs:
           exit 1
 
       # The `apps` section of the PR's one benchmark comment; the other sections (Abax's) are kept.
+      # Only a comment by the token's own login is edited (BENCH_BOT_LOGIN names it when BENCH_TOKEN
+      # is a GitHub App's, `<app>[bot]`); a body past GitHub's size limit is cut, linking the run.
       - name: Comment on the ogygia PR
         if: needs.measure.result == 'success' && needs.plan.outputs.kind == 'pr'
         env:
           GH_TOKEN: ${{ secrets.BENCH_TOKEN }}
+          BENCH_BOT_LOGIN: ${{ vars.BENCH_BOT_LOGIN }}
           PR: ${{ needs.plan.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           if [ -z "$GH_TOKEN" ]; then
             echo "::notice title=No PR comment::BENCH_TOKEN is not set, so the result was not posted to $UPSTREAM#$PR."
             exit 0
           fi
           node packages/compare/src/upsert-comment.ts --repo "$UPSTREAM" --pr "$PR" --section apps \
-            --file "$RUNNER_TEMP/checked/comment.md"
+            --file "$RUNNER_TEMP/checked/comment.md" --run-url "$RUN_URL"
 
       # A failed run still updates its section, so the PR never shows numbers for an older commit
       # as if they were current: a measure job that failed, or an artifact this job did not accept.
@@ -422,6 +426,7 @@ jobs:
         if: ${{ !cancelled() && needs.plan.outputs.kind == 'pr' && (failure() || needs.measure.result != 'success') }}
         env:
           GH_TOKEN: ${{ secrets.BENCH_TOKEN }}
+          BENCH_BOT_LOGIN: ${{ vars.BENCH_BOT_LOGIN }}
           PR: ${{ needs.plan.outputs.pr }}
           SHA: ${{ needs.plan.outputs.sha }}
           WHAT: ${{ needs.measure.result == 'success' && 'produced results this job did not accept' || 'failed before it produced numbers' }}
