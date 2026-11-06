@@ -6,6 +6,7 @@
 //   node build-all.ts                                   # every framework, ogygia@latest
 //   node build-all.ts --fast                            # only the apps marked `fast` in the config
 //   node build-all.ts --no-blog --scenarios docs        # one scenario's apps only
+//   node build-all.ts --only ogygia                     # one framework's apps (blog and scenarios)
 //   OGYGIA_SPEC=0.11.4 node build-all.ts                # an npm version or dist-tag
 //   OGYGIA_SPEC=https://pkg.pr.new/ogygia@<sha7> node build-all.ts   # one commit's preview build
 //
@@ -44,7 +45,10 @@ function parseArgs(argv) {
 		spec: process.env.OGYGIA_SPEC || 'latest',
 		baseSpec: process.env.OGYGIA_BASE_SPEC || null,
 		scenarios: process.env.BENCH_SCENARIOS || 'all',
-		blog: true
+		blog: true,
+		// `--only ogygia`: these framework ids only, in the blog and every scenario (the counted app
+		// scenarios need only the ogygia apps).
+		only: null
 	};
 	for (let i = 0; i < argv.length; i++) {
 		if (argv[i] === '--fast') args.fast = true;
@@ -53,6 +57,7 @@ function parseArgs(argv) {
 		else if (argv[i] === '--base-spec') args.baseSpec = argv[++i];
 		else if (argv[i] === '--scenarios') args.scenarios = argv[++i];
 		else if (argv[i] === '--no-blog') args.blog = false;
+		else if (argv[i] === '--only') args.only = argv[++i].split(',');
 	}
 	// `all` (default), `none`, or a comma list. The blog apps in frameworks/ build unless --no-blog.
 	args.scenarios =
@@ -268,7 +273,12 @@ function pinOgygia(appDir, packages, spec) {
 const args = parseArgs(process.argv.slice(2));
 const cfg = JSON.parse(readFileSync(join(ROOT, 'frameworks.config.json'), 'utf8'));
 // An A/B build (--base-spec) builds the ogygia apps only: they are all an A/B run measures.
-const wanted = (app) => (args.baseSpec ? app.id === 'ogygia' : !args.fast || app.fast);
+const wanted = (app) =>
+	args.baseSpec
+		? app.id === 'ogygia'
+		: args.only
+			? args.only.includes(app.id)
+			: !args.fast || app.fast;
 const frameworks = args.blog ? cfg.frameworks.filter(wanted) : [];
 const scenarioNames = Object.keys(cfg.scenarios ?? {}).filter(
 	(name) => !args.scenarios || args.scenarios.includes(name)

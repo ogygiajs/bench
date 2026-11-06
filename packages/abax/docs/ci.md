@@ -65,13 +65,24 @@ In this repository:
    base and the head.
 8. **Time.** `abax time` loads both trees in one process and times the selected bench files in
    turns, 5 each (20-minute limit).
-9. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
-   job checks it (below), then `result.json` goes to the `results` branch and `section.md`
-   becomes the `abax` section of the PR's comment.
+9. **Real-app weight.** The job reads `abax/main/app-weights.json` from the `results` branch (the
+   newest main run's, see [Full runs](#full-runs)) and ranks the changed functions by it: the
+   change per call times the calls per unit of real work (`rank_changes`). Weights counted on
+   another Node, V8, platform or steps-to-ns weights (`envMismatch`) are not used, and neither are
+   missing ones: the section says which, in one line.
+10. **Worst-case search.** `abax search` on the cases with a changed function that declare an
+    input (a static `setup` in the bench file), biggest change first, at most 8, on the PR tree and
+    then the base. The whole layer has 4 minutes; each search gets an even share of what is left,
+    at most 30 seconds, and the cases the budget does not reach are counted as skipped. A case is
+    flagged by Abax's own rule: its worst input costs at least 4 times its typical one, and at
+    least twice the base's ratio.
+11. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+    job checks it (below), then `result.json` goes to the `results` branch and `section.md`
+    becomes the `abax` section of the PR's comment.
 
 ### Who can write
 
-Steps 3 to 8 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
+Steps 3 to 10 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
 that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
 token is left in `.git/config` for that code to find.
 
@@ -100,10 +111,18 @@ A full run takes every bench file of one commit through `run`, `health` and `gro
 plain-build layer on `run` (`--measure all`: time, real bytes, leaks), and writes one summary
 table: steps, allocations, estimated and real bytes, p50 and leaks per case. It has 120 minutes.
 
+A main or nightly run also counts the real apps, in an `app-weights` job beside the full run
+(read-only like it, 60 minutes): it waits for the commit's pkg.pr.new build, builds the ogygia app
+of the blog and of every scenario (`build-all.ts --only ogygia`), counts every scenario with
+`suites/apps/abax/run.ts`, and turns the app report into weights with
+`suites/ogygia/src/app-weights.ts`: the same file `abax weights` writes, labelled with the commit
+and stamped with the Node and V8 that counted it. A `publish-weights` job checks the artifact
+(schema, the commit) and stores it on the `results` branch.
+
 Every main push has its own concurrency group, and the nightly run has another, so no full run
 cancels or replaces another (GitHub keeps only one waiting run per group, so a shared group would
-drop pushes). Full runs can overlap; `abax/main/latest.json` moves only to a commit that is not
-behind the one it holds.
+drop pushes). Full runs can overlap; `abax/main/latest.json` and `abax/main/app-weights.json` move
+only to a commit that is not behind the one they hold.
 
 ## The comment
 
@@ -129,24 +148,36 @@ only takes a comment written by the token's own login: the login `GET /user` ret
 `<app>[bot]`, so pass `--bot-login` (or set the `BENCH_BOT_LOGIN` repository variable). A marker
 pasted into anyone else's comment is ignored. A body longer than GitHub's 65,536 characters is cut
 before it is sent: each section gets a fair share of the room, and a cut section ends with a note
-that links the run. `abax`
-comes before `apps`. A comment from before sections reads as one `apps` section and is migrated
-on the first upsert. If the Abax run fails, the publish job still rewrites its section with a line saying the
-run failed and a link, so a PR never shows counts for an older commit as if they were current.
+that links the run. `abax` comes before `apps`. A comment from before sections reads as one `apps`
+section and is migrated on the first upsert. If the Abax run fails, the publish job still rewrites
+its section with a line saying the run failed and a link, so a PR never shows counts for an older
+commit as if they were current.
 
 The `abax` section, in order:
 
 1. **The header.** Which commits, how many bench files reach the PR's changes, and a link to the
-   run. A collapsed list of the bench files that ran and the changed file each one reaches.
-2. **Steps per function.** One row per changed function per case: self steps base to PR, the Δ
+   run. One line when PR and base were counted in different environments. A collapsed list of
+   the bench files that ran and the changed file each one reaches, and the files that did not run
+   (a command that crashed or timed out, a file that did not load), each with its error's first
+   line.
+2. **Real-app weight.** The changed functions that cost the app scenarios most per unit of real
+   work, at most 5 rows: Δ per call, heavy, warm or cold path, and the steps (and estimated ns)
+   per unit. Or one line saying why nothing is ranked.
+3. **Steps per function.** One row per changed function per case: self steps base to PR, the Δ
    with its percent and the estimated ns, Δ allocations, Δ bytes, Δ inclusive steps.
-3. **Where.** Collapsed: the lines the change sits on, with Δ steps, allocations and bytes, and
+4. **Where.** Collapsed: the lines the change sits on, with Δ steps, allocations and bytes, and
    "new code" for lines inside a changed hunk.
-4. **Leaks, elided allocations, time-led cases**, when there are any.
-5. **Engine.** New deopts, lost optimizations, inline caches that got worse, per case and line.
+5. **Leaks, elided allocations, time-led cases**, when there are any.
+6. **Engine.** New deopts, lost optimizations, inline caches that got worse, per case and line.
    Cases where V8 did not do the same thing twice are listed as unstable.
-6. **Growth.** Cases whose curve class changed, and a collapsed list of the ones that kept it.
-7. **Time.** The time table for every case of the selected files.
+7. **Growth.** Cases whose curve class changed, and a collapsed list of the ones that kept it.
+8. **Worst-case search.** One line: how many cases were searched in how much of the budget, and
+   one more line for each flagged case, with its worst input.
+9. **Time.** The time table for every case of the selected files.
+
+Every list is capped (20 bench files, 10 files that did not run, 15 engine and growth findings)
+with a count of the rest, which are in `result.json`. Names and errors are escaped for markdown
+tables.
 
 [sample-comment.md](sample-comment.md) is a complete one, from a real run.
 
@@ -155,16 +186,19 @@ The `abax` section, in order:
 Every run is kept on the orphan `results` branch of this repository, next to the app benchmark's
 files, under `abax/`:
 
-| Path                     | What                                              |
-| ------------------------ | ------------------------------------------------- |
-| `abax/pr/<number>.json`  | The newest run of that PR.                        |
-| `abax/commit/<sha>.json` | The newest run of that ogygia commit, PR or main. |
-| `abax/main/<sha>.json`   | A full run of a main commit.                      |
-| `abax/main/latest.json`  | The newest full run.                              |
+| Path                               | What                                                       |
+| ---------------------------------- | ---------------------------------------------------------- |
+| `abax/pr/<number>.json`            | The newest run of that PR.                                 |
+| `abax/commit/<sha>.json`           | The newest run of that ogygia commit, PR or main.          |
+| `abax/main/<sha>.json`             | A full run of a main commit.                               |
+| `abax/main/latest.json`            | The newest full run.                                       |
+| `abax/main/app-weights.json`       | Real-app weights of the newest main run: what PRs rank by. |
+| `abax/main/app-weights/<sha>.json` | Real-app weights of that main commit.                      |
 
-Each file is a `result.json` (`schema: "ogygia-abax/1"`): `meta` (kind, PR, commits, the Abax
+Each run file is a `result.json` (`schema: "ogygia-abax/1"`): `meta` (kind, PR, commits, the Abax
 commit that counted, the Node version, the run URL, the layers measured), `selection`, the `head`
-and `base` reports, the `diff`, load errors and the time comparison. The publish job only adds files
+and `base` reports, the `diff`, load errors, the time comparison and, for a PR, the weight ranking
+and the search. A weights file is `abax-app-weights/1` plus `node` and `env`. The publish job only adds files
 under `abax/`, and retries its push with a rebase when another run pushed first.
 
 ## Running it locally
@@ -180,7 +214,9 @@ cat suites/ogygia/out/section.md
 ```
 
 Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones and trees, default
-`.work`, reused across runs), `--measure time,bytes,leaks|all|none`, `--time off`. On an M4 Max,
+`.work`, reused across runs), `--measure time,bytes,leaks|all|none`, `--time off`,
+`--weights app-weights.json` (rank a PR by those weights), `--search-budget <seconds>` (default
+240, `0` turns the search off). On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
 already installed.
 

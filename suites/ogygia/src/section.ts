@@ -15,7 +15,10 @@ import {
 } from '@bench/abax';
 import type { DiffResult, Report, TimeComparison } from '@bench/abax';
 import type { LoadError } from './run.ts';
+import { FLAG_RATIO, flagged } from './search.ts';
+import type { SearchRun } from './search.ts';
 import type { Selection } from './select.ts';
+import type { WeightRun } from './weights.ts';
 
 export const RESULT_SCHEMA = 'ogygia-abax/1';
 export const HEADING = '#### Abax: steps per function';
@@ -30,7 +33,8 @@ export const CAPS = {
 	engine_better: 10,
 	growth: 15,
 	growth_same: 15,
-	search: 10,
+	search: 5,
+	weights: 5,
 	failed: 15,
 	full_rows: 200
 } as const;
@@ -62,9 +66,109 @@ export interface Result {
 	load_errors: { head: LoadError[]; base: LoadError[] };
 	/** A PR's time layer: both trees timed in turns (null on a full run, or with nothing to time). */
 	time: { comparison: TimeComparison | null; markdown: string; error: string | null } | null;
+	/** A PR's changed functions ranked by main's real-app weights (absent: not asked for). */
+	weights?: WeightRun | null;
+	/** A PR's worst-case search over the changed cases that declare an input. */
+	search?: SearchRun | null;
 }
 
 const code = markdownCode;
+
+function steps_text(n: number): string {
+	const a = Math.abs(n);
+	const sign = n < 0 ? '−' : '+';
+	if (a >= 1e6) return `${sign}${(a / 1e6).toFixed(2)}M`;
+	if (a >= 1e4) return `${sign}${(a / 1e3).toFixed(1)}K`;
+	return `${sign}${Math.round(a * 100) / 100}`;
+}
+
+function ns_text(ns: number): string {
+	const a = Math.abs(ns);
+	const sign = ns < 0 ? '−' : '+';
+	if (a >= 1e6) return `${sign}${(a / 1e6).toFixed(2)} ms`;
+	if (a >= 1e3) return `${sign}${(a / 1e3).toFixed(1)} µs`;
+	return `${sign}${a.toFixed(a >= 10 ? 0 : 1)} ns`;
+}
+
+/** Changed functions ranked by real-app weight: a short table, or one line saying why not. */
+export function weight_lines(w: WeightRun): string[] {
+	const from = w.sha ? ` (main ${short(w.sha)})` : '';
+	if (w.status !== 'ranked') {
+		return [`**Real-app weight**: not ranked: ${markdownCell(w.note ?? w.status)}${from}.`, ''];
+	}
+	// no function changed: nothing to rank, nothing to say
+	if (w.ranked.length === 0) return [];
+	const shown = w.ranked.filter((r) => r.show);
+	if (shown.length === 0) {
+		return [
+			`**Real-app weight**${from}: no changed function costs the app scenarios enough to show (${w.suppressed} small, on a cold or warm path).`,
+			''
+		];
+	}
+	const lines = [
+		`**Real-app weight**${from}: the change per call times the calls per unit of real work.`,
+		'',
+		'| Function | Δ per call | Path | Per unit |',
+		'| --- | ---: | --- | --- |'
+	];
+	for (const r of shown.slice(0, CAPS.weights)) {
+		const t = r.top;
+		const per = t
+			? `${steps_text(t.steps)} steps${t.ns !== null ? ` (≈ ${ns_text(t.ns)})` : ''} per ${markdownCell(t.unit)} (${Math.round(t.calls * 100) / 100} calls)`
+			: 'no scenario runs it';
+		lines.push(
+			`| ${code(`${r.function}:${r.line}`)} | ${steps_text(r.delta_per_call)} steps | ${r.heat} | ${per} |`
+		);
+	}
+	const rest = w.shown - Math.min(shown.length, CAPS.weights);
+	const tail = [
+		rest > 0 ? `${rest} more in result.json` : '',
+		w.suppressed > 0 ? `${w.suppressed} small, on a cold or warm path, not shown` : ''
+	].filter(Boolean);
+	if (tail.length > 0) lines.push('', `${tail.join('; ')}.`);
+	lines.push('');
+	return lines;
+}
+
+function seconds(ms: number): string {
+	const s = Math.round(ms / 1000);
+	if (s < 60) return `${s} s`;
+	return s % 60 === 0 ? `${s / 60} min` : `${Math.floor(s / 60)} min ${s % 60} s`;
+}
+
+function preview(input: string, max = 80): string {
+	return input.length > max ? input.slice(0, max - 3) + '...' : input;
+}
+
+/** The worst-case search: one line, plus one per flagged case. */
+export function search_lines(s: SearchRun): string[] {
+	const searched = s.cases.length;
+	// no changed case at all: nothing to say
+	if (searched === 0 && s.no_input === 0 && s.skipped === 0) return [];
+	const notes = [
+		`${plural(searched, 'changed case')} with an input`,
+		`${seconds(s.spent_ms)} of a ${seconds(s.budget_ms)} budget`,
+		s.skipped > 0 ? `${s.skipped} not searched (time or the case cap)` : '',
+		s.cases.some((c) => c.error) ? `${s.cases.filter((c) => c.error).length} did not finish` : ''
+	].filter(Boolean);
+	const head = `**Worst-case search** (${notes.join(', ')})`;
+	if (searched === 0)
+		return [
+			`${head}: nothing to search${s.no_input > 0 ? ` (${plural(s.no_input, 'changed case')} with no input)` : ''}.`
+		];
+	const hits = s.cases.filter(flagged);
+	if (hits.length === 0)
+		return [`${head}: no input of the same size costs ${FLAG_RATIO}x the typical steps or more.`];
+	const lines = [`${head}:`, ''];
+	for (const c of hits.slice(0, CAPS.search)) {
+		const h = c.head!;
+		const base = c.base && !c.base.error ? `${c.base.ratio}x on the base` : 'not on the base';
+		lines.push(
+			`- ⚠️ ${code(c.name)}: an input costs ${h.ratio}x the typical steps (${Math.round(h.worst).toLocaleString('en-US')} vs ${Math.round(h.typical).toLocaleString('en-US')}; ${base}): ${code(preview(h.input))}`
+		);
+	}
+	return lines;
+}
 
 /** The first non-empty line of an error, trimmed and shortened: one table cell or list line. */
 export function one_line(error: string, max = 200): string {
@@ -240,11 +344,14 @@ export function render_pr_section(r: Result): string {
 			''
 		);
 	}
+	if (r.weights) lines.push(...weight_lines(r.weights));
 	if (r.diff) {
 		lines.push(step_body(r.diff));
 		const extra = capped_sections(r.diff);
 		if (extra) lines.push('', extra);
 	}
+	const search = r.search ? search_lines(r.search) : [];
+	if (search.length > 0) lines.push('', ...search);
 	if (r.time?.error) {
 		lines.push('', `**Time layer failed**: ${code(one_line(r.time.error))}`);
 	} else if (r.time?.comparison && r.time.comparison.cases.length > 0) {

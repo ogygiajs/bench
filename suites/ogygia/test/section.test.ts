@@ -244,6 +244,39 @@ test('engine and growth findings are capped', () => {
 	assert.match(md, /25 more engine entries are in result\.json\./);
 });
 
+test('the weight line comes before the step table, the search line after it', () => {
+	const diff = {
+		...diffReports(report('c', [case_of('c', 1)]), report('a', [case_of('c', 2)]), {
+			files: null
+		}),
+		engine: null,
+		growth: null,
+		search: null
+	};
+	const md = render_pr_section(
+		result({
+			selection: sel_one(),
+			head: report('a', [case_of('c', 2)]),
+			base: report('c', [case_of('c', 1)]),
+			diff,
+			weights: {
+				status: 'missing',
+				sha: null,
+				note: 'no stored weights from a main run yet',
+				ranked: [],
+				shown: 0,
+				suppressed: 0
+			},
+			search: { budget_ms: 240_000, spent_ms: 0, cases: [], no_input: 1, skipped: 0 }
+		})
+	);
+	const weight = md.indexOf('**Real-app weight**: not ranked');
+	const steps = md.indexOf('function changed');
+	const search = md.indexOf('**Worst-case search**');
+	assert.ok(weight !== -1 && steps !== -1 && search !== -1, md);
+	assert.ok(weight < steps && steps < search);
+});
+
 test('one_line: the first line that says something, trimmed and shortened', () => {
 	assert.equal(one_line('\n\n  Error: x  \nat y'), 'Error: x');
 	assert.equal(one_line('x'.repeat(300), 10), 'xxxxxxx...');

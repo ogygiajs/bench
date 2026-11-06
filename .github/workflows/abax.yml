@@ -23,17 +23,24 @@ name: abax
 # the same-job no-overlap noise rule of packages/compare. Results land on
 # the `results` branch next to the app benchmark's, under abax/: `abax/pr/<number>.json` (the
 # newest run of that PR), `abax/commit/<sha>.json` (the newest run of that commit),
-# `abax/main/<sha>.json` and `abax/main/latest.json` (main pushes and the nightly run).
+# `abax/main/<sha>.json` and `abax/main/latest.json` (main pushes and the nightly run). A main or
+# nightly run also stores real-app weights from the app benchmark's counted scenarios:
+# `abax/main/app-weights.json` (the newest, what PRs rank their changes by) and
+# `abax/main/app-weights/<sha>.json`.
 #
-# Three jobs, because the measuring runs ogygia's code (its install scripts, Vite, the bench files):
+# Separate jobs, because the measuring runs ogygia's code (its install scripts, Vite, the bench
+# files, its published build):
 #
-#   plan     reads the event and decides kind, commits and PR. Nothing else runs here.
-#   measure  read-only: no secrets, no write token, no credentials left in .git/config. Uploads
-#            suites/ogygia/out as the `abax-results` artifact.
-#   publish  the write token and BENCH_TOKEN. A fresh checkout of this repository's own scripts;
-#            the artifact is read as data and checked against the plan (packages/compare's
-#            validate-artifact.ts) before it is stored or posted. Nothing from the measure job or
-#            from ogygia runs here. A failed measure job still updates the PR's section.
+#   plan             reads the event and decides kind, commits and PR. Nothing else runs here.
+#   measure          read-only: no secrets, no write token, no credentials left in .git/config.
+#                    Uploads suites/ogygia/out as the `abax-results` artifact.
+#   app-weights      (main and nightly) read-only too: counts the app scenarios, uploads
+#                    `abax-app-weights`.
+#   publish,         the write token (and BENCH_TOKEN for the comment). A fresh checkout of this
+#   publish-weights  repository's own scripts; each artifact is read as data and checked against the
+#                    plan (packages/compare's validate-artifact.ts) before it is stored or posted.
+#                    Nothing from a measuring job or from ogygia runs here. A failed measure job
+#                    still updates the PR's section.
 
 on:
   repository_dispatch:
@@ -160,8 +167,24 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile --filter '@bench/ogygia...' --config.confirmModulesPurge=false
 
+      # A PR-style run ranks its changed functions by main's real-app weights (the app-weights job
+      # of a main run stores them): that one file of the results branch, read as data. A missing
+      # file or branch is said in one line of the section.
+      - name: Fetch main's real-app weights
+        if: needs.plan.outputs.base_sha != ''
+        continue-on-error: true
+        uses: actions/checkout@v4
+        with:
+          ref: results
+          path: _weights
+          sparse-checkout: abax/main/app-weights.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
       # Clones ogygia, checks out and installs each commit, writes the bench files' types, selects
-      # the bench files and counts them; section.md and result.json land in suites/ogygia/out.
+      # the bench files and counts them; section.md and result.json land in suites/ogygia/out. A
+      # PR-style run also ranks by the weights and runs the worst-case search (4 minutes in all)
+      # on the changed cases that declare an input.
       - name: Run Abax on ogygia
         env:
           SHA: ${{ needs.plan.outputs.sha }}
@@ -172,6 +195,7 @@ jobs:
         run: |
           set -euo pipefail
           node suites/ogygia/src/cli.ts --sha "$SHA" ${BASE_SHA:+--base "$BASE_SHA"} ${PR:+--pr "$PR"} \
+            ${BASE_SHA:+--weights "$GITHUB_WORKSPACE/_weights/abax/main/app-weights.json"} --search-budget 240 \
             --kind "$KIND" --work "$RUNNER_TEMP/abax" --out suites/ogygia/out --run-url "$RUN_URL"
           cat suites/ogygia/out/section.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -181,6 +205,154 @@ jobs:
           name: abax-results
           path: suites/ogygia/out/
           if-no-files-found: ignore
+
+  # Real-app weights (a main or nightly run): the app benchmark's counted scenarios
+  # (suites/apps/abax) on that commit's pkg.pr.new build, turned into calls and steps per unit of
+  # real work. Read-only like the measure job: it installs and runs that build. Its own job, so a
+  # failure here costs only the weights, and the counts are not held up by it.
+  app-weights:
+    needs: plan
+    if: needs.plan.outputs.kind == 'main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+
+      # The Node the PR counts are taken on: weights from another Node are not used for ranking.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - name: Locate the runner's pre-installed Chrome
+        run: |
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium-browser || command -v chromium)"
+          echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
+
+      # The commit's build on pkg.pr.new (its CDN can lag the dispatch a little).
+      - name: Wait for the pkg.pr.new build
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          spec="https://pkg.pr.new/ogygia@${SHA:0:7}"
+          for _ in $(seq 1 30); do
+            curl -sfIL -o /dev/null "$spec" && { echo "OGYGIA_SPEC=$spec" >> "$GITHUB_ENV"; exit 0; }
+            sleep 10
+          done
+          echo "::error::$spec is not available"
+          exit 1
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --config.confirmModulesPurge=false
+
+      # The ogygia app of the blog and of every scenario, nothing else.
+      - name: Build the ogygia apps
+        working-directory: suites/apps
+        run: node build-all.ts --only ogygia
+
+      # Every phase counted twice; an unstable phase or a scenario that did not run is a warning,
+      # and the weights come from what did run.
+      - name: Count the app scenarios
+        working-directory: suites/apps
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/app-weights"
+          node abax/run.ts --sha "$SHA" --out "$RUNNER_TEMP/app-weights/app-report.json" \
+            || echo "::warning title=App scenarios::not every phase counted cleanly; see the log"
+
+      - name: Real-app weights
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          node suites/ogygia/src/app-weights.ts --sha "$SHA" --out "$RUNNER_TEMP/app-weights/app-weights.json" \
+            "$RUNNER_TEMP/app-weights/app-report.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: abax-app-weights
+          path: ${{ runner.temp }}/app-weights/app-weights.json
+
+  # Stores what the app-weights job counted, checked like the counts.
+  publish-weights:
+    needs: [plan, app-weights]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: packages/compare
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: abax-app-weights
+          path: ${{ runner.temp }}/artifact
+
+      - name: Check the weights
+        env:
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          node packages/compare/src/validate-artifact.ts weights --dir "$RUNNER_TEMP/artifact" \
+            --out "$RUNNER_TEMP/checked" --kind main --sha "$SHA"
+
+      # abax/main/app-weights/<sha>.json for every main commit, and abax/main/app-weights.json (what
+      # PRs rank by) only when this commit is not behind the one it holds.
+      - name: Store the weights
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          WEIGHTS: ${{ runner.temp }}/checked/app-weights.json
+        run: |
+          set -euo pipefail
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          dir="$RUNNER_TEMP/results"
+          if git ls-remote --exit-code --heads "$url" results >/dev/null; then
+            git clone --quiet --branch results "$url" "$dir"
+          else
+            git init --quiet -b results "$dir"
+            git -C "$dir" remote add origin "$url"
+          fi
+          git -C "$dir" config user.name 'github-actions[bot]'
+          git -C "$dir" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          cd "$dir"
+          mkdir -p abax/main/app-weights
+          cp "$WEIGHTS" "abax/main/app-weights/$SHA.json"
+          old=''
+          if [ -f abax/main/app-weights.json ]; then
+            old="$(node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.source?.sha; process.stdout.write(/^[0-9a-f]{40}$/.test(s) ? s : "")' abax/main/app-weights.json || true)"
+          fi
+          order=''
+          if [ -n "$old" ] && [ "$old" != "$SHA" ]; then
+            order="$(gh api "repos/$UPSTREAM/compare/$old...$SHA" --jq .status 2>/dev/null || true)"
+          fi
+          if [ "$order" = behind ]; then
+            echo "::notice::app-weights.json keeps ${old:0:7}: ${SHA:0:7} is an older commit"
+          else
+            cp "$WEIGHTS" abax/main/app-weights.json
+          fi
+          git add -A abax
+          git diff --cached --quiet && exit 0
+          git commit --quiet -m "abax: app weights ${SHA:0:7}"
+          for i in 1 2 3 4 5; do
+            git push --quiet origin HEAD:results && exit 0
+            sleep $((i * 3))
+            git pull --quiet --rebase -X theirs origin results || true
+          done
+          echo "::error::could not push to the results branch"
+          exit 1
 
   publish:
     needs: [plan, measure]

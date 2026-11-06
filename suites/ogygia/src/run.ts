@@ -17,7 +17,7 @@ import { spawn_group } from './spawn.ts';
 import type { GroupResult } from './spawn.ts';
 
 export const ABAX_DIR = fileURLToPath(new URL('../../../packages/abax/', import.meta.url));
-const ABAX_CLI = join(ABAX_DIR, 'src', 'cli.ts');
+export const ABAX_CLI = join(ABAX_DIR, 'src', 'cli.ts');
 
 /** A bench file whose step never landed in its report (failed to load, or Abax crashed). */
 export interface LoadError {
@@ -47,7 +47,7 @@ const WRITES: Record<Command, 'cases' | 'engine' | 'growth'> = {
 	growth: 'growth'
 };
 
-function node_options(tree: Tree): string {
+export function node_options(tree: Tree): string {
 	const base = process.env.NODE_OPTIONS ?? '';
 	// The tree's preload maps the specifiers only Vite and Kit serve to stubs. NODE_OPTIONS (not an
 	// argument) so the processes Abax spawns itself (health and measure children) load it too.
