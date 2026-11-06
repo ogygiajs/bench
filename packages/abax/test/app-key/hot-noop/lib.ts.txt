@@ -1,0 +1,27 @@
+export class Server {
+	constructor(manifest) {
+		this.manifest = manifest;
+	}
+	async init({ env }) {
+		this.prefix = env.FAKE_PREFIX ?? 'p';
+	}
+	async respond(request) {
+		const url = new URL(request.url);
+		const parts = [];
+		for (let i = 0; i < url.pathname.length; i++) parts.push(render_part(url.pathname, i));
+		return new Response('<p>' + parts.join('') + '</p>', {
+			headers: { 'content-type': 'text/html' }
+		});
+	}
+}
+
+export function render_part(path, i) {
+	// the character code of the part
+	const code = path.charCodeAt(i);
+	return '<b>' + code + '</b>';
+}
+
+export function configure(path) {
+	if (typeof path !== 'string') return null;
+	return { path, trailing: path.endsWith('/') };
+}

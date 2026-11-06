@@ -13,6 +13,8 @@ export interface RecordPluginOptions {
 	targets: Record<string, string[]>;
 	/** Module ids are relative to this directory (default cwd). */
 	root?: string;
+	/** Told about every target the transform left alone (async, generator...), with the reason. */
+	on_skipped?: (skipped: Array<{ id: string; reason: string }>) => void;
 }
 
 export function abax_record_plugin(o: RecordPluginOptions) {
@@ -29,6 +31,7 @@ export function abax_record_plugin(o: RecordPluginOptions) {
 			const paths = targets.get(mid);
 			if (!paths) return null;
 			const r = record_transform(code, { filename: file, id: mid, targets: paths });
+			if (r.skipped.length > 0) o.on_skipped?.(r.skipped);
 			return { code: r.code, map: r.map };
 		}
 	};

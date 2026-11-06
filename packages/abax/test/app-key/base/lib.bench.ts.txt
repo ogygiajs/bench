@@ -1,0 +1,7 @@
+import { bench } from 'ABAX_BENCH';
+import { configure, render_part } from './packages/fakekit/src/server.js';
+
+bench('render_part', () => {
+	for (let i = 0; i < 8; i++) render_part('/catalog/items', i);
+});
+bench('configure', () => configure('/api/'));

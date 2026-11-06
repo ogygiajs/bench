@@ -70,13 +70,84 @@ export function fit_curve(points: PricePoint[]): CurveFit {
 	return fits.find((f) => f.r2 >= best - 0.02)!;
 }
 
-/** Time built-ins at sizes, in this process (a calibrate_prices child; nothing instrumented). */
+/**
+ * Calls per timed iteration for built-ins that leave their input as it was. One call of a fast
+ * built-in (a Map lookup) is a few ns, far below what one tinybench iteration costs on its own (two
+ * timer reads); a batch makes the call itself what is timed.
+ */
+export const BATCH = 64;
+
+let sink: unknown;
+
+/** Mean ns of one `Reflect.apply(fn, self, args)`, batched or one per iteration. */
+async function time_call(
+	fn: (...args: unknown[]) => unknown,
+	make: () => { self: unknown; args: unknown[] },
+	fresh: boolean,
+	o: { time_ms?: number; warmup_ms?: number }
+): Promise<number> {
+	const bench = new Bench({
+		time: o.time_ms ?? 100,
+		warmupTime: o.warmup_ms ?? 30,
+		warmup: true,
+		retainSamples: false,
+		throws: true
+	});
+	let cur = make();
+	if (!fresh) {
+		bench.add('call', () => {
+			const self = cur.self;
+			const args = cur.args;
+			for (let i = 0; i < BATCH; i++) sink = Reflect.apply(fn, self, args);
+		});
+	} else {
+		// A fresh input per call is built outside the timing, which tinybench's time budget does
+		// not see: each call declares the whole iteration's cost (as time.ts does for setups).
+		const t0 = performance.now();
+		for (let i = 0; i < 8; i++) {
+			const x = make();
+			Reflect.apply(fn, x.self, x.args);
+		}
+		const cost = { overriddenIterationCost: Math.max((performance.now() - t0) / 8, 1e-6) };
+		bench.add(
+			'call',
+			() => {
+				sink = Reflect.apply(fn, cur.self, cur.args);
+				return cost;
+			},
+			{
+				beforeEach: () => {
+					cur = make();
+				}
+			}
+		);
+	}
+	await bench.run();
+	const r = bench.tasks[0].result;
+	if (r.state !== 'completed') throw new Error(`abax: timing ended ${r.state}`);
+	// the mean: short calls quantize to the timer's tick, which the p50 would keep
+	return (r.latency.mean * 1e6) / (fresh ? 1 : BATCH);
+}
+
+const noop = (): void => {};
+
+/**
+ * Time built-ins at sizes, in this process (a calibrate_prices child; nothing instrumented). What
+ * the harness itself costs per call (an empty function through the same batch, or one call per
+ * iteration) is measured once and taken off every time.
+ */
 export async function time_builtins(
 	keys: string[],
 	sizes: number[] = DEFAULT_SIZES,
 	o: { time_ms?: number; warmup_ms?: number } = {}
 ): Promise<PricePoint[]> {
 	const out: PricePoint[] = [];
+	const empty = () => ({ self: undefined, args: [] });
+	const overhead = {
+		batched: await time_call(noop, empty, false, o),
+		single: await time_call(noop, empty, true, o)
+	};
+	void sink;
 	for (const key of keys) {
 		const input = INPUTS[key];
 		const fn = builtin_function(key);
@@ -89,54 +160,27 @@ export async function time_builtins(
 				sample.args,
 				Reflect.apply(fn, sample.self, sample.args)
 			);
-			let cur = input.make(size);
-			const bench = new Bench({
-				time: o.time_ms ?? 100,
-				warmupTime: o.warmup_ms ?? 30,
-				warmup: true,
-				retainSamples: false,
-				throws: true
-			});
-			// A fresh input per call is built outside the timing, which tinybench's time budget does
-			// not see: each call declares the whole iteration's cost (as time.ts does for setups).
-			let cost: { overriddenIterationCost: number } | undefined;
-			if (input.fresh) {
-				const t0 = performance.now();
-				for (let i = 0; i < 8; i++) {
-					const x = input.make(size);
-					Reflect.apply(fn, x.self, x.args);
-				}
-				cost = { overriddenIterationCost: Math.max((performance.now() - t0) / 8, 1e-6) };
-			}
-			bench.add(
-				key,
-				() => {
-					Reflect.apply(fn, cur.self, cur.args);
-					return cost;
-				},
-				input.fresh
-					? {
-							beforeEach: () => {
-								cur = input.make(size);
-							}
-						}
-					: {}
-			);
-			await bench.run();
-			const r = bench.tasks[0].result;
-			if (r.state !== 'completed')
-				throw new Error(`abax: timing ${key} at ${size} ended ${r.state}`);
-			// the mean: short calls quantize to the timer's tick, which the p50 would keep
-			out.push({ key, n, ns: r.latency.mean * 1e6 });
+			const fresh = input.fresh === true;
+			const ns = await time_call(fn, () => input.make(size), fresh, o);
+			// never below a tenth of the raw time: the overhead is an estimate too
+			const own = Math.max(ns - (fresh ? overhead.single : overhead.batched), ns * 0.1);
+			out.push({ key, n, ns: own });
 		}
 	}
 	return out;
 }
 
-function significant(x: number, digits = 3): number {
-	if (x === 0) return 0;
-	const p = 10 ** (digits - Math.ceil(Math.log10(Math.abs(x))));
-	return Math.round(x * p) / p;
+/**
+ * A price as the file keeps it: a whole number from 64 up, a multiple of 1/4 from 8 up, else a
+ * multiple of 1/64. All are exact in binary floating point, so a count times a price, and a sum of
+ * those, comes out the same in whatever order it is added: a recount from units equals the count
+ * the runtime kept, to the bit. (Decimal fractions like 0.18 are not exact, and their sums move in
+ * the last digit.) The rounding is at most 1.6% of a price from 1 up.
+ */
+export function quantize_price(x: number): number {
+	if (!(x > 0)) return 0;
+	const step = x >= 64 ? 1 : x >= 8 ? 4 : 64;
+	return Math.round(x * step) / step;
 }
 
 /** Built-in prices in steps from fitted curves (ns) and the time of one step. */
@@ -148,8 +192,8 @@ export function prices_from_fits(
 	for (const [key, f] of Object.entries(fits)) {
 		out[key] = {
 			model: f.model,
-			base: significant(f.base_ns / step_ns),
-			k: f.model === 'const' ? 0 : significant(f.k_ns / step_ns)
+			base: quantize_price(f.base_ns / step_ns),
+			k: f.model === 'const' ? 0 : quantize_price(f.k_ns / step_ns)
 		};
 	}
 	return out;
@@ -171,11 +215,25 @@ export function next_prices(
 	return { prices: merged, changed };
 }
 
+/** Where and how built-in prices were last calibrated (kept in prices.json, one line). */
+export interface PriceCalibration {
+	date: string;
+	/** ns of one step on that machine (the time a built-in's ns are divided by). */
+	step_ns: number;
+	machine: { cpu: string; cores: number; os: string; node: string; v8: string };
+}
+
+type PriceFile = Prices & { note?: string; calibration?: PriceCalibration };
+
 /** prices.json as the repository keeps it: one line per built-in. */
-export function format_prices(p: Prices & { note?: string }): string {
+export function format_prices(p: PriceFile): string {
 	const t = '\t';
 	const lines = ['{', `${t}"version": ${p.version},`];
 	if (p.note) lines.push(`${t}"note": ${JSON.stringify(p.note)},`);
+	if (p.calibration) {
+		const block = JSON.stringify(p.calibration, null, t).split('\n').join(`\n${t}`);
+		lines.push(`${t}"calibration": ${block},`);
+	}
 	const block = (name: string, obj: Record<string, unknown>, last: boolean, inline = false) => {
 		const keys = Object.keys(obj);
 		lines.push(`${t}${JSON.stringify(name)}: {`);
@@ -198,11 +256,21 @@ export function format_prices(p: Prices & { note?: string }): string {
 
 export function write_prices(
 	path: string,
-	builtins: Record<string, BuiltinPrice>
+	builtins: Record<string, BuiltinPrice>,
+	calibration?: PriceCalibration
 ): { version: number; changed: boolean } {
-	const current = JSON.parse(readFileSync(path, 'utf8')) as Prices & { note?: string };
+	const current = JSON.parse(readFileSync(path, 'utf8')) as PriceFile;
 	const { prices, changed } = next_prices(current, builtins);
-	if (changed) writeFileSync(path, format_prices({ ...prices, note: current.note }));
+	if (changed) {
+		writeFileSync(
+			path,
+			format_prices({
+				...prices,
+				note: current.note,
+				calibration: calibration ?? current.calibration
+			})
+		);
+	}
 	return { version: prices.version, changed };
 }
 

@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { deserialize, serialize } from 'node:v8';
 import { isDeepStrictEqual } from 'node:util';
+import { INJECTED_OPEN, original_source } from './markers.ts';
 
 /*
  * The input recorder (spec 8, leftovers). Code transformed by record-transform.ts reports each
@@ -201,6 +202,27 @@ export function load_records(path: string): FunctionRecord[] {
 }
 
 const G = Symbol.for('abax.recorder');
+const TO_STRING = Symbol.for('abax.recorder.to-string');
+
+/*
+ * Code that serializes a function (`fn.toString()` into an inline script) must get the function as
+ * written, not with the recorder's calls in it (they would name a binding the script does not
+ * have). While recorded code runs, Function.prototype.toString gives back the original text. It
+ * stays a native-looking function (a Proxy of the real one), so code that checks for native
+ * functions by their text is not fooled.
+ */
+const g = globalThis as unknown as Record<symbol, unknown>;
+if (!g[TO_STRING]) {
+	g[TO_STRING] = true;
+	const native = Function.prototype.toString;
+	// oxlint-disable-next-line no-extend-native
+	Function.prototype.toString = new Proxy(native, {
+		apply(target, self, args) {
+			const text = Reflect.apply(target, self, args) as string;
+			return text.includes(INJECTED_OPEN) ? original_source(text) : text;
+		}
+	});
+}
 
 /** The process-wide recorder every record-transformed module reports to. */
 export const recorder: Recorder = ((globalThis as unknown as Record<symbol, Recorder | undefined>)[

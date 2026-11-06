@@ -24,6 +24,7 @@ import { load_prices } from '../prices.ts';
  */
 
 const RECORDER = fileURLToPath(new URL('./recorder.ts', import.meta.url));
+import { INJECTED_CLOSE, INJECTED_OPEN } from './markers.ts';
 
 interface Node {
 	type: string;
@@ -180,6 +181,10 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 		// `this` is an input only when the function reads it (a method called on a module
 		// namespace or a class instance would otherwise make every call uncloneable).
 		const self = !is_arrow && uses_this ? 'this' : 'undefined';
+		// Every piece of injected code sits between INJECTED_OPEN and INJECTED_CLOSE, so the
+		// recorder can give back a function's original source (recorder.ts `original_source`):
+		// code that serializes a function with toString() (an inline script) still gets its own.
+		const inj = (text: string) => INJECTED_OPEN + text + INJECTED_CLOSE;
 		const head = `const ${r}=__abax_rec.enter(${JSON.stringify(id)},${args},${self});try{`;
 		const tail = `}catch(${e}){__abax_rec.fail(${r},${e});throw ${e}}finally{__abax_rec.exit(${r})}`;
 		if (body.type === 'BlockStatement') {
@@ -187,15 +192,15 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 			let first = 0;
 			while (first < stmts.length && typeof stmts[first].directive === 'string') first++;
 			const at = first > 0 ? stmts[first - 1].end : body.start + 1;
-			s.appendLeft(at, head);
-			s.prependRight(body.end - 1, tail);
+			s.appendLeft(at, inj(head));
+			s.prependRight(body.end - 1, inj(tail));
 			for (const ret of returns) {
 				const arg = ret.argument as Node | null;
 				if (arg) {
-					s.appendLeft(arg.start, `__abax_rec.out(${r},`);
-					s.prependRight(arg.end, ')');
+					s.appendLeft(arg.start, inj(`__abax_rec.out(${r},`));
+					s.prependRight(arg.end, inj(')'));
 				} else {
-					s.appendLeft(ret.start + 6, ` __abax_rec.out(${r},undefined)`);
+					s.appendLeft(ret.start + 6, inj(` __abax_rec.out(${r},undefined)`));
 				}
 			}
 		} else {
@@ -205,16 +210,26 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 			const rt = fn.returnType as Node | null;
 			if (rt) from = Math.max(from, rt.end);
 			const arrow = find_token(code, '=>', from) + 2;
-			s.appendLeft(arrow, `{${head}return __abax_rec.out(${r},(`);
-			s.prependRight(fn.end, `))${tail}}`);
+			s.appendLeft(arrow, inj(`{${head}return __abax_rec.out(${r},(`));
+			s.prependRight(fn.end, inj(`))${tail}}`));
 		}
 		wrapped.push(id);
 	};
 
+	// A class constructor is not recorded: a derived one may not read `this` before `super()`, and
+	// no replay can call a constructor without `new`.
+	const constructors = new Set<Node>();
 	const visit = (node: Node, depth: number): void => {
+		if (node.type === 'MethodDefinition' && node.kind === 'constructor') {
+			constructors.add(node.value as Node);
+		}
 		if (FUNCTIONS.has(node.type)) {
 			const path = by_pos.get(position(starts, node.start));
-			if (path !== undefined && (!o.targets || o.targets.has(path))) wrap(node, path);
+			if (path !== undefined && (!o.targets || o.targets.has(path))) {
+				if (constructors.has(node))
+					skipped.push({ id: `${o.id} > ${path}`, reason: 'constructor' });
+				else wrap(node, path);
+			}
 		}
 		for (const c of child_nodes(node)) visit(c, depth + 1);
 	};

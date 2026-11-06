@@ -140,3 +140,45 @@ test('targets: only the named functions are wrapped; the rest say why', () => {
 	]);
 	assert.match(r.code, /export const __abax_rec_fns = \{"pkg\/dist\/mod\.js > add":add\}/);
 });
+
+test('class constructors are left alone: a derived one may not read `this` before super()', async () => {
+	recorder.reset();
+	const dir = temp_dir('abax-rec-ctor-');
+	const source = `
+class Base { constructor(x) { this.x = x; } twice() { return this.x * 2; } }
+export class Derived extends Base {
+	constructor(x) { super(x + 1); this.y = x; }
+	sum() { return this.x + this.y; }
+}
+export function make(x) { return new Derived(x).sum(); }
+`;
+	const r = record_transform(source, { filename: join(dir, 'ctor.js'), id: 'pkg/ctor.js' });
+	assert.deepEqual(
+		r.skipped.map((s) => s.reason),
+		['constructor', 'constructor']
+	);
+	write_files(dir, { 'ctor.js': r.code });
+	const m = (await import(pathToFileURL(join(dir, 'ctor.js')).href)) as {
+		make: (x: number) => number;
+	};
+	assert.equal(m.make(2), 5);
+	const recs = new Map(recorder.records().map((x) => [x.id, x]));
+	assert.equal(recs.get('pkg/ctor.js > make')?.samples[0].out, 5);
+	assert.equal(recs.get('pkg/ctor.js > Derived > sum')?.calls, 1);
+});
+
+test('a recorded function serializes as written (toString), and a native one still looks native', async () => {
+	recorder.reset();
+	const m = (await load()) as Record<string, (...a: unknown[]) => unknown>;
+	const text = (name: string, end: string) =>
+		SOURCE.slice(SOURCE.indexOf(name), SOURCE.indexOf(end, SOURCE.indexOf(name)) + end.length);
+	assert.equal(m.add.toString(), text('function add', '\n}'));
+	assert.equal(m.nothing.toString(), 'function nothing() {}');
+	assert.equal(m.pair.toString(), '(a, b) => ({ a, b })');
+	assert.equal(String(m.fails), text('function fails', '\n}'));
+	// a serialized recorded function runs where the recorder is not
+	const again = new Function(`return (${m.add.toString()})`)() as (a: number, b?: number) => number;
+	assert.equal(again(2, 3), 5);
+	assert.match(Function.prototype.toString.toString(), /\[native code\]/);
+	assert.match(Math.max.toString(), /\[native code\]/);
+});
