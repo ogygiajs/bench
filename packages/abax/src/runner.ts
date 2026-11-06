@@ -13,6 +13,7 @@ import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
 import { REPORT_SCHEMA, build_case_report } from './report.ts';
 import { load_prices } from './prices.ts';
+import { apply_estimates } from './calibrate/estimate.ts';
 import type { CaseReport, Report } from './report.ts';
 
 export interface RunOptions {
@@ -164,6 +165,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		},
 		cases: results
 	};
+	apply_estimates(report);
 	if (opts.out) writeFileSync(opts.out, JSON.stringify(report, null, '\t') + '\n');
 	return report;
 }

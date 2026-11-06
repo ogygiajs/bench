@@ -7,6 +7,7 @@ import { real_bytes } from './alloc.ts';
 import type { BytesOptions } from './alloc.ts';
 import { find_leaks } from './leak.ts';
 import type { LeakOptions } from './leak.ts';
+import { time_builtins } from '../calibrate/prices.ts';
 
 /*
  * Entry of a measure child (see spawn.ts): `node [flags] child.ts job.json`. Loads the bench files
@@ -72,6 +73,11 @@ async function main(): Promise<void> {
 		case 'leaks':
 			result = await each(job, (c) => find_leaks(c, job.roots[0], o as LeakOptions));
 			break;
+		case 'calibrate_prices': {
+			const p = o as { keys: string[]; sizes?: number[]; time_ms?: number; warmup_ms?: number };
+			result = await time_builtins(p.keys, p.sizes, p);
+			break;
+		}
 		default:
 			throw new Error(`abax: unknown measure job ${job.kind}`);
 	}

@@ -53,15 +53,28 @@ function cpu_us(): number {
 	return u.user + u.system;
 }
 
-/** CPU (µs) of the case's setup + teardown alone, `runs` times. */
+/** CPU (µs) of the case's setup + teardown alone, scaled to `runs` calls from a sample of them. */
 async function setup_cpu_us(c: BenchCase, runs: number): Promise<number> {
 	if (!c.setup && !c.teardown) return 0;
+	const sample = Math.min(runs, 2000);
 	const t0 = cpu_us();
-	for (let i = 0; i < runs; i++) {
+	for (let i = 0; i < sample; i++) {
 		const ctx = c.setup ? await c.setup() : undefined;
 		if (c.teardown) await c.teardown(ctx);
 	}
-	return cpu_us() - t0;
+	return ((cpu_us() - t0) * runs) / sample;
+}
+
+/** Wall ms of one whole iteration (setup, call, teardown), averaged over a few. */
+async function probe_ms(c: BenchCase): Promise<number> {
+	const n = 16;
+	const t0 = performance.now();
+	for (let i = 0; i < n; i++) {
+		const ctx = c.setup ? await c.setup() : undefined;
+		await c.fn(ctx);
+		if (c.teardown) await c.teardown(ctx);
+	}
+	return Math.max((performance.now() - t0) / n, 1e-6);
 }
 
 /** Time one case on the code as it is loaded (the plain build in a measure child). */
@@ -85,11 +98,16 @@ export async function time_case(c: BenchCase, o: TimeOptions = {}): Promise<Time
 		},
 		async
 	};
+	// tinybench's time budget counts the timed call only; a cheap call with a costly setup would
+	// run for ages. Each call then declares what one iteration really costs (setup + call +
+	// teardown, from a probe), a constant object so the timed call allocates nothing extra.
+	const cost = c.setup || c.teardown ? { overriddenIterationCost: await probe_ms(c) } : undefined;
 	if (async) {
 		bench.add(
 			c.name,
 			async () => {
 				await c.fn(ctx);
+				return cost;
 			},
 			hooks
 		);
@@ -98,6 +116,7 @@ export async function time_case(c: BenchCase, o: TimeOptions = {}): Promise<Time
 			c.name,
 			() => {
 				c.fn(ctx);
+				return cost;
 			},
 			hooks
 		);

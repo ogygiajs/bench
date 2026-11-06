@@ -99,6 +99,11 @@ const SIZES: Record<string, Size> = {
 	'Set.prototype.delete': constant
 };
 
+/** The size a priced built-in is charged for (what calibration fits its curve against). */
+export function builtin_size(key: string, self: unknown, args: unknown[], result: unknown): number {
+	return (SIZES[key] ?? this_len)(self, args, result);
+}
+
 interface Installed {
 	owner: Record<string, unknown>;
 	prop: string;
