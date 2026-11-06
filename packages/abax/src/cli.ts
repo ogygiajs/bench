@@ -17,7 +17,7 @@ const USAGE = `abax run <bench files...> [--root dir] [--out report.json] [--dep
 abax diff <base.json> <pr.json> [--repo dir] [--base sha] [--head sha] [--out section.md] [--json out.json]
 abax dts <source files...> --out abax-private.d.ts [--tsconfig tsconfig.json]
 abax health <bench files...> [--root dir] [--out report.json] [--filter text] [--warmup 20] [--runs 3] [--check on|off]
-abax growth <bench files...> [--root dir] [--out report.json] [--filter text] [--sizes 1,10,100]
+abax growth <bench files...> [--root dir] [--out report.json] [--filter text] [--sizes 1,10,100] [--scaled on|off]
 abax search <bench files...> [--root dir] [--out report.json] [--filter text] [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]`;
 
 interface Parsed {
@@ -124,7 +124,7 @@ async function main(argv: string[]): Promise<number> {
 		}
 		if (cmd === 'growth') {
 			const sizes = flags.get('sizes')?.split(',').map(Number);
-			const r = await run_growth({ ...common, sizes });
+			const r = await run_growth({ ...common, sizes, scaled: flags.get('scaled') === 'on' });
 			write_section(out, 'growth', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;
 		}

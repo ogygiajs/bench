@@ -82,3 +82,45 @@ test('Map and Set operations cost a constant; the runtime never charges itself',
 	assert.deepEqual(calls, { has: 3, set: 2, get: 1 });
 	assert.equal(r.totals.steps, f.self_steps);
 });
+
+test('a search is priced by what it walks: an indexOf scanner stays linear', async () => {
+	const m = await load_module(`export function tags(html: string): number {
+	let n = 0;
+	for (let at = html.indexOf('<'); at !== -1; at = html.indexOf('<', at + 1)) n++;
+	return n;
+}
+export function has(html: string): boolean {
+	return html.includes('</body>', 4);
+}
+`);
+	const { base, k } = prices.builtins['String.prototype.indexOf'];
+	for (const n of [100, 1000]) {
+		const r = await measure(() => m.tags('<a>xx'.repeat(n) as never), true);
+		const charged = fn_of(r, 'tags').builtins.reduce((s, b) => s + b.steps, 0);
+		// n + 1 searches that together walk the string once (5n characters), not n times
+		assert.equal(charged, (n + 1) * base + k * 5 * n);
+	}
+
+	const t = await load_module(`const TOKEN = /<\\/?b>/g;
+export function tokens(html: string): number {
+	let n = 0;
+	TOKEN.lastIndex = 0;
+	while (TOKEN.exec(html)) n++;
+	return n;
+}
+`);
+	const re = prices.builtins['RegExp.prototype.exec'];
+	for (const n of [100, 1000]) {
+		const r = await measure(() => t.tokens('<b>xx</b>'.repeat(n) as never), true);
+		const charged = fn_of(r, 'tokens').builtins.reduce((s, b) => s + b.steps, 0);
+		// 2n matches and a final miss, together walking the input once (9n characters)
+		assert.equal(
+			charged,
+			builtin_cost(re, 0) * (2 * n + 1) + (builtin_cost(re, 9 * n) - builtin_cost(re, 0))
+		);
+	}
+
+	const r = await measure(() => m.has('<html><body></body></html>' as never), true);
+	const includes = fn_of(r, 'has').builtins[0];
+	assert.equal(includes.steps, cost('String.prototype.includes', 12 - 4 + 7));
+});

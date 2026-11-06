@@ -65,6 +65,35 @@ test('optional chaining: member and call, with and without arguments', async () 
 	assert.deepEqual(counts(r, 'h'), [3, 2, 2, 1, 2, 1]);
 });
 
+test('empty function bodies are counted and stay valid code', async () => {
+	const m = await load_module(`const noop = () => {};
+export const hooks = { restore: () => {}, settle() {} };
+export function run(): void {
+	noop();
+	hooks.restore();
+	hooks.settle();
+}`);
+	const r = await measure(() => m.run());
+	assert.deepEqual(counts(r, 'noop'), [1]);
+	const restore = r.functions.find((f) => f.path.endsWith('restore'));
+	const settle = r.functions.find((f) => f.path.endsWith('settle'));
+	assert.equal(restore?.calls, 1);
+	assert.equal(settle?.calls, 1);
+});
+
+test('a spread of an expression with its own blocks wraps the whole argument', async () => {
+	const m = await load_module(`export function all(ast: any, a: number[]): number {
+	const o = { ...(ast.o ?? {}), k: 1 };
+	const list = [...a, ...(ast.fragment?.nodes ?? [])];
+	return Math.max(...(ast.q?.r ?? [0])) + list.length + Object.keys(o).length;
+}`);
+	const r = await measure(() => {
+		assert.equal(m.all({ fragment: { nodes: [1, 2] }, q: { r: [5] } } as never, [1] as never), 9);
+		assert.equal(m.all({} as never, [] as never), 1);
+	});
+	assert.equal(fn_of(r, 'all').calls, 2);
+});
+
 test('default parameters and destructuring defaults', async () => {
 	const m = await load_module(`export function d(a = 5, { k = 2 } = {}) {
 	return a + k;

@@ -1116,10 +1116,11 @@ class Instrumenter {
 			if (!e) continue;
 			if (e.type === 'SpreadElement') {
 				const arg = get(e, 'argument')!;
-				this.walk_expr(arg);
-				this.op('iter_init', e.start);
+				// The wrapper's edits before the argument's own (outer first at a shared position).
 				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${site.index},`);
 				this.close(arg.end, () => ')');
+				this.walk_expr(arg);
+				this.op('iter_init', e.start);
 			} else {
 				this.walk_expr(e);
 			}
@@ -1145,9 +1146,9 @@ class Instrumenter {
 		for (const p of props) {
 			if (p.type === 'SpreadElement') {
 				const arg = get(p, 'argument')!;
-				this.walk_expr(arg);
 				this.open(arg.start, () => `${this.n.R}.spread_obj(${this.n.d},${site.index},`);
 				this.close(arg.end, () => ')');
+				this.walk_expr(arg);
 				continue;
 			}
 			const computed = flag(p, 'computed');
@@ -1169,11 +1170,12 @@ class Instrumenter {
 			if (!a) continue;
 			if (a.type === 'SpreadElement') {
 				const arg = get(a, 'argument')!;
+				let s: SiteRec | null = null;
+				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${s!.index},`);
+				this.close(arg.end, () => ')');
 				this.walk_expr(arg);
 				this.op('iter_init', a.start);
-				const s = this.site('spread_args', a.start, 0, true, false);
-				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${s.index},`);
-				this.close(arg.end, () => ')');
+				s = this.site('spread_args', a.start, 0, true, false);
 			} else {
 				this.walk_expr(a, `${callee}:${i}`);
 			}
