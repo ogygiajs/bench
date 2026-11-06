@@ -1,0 +1,437 @@
+# Abax
+
+Abax is a benchmark engine for JavaScript and TypeScript functions. It counts the work each
+function does, line by line, and the count is the same on every run, so one run of a PR and one
+run of its base are enough to tell which line got slower.
+
+The name comes from the abax, the Greek counting board.
+
+Abax was built for [ogygia](https://github.com/ogygiajs/ogygia) and runs on every ogygia PR. It
+lives in this repository as `packages/abax` and is not on npm yet.
+
+## The problem
+
+Timings are noisy. On the same laptop, in one process, with nothing changed between turns, the
+`match_path` case of ogygia's router took between 1.13 ms and 1.21 ms at the median over five
+turns: a 7% spread. A change that costs 1% cannot be seen through that.
+
+CI runners are worse. ogygia PR #180 changed CI files and no code that a bench reaches. Abax
+counted every function the same on both sides. The time table in the same comment still called
+one case slower and three faster, by the same no-overlap rule the app benchmark uses.
+
+And when a timing does move, it says which benchmark moved, not which line.
+
+## The idea
+
+Count instead of time. A bench-only build rewrites every function so it counts itself: each basic
+block adds its count and its price (calls, property reads, comparisons, allocations) to a counter.
+Built-ins like `sort`, `split` or `JSON.parse` are priced by the size of their input. The clock,
+randomness, timers and IO are made deterministic inside the measuring window. The result is
+**steps**: an exact number per function and per line, the same on every run of the same code
+with the same input.
+
+Counting cannot see everything the engine does, so Abax adds layers that run the real, uncounted
+code next to the count:
+
+| Layer             | What it answers                                                                  |
+| ----------------- | -------------------------------------------------------------------------------- |
+| Steps             | How much work each function and line does. Exact.                                |
+| Engine health     | Did V8 stop optimizing a function, start deopting, or see more shapes at a site? |
+| Time              | How long it takes on the plain build, PR and base taking turns in one process.   |
+| Real bytes        | What V8 really allocates per function, next to the count's estimate.             |
+| Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?   |
+| Growth            | Is the case constant, linear, n log n or quadratic in its input size?            |
+| Worst-case search | Which input of the same size costs the most steps?                               |
+| Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.   |
+
+[docs/layers.md](docs/layers.md) explains each one.
+
+## An example
+
+Three lines planted in `match_one`, which ogygia's router calls for each route until one matches
+the request. The new lines run only when the route's pattern matches (ogygia `c983461` plus one
+commit, counted with Abax at `7b3d7a5`):
+
+```ts
+let weight = 0;
+for (let i = 0; i < c.pattern.length; i++) weight += c.pattern.charCodeAt(i);
+if (weight < 0) return null;
+```
+
+Abax ran the 2 of 11 bench files that import `packages/router/src/match.ts` and reported:
+
+| Case                                                  | Function                                   |                  Self steps |                             Δ |
+| ----------------------------------------------------- | ------------------------------------------ | --------------------------: | ----------------------------: |
+| match_path: every request against a 300-route table   | `packages/router/src/match.ts > match_one` | 4,653,739.13 → 4,710,331.13 | +56,592 (+1.2%) ≈ +4,465.4 ns |
+| routes().fetch: forty requests across a 100-route API | `packages/router/src/match.ts > match_one` |     187,368.69 → 197,568.69 |   +10,200 (+5.4%) ≈ +803.9 ns |
+
+The "Where" table under it put 55,962 of the 56,592 steps on `packages/router/src/match.ts:140`,
+the loop line, and marked the three lines as new code. Engine health added that the two new
+property reads on line 140 (`charCodeAt`, `length`) are polymorphic.
+
+The time layer measured the same two trees in the same job and said `≈` (within noise) for both
+cases. At the median, `match_path` took between 1.13 and 1.21 ms on the base and between 1.11 and
+1.18 ms on the PR. The whole case grew by 1.1% in steps, well inside the 7% the timings moved by
+on their own.
+
+The full comment is in [docs/sample-comment.md](docs/sample-comment.md).
+
+## Quick start
+
+You need Node 22.18 or newer and pnpm. CI counts on Node 26.
+
+```bash
+git clone https://github.com/ogygiajs/bench.git
+cd bench && pnpm install
+```
+
+In your project, link the package (pnpm):
+
+```json
+{ "devDependencies": { "@bench/abax": "link:../bench/packages/abax" } }
+```
+
+A function to measure, `src/rank.ts`:
+
+```ts
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (const r of rows) {
+		out.push(score(r));
+	}
+	return out;
+}
+```
+
+A bench file, `bench/rank.bench.ts`. `setup` builds the input outside the measuring window:
+
+```ts
+import { bench } from '@bench/abax/bench';
+import { rank } from '../src/rank.ts';
+
+bench('rank: twenty rows', ({ rows }) => rank(rows), {
+	setup: () => ({
+		rows: Array.from({ length: 20 }, (_, i) => ({ id: i, tags: ['a' + i, 'bb', 'c' + i] }))
+	})
+});
+```
+
+Count it:
+
+```bash
+pnpm exec abax run bench/rank.bench.ts --out base.json
+```
+
+```
+ok       rank: twenty rows  897 steps
+```
+
+The project is a git repository and the code above is committed: a report records the commit it
+was counted at. Now change the code, here a second loop inside `score`:
+
+```ts
+for (let i = 0; i < row.tags.length; i++) {
+	s += 0;
+}
+```
+
+Commit, and count again:
+
+```bash
+pnpm exec abax run bench/rank.bench.ts --out pr.json
+pnpm exec abax diff base.json pr.json --repo .
+```
+
+```md
+<!-- abax:section -->
+### Abax: steps per function
+
+**1** function changed in 1 case(s). Steps are exact counts, not timings.
+
+| Case | Function | Self steps | Δ | Δ allocs | Δ bytes | Δ inclusive |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| rank: twenty rows | `src/rank.ts > score` | 620 → 1,140 | +520 (+83.9%) ≈ +21 ns | 0 | 0 | +520 |
+
+<details><summary>Where</summary>
+
+| | Line | Δ steps | Δ allocs | Δ bytes |
+| --- | --- | ---: | ---: | ---: |
+| new code | `src/rank.ts:11` | +400 | 0 | 0 |
+| new code | `src/rank.ts:12` | +120 | 0 | 0 |
+
+</details>
+```
+
+`--repo .` lets the diff read `git diff` between the two reports' commits, so unchanged lines are
+matched even when they moved, and changed lines are marked "new code". Without it, lines are
+compared by number.
+
+Node prints an `ExperimentalWarning` for `stripTypeScriptTypes` on every run.
+`NODE_OPTIONS=--no-warnings` hides it.
+
+## Bench files
+
+```ts
+bench<T>(name: string, fn: (ctx: T) => unknown, options?: {
+	setup?: () => T | Promise<T>;     // outside the window, before every run
+	teardown?: (ctx: T) => unknown;   // outside the window, after every run
+	scale?: (ctx: T, factor: number) => T; // for `abax growth`, when the generic scaler cannot grow ctx
+});
+```
+
+`fn` may be async. Each case runs three times: once to warm up and record IO, then twice measured.
+The two measured counts must match exactly or the case is reported unstable.
+
+### Private functions
+
+The counting build appends one line to every module:
+
+```ts
+export const __abax = { score };
+```
+
+with every top-level binding the module does not export. A bench file imports private functions
+from it:
+
+```ts
+import { bench } from '@bench/abax/bench';
+import { __abax } from '../src/rank.ts';
+
+bench('score: one row with three tags', ({ row }) => __abax.score(row), {
+	setup: () => ({ row: { id: 1, tags: ['a1', 'bb', 'c1'] } })
+});
+```
+
+TypeScript does not know about `__abax`. `abax dts` writes the types, from the TS checker:
+
+```bash
+pnpm exec abax dts src/rank.ts --out bench/__abax.d.ts
+```
+
+```ts
+declare module '../src/rank.ts' {
+	namespace __abax_private {
+		export function score(row: Row): number;
+	}
+	export const __abax: {
+		score: typeof __abax_private.score;
+	};
+}
+```
+
+With that file in the project, `tsc` checks the bench file like any other. ogygia regenerates it
+before every run and keeps it out of git. Class `#private` methods are measured through their
+public callers.
+
+### What a bench file can load
+
+- TypeScript that Node can strip: no `enum`, `namespace` or parameter properties. A module with
+  one stops the whole run.
+- `.svelte` components and `.svelte.ts` modules, compiled with the project's own Svelte (server
+  output). Lines map back to the `.svelte` source.
+- Dependencies run uncounted unless `--deps all` or `--deps devalue,svelte` asks for them; counted
+  ones are reported under their package names
+  (`devalue/src/operations.js > parse_operations > createMap`).
+
+## CLI
+
+`abax --help` prints every command with its flags. Each command reads bench files or reports and
+writes JSON; `diff` and a few others also write markdown.
+
+| Command                                                                  | What it does                                                                                                       |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
+| `abax run <bench files>`                                                 | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
+| `abax diff <base.json> <pr.json>`                                        | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
+| `abax dts <source files> --out <file>`                                   | Types for `__abax`.                                                                                                |
+| `abax health <bench files>`                                              | Engine health section: tiers, deopts, inline-cache states.                                                         |
+| `abax growth <bench files>`                                              | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
+| `abax search <bench files>`                                              | Mutates the input and keeps what costs more steps; reports the worst input found.                                  |
+| `abax time <bench files> --base <dir> --pr <dir>`                        | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
+| `abax weights <app reports>` / `abax coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
+| `abax inventory`, `abax replay`, `abax unmeasured`                       | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
+| `abax calibrate prices\|points\|agree\|weights`                          | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
+| `abax verify`                                                            | Run every planted case of every layer and check Abax flags exactly the planted ones.                               |
+
+`health`, `growth` and `search` write their section into the report given by `--out`, so one JSON
+file per commit holds everything `diff` needs.
+
+## The PR comment
+
+Every ogygia PR gets one benchmark comment, found by `<!-- ogygia-benchmarks -->`. Abax owns the
+`abax` section and the app benchmark owns `apps`. Each rewrites only its own section, so Abax can
+post first (it counts from source and needs no published preview) and the app benchmark fills its
+part when it finishes.
+
+For a PR, Abax checks out the PR commit and the commit it branched from, finds the bench files
+whose import graph reaches a changed file, and on both trees counts them, checks engine health and
+grows the cases that declare a scaler. Then it times both trees in one process. A push to ogygia's
+main and a nightly run count every bench file with every layer. Results go to the `results` branch
+of this repository under `abax/`. [docs/ci.md](docs/ci.md) has the details, and
+[docs/sample-comment.md](docs/sample-comment.md) is a real comment.
+
+The step table shows any change, down to one step: counts do not need a noise floor. The time table
+uses one.
+
+## Reading the numbers
+
+**A step** is one simple operation: a property read, a comparison, an assignment, an arithmetic
+op. A call costs 4, `new` 6, an `await` 20. A block's price is the sum of its operations. In `score`
+above, the block before the loop costs 10 (an assignment, a property read and starting a `for..of`
+at 8) and the loop body costs 7. Twenty rows of three tags: 20 × 10 + 60 × 7 = 620 steps.
+
+**Built-ins** are priced by the size they work on, from a calibration on one machine.
+`Map.prototype.get` is 24.5 steps; `Array.prototype.sort` is 66 n log n. Prices are binary
+fractions, so a count can have a fraction: the `.13` in the example above is `.125`, rounded for
+display. Counts are still exact.
+
+**The ns next to a Δ** (`≈ +21 ns`) is an estimate: the change in each kind of operation times its
+fitted cost in ns. It is not a measurement. Only the time layer measures.
+
+**The same code with the same input always counts the same.** Inside the measuring window:
+
+- `Date`, `performance.now` and `process.hrtime` read a clock that starts at 2024-01-01 and moves
+  1 ms per read.
+- `Math.random` and `crypto` randomness come from one seeded generator.
+- Timers run on a fake loop, in due-time order.
+- File reads and `fetch` are recorded in the warm-up run and replayed. Anything else that touches
+  the network or writes a file throws.
+- Every run gets fresh module state, so a cache filled by one run does not make the next one fast.
+
+**What changes the count:**
+
+- The code that runs, and how often each block runs.
+- The sizes passed to priced built-ins.
+- Dependencies. Uncounted code costs nothing of its own, but the priced built-ins it calls are
+  charged to the counted function that called into it. A new version of a dependency can move a
+  count.
+- The price file. A report records the price version it was counted with. When two reports differ,
+  `abax diff` recounts both with the current prices from the units each report keeps, and compares
+  those.
+
+## Limits
+
+- **Steps are not time.** In the quick start, the second loop added 58% to the case's steps. The
+  time layer measured between 83 and 84 ns before and 84 ns after: `≈`. The engine made that loop nearly free.
+  Steps say what the code asks for; how cheap the engine makes it is the time layer's job.
+- **Engine effects only the time layer sees.** ogygia commit `a99a49a` replaced a `console.warn`
+  on a path that never runs. Steps did not change and engine health was the same on both trees,
+  yet the case it touches got 11% slower at the median, likely from the new module graph. Abax's
+  step layer cannot see this.
+- **Built-in prices are curves fitted on one machine** (an M4 Max, Node 26.4). On ogygia commit
+  `a217b913` they overstated new `replace`, `JSON` and regex work: +134% steps against +69% time.
+  The seed prices understated the same change (+31%).
+- **Built-ins without a price cost one call.** `Array.prototype.push` is 4 steps whatever it does.
+- **Regular expressions are priced by input length.** A pattern that backtracks badly costs no more
+  steps than one that does not, and the worst-case search does not find it.
+- **The byte estimate covers allocations written in counted code.** Arrays and strings that
+  built-ins return (`split`, `slice`, `map`, `JSON.parse`) and the backing store `push` grows are
+  not in it. In the quick start, `rank` is estimated at 16 B and V8 allocates 907.66 B.
+- **Real bytes are per function, not per line.**
+- **Coverage is low today.** ogygia's gate on PR #180: 1,524 of 8,234 functions (18.5%) have a
+  measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
+  app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
+- **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes and
+  leaks run on main and nightly. The worst-case search and real-app ranking are CLI only for now.
+
+## How it compares
+
+- **tinybench, mitata** time a function many times and report statistics. They are what Abax's
+  time layer uses (tinybench) and the right tool for "how fast is this". They inherit the
+  machine's noise and do not say which line moved.
+- **CodSpeed** runs benchmarks in CI under CPU simulation (Valgrind) or on quiet machines, and
+  reports per benchmark. For JavaScript, instruction counting includes the engine: the JIT, the GC
+  and the interpreter all count, and they move when the code does not.
+- **Valgrind's Cachegrind, `perf stat` instruction counts** are the practice of
+  [rustc-perf](https://github.com/rust-lang/rustc-perf) (instructions as the main metric for the
+  Rust compiler) and of SQLite (performance work measured in Cachegrind cycles). That works well for
+  compiled code, where instructions map to source. For JS they count V8's work, not the script's.
+- **Abax** counts at the source level instead: blocks and built-in calls of your code, so the count
+  maps to a line and does not move when V8 changes its mind. The cost is that it is a model. The
+  layers above exist because the model misses things.
+
+## Proof
+
+### `abax verify`
+
+Planted cases for every layer: slowdowns that must be flagged at the line they were planted on,
+and no-ops (renames, comments, reordering, formatting, same-line twins) that must stay quiet.
+CI runs it on every pull request and every push to main of this repository. Output on an M4 Max,
+Node 26.4.0, at `7b3d7a5`:
+
+```
+Abax verify: 32 of 32 planted cases pass
+pass  steps/comments             no-op    nothing flagged
+pass  steps/extra-allocation     planted  flagged lines 17 (+240 steps)
+pass  steps/extra-loop           planted  flagged lines 11,12 (+520 steps)
+pass  steps/formatting           no-op    nothing flagged
+pass  steps/quadratic-helper     planted  flagged lines 6,20 (+1720 steps)
+pass  steps/rename               no-op    nothing flagged
+pass  steps/reorder              no-op    nothing flagged
+pass  elision/elided-allocation  planted  elided at lines 9 (est 960 B, real 4.05 B)
+pass  leak/leak                  planted  leak of `seen` at lib.ts:14
+pass  leak/leak-twin             no-op    no leak
+pass  engine/comments            no-op    nothing flagged
+pass  engine/delete              planted  deopt in make_items:7, deopt in total:15, inline cache in total:18
+pass  engine/delete-twin         no-op    nothing flagged
+pass  engine/int-double          planted  deopt in make_items:7, deopt in total:15
+pass  engine/int-double-twin     no-op    nothing flagged
+pass  engine/megamorphic         planted  inline cache in label_len:34
+pass  engine/megamorphic-twin    no-op    nothing flagged
+pass  engine/rename              no-op    nothing flagged
+pass  engine/shape-order         planted  deopt in total:18, inline cache in total:18
+pass  engine/shape-order-twin    no-op    nothing flagged
+pass  growth/constant-factor     no-op    no class change
+pass  growth/quadratic           planted  rank: linear -> quadratic
+pass  search/order               planted  worst/typical 10.64, flagged
+pass  search/count               planted  worst/typical 4.61, flagged
+pass  search/total               no-op    worst/typical 1.00, not flagged
+pass  app/cold-large             planted  configure: cold, shown (+774 steps/call)
+pass  app/cold-small             planted  configure: cold, suppressed (+5 steps/call)
+pass  app/hot-noop               no-op    nothing ranked
+pass  app/hot-small              planted  render_part: heavy, shown (+4 steps/call, 14 calls/request)
+pass  time/comments              no-op    work same (p50 0%, steps =), steady same (p50 0%, steps =)
+pass  time/faster                planted  work faster (p50 -83%, steps down), steady same (p50 +5%, steps =)
+pass  time/slowdown              planted  work slower (p50 +326%, steps up), steady same (p50 0%, steps =)
+```
+
+The planted cases are in `test/*-key/`. Each is a base file and a changed copy with an
+`expect.json` that names the planted lines.
+
+### The real-world check
+
+Do step changes track time changes on real commits? 29 commits of ogygia's main since
+2026-11-01, each against its parent; 18 of them reached a bench file, for 190 case measurements.
+Steps counted on both trees; time measured on the plain build, both trees taking turns, 8 rounds,
+judged by the PR comment's rule.
+
+|                        | Time significant | Time same |
+| ---------------------- | ---------------: | --------: |
+| **Steps changed ≥ 3%** |                2 |         0 |
+| **Steps changed < 3%** |                1 |       187 |
+
+When steps moved by 3% or more, time moved the same way (2 of 2). Steps raised no false alarm. The
+one time change steps missed is the `a99a49a` engine effect above. The history is short: only 3
+rows changed enough to matter. [calibration/results.md](calibration/results.md) has every row and
+how the machine was checked for quiet first.
+
+## More
+
+- [How counting works](docs/how-counting-works.md): the transform, prices, built-ins, determinism,
+  source maps, the shadow call stack, allocations and the byte model.
+- [Layers](docs/layers.md): engine health, time, real bytes, leaks, growth, search, app weights,
+  coverage and the gate.
+- [CI](docs/ci.md): the ogygia suite, the workflows, the comment, the results branch.
+- [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.

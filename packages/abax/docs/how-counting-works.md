@@ -1,0 +1,249 @@
+# How counting works
+
+Abax measures a bench case on a counting build: every module the case loads is rewritten so each
+function counts its own work as it runs. This page covers the rewrite, how work is priced, what
+keeps the count the same from run to run, and how the count is mapped back to source lines.
+
+## The rewrite
+
+`abax run` registers a module loader (`module.registerHooks`) and imports the bench file. Every
+module loaded after that goes through the transform: oxc-parser reads it, magic-string edits it,
+and the edits keep a source map. The same transform is also a Vite, Rolldown and Rollup plugin
+(`@bench/abax/plugin`), used for the counted app builds.
+
+This module:
+
+```ts
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+```
+
+comes out as (types left in, as the transform sees TS before Node strips it):
+
+```js
+function score(row: Row): number {const $a$r=$a$R.enter($a$f+1);try{$a$c[1]++,$a$s[0]+=10;
+	let s = 0;
+	for (const t of row.tags) {$a$c[2]++,$a$s[0]+=7;
+		s += t.length;
+	}
+	$a$c[3]++;return s;
+}finally{$a$R.exit($a$r)}}
+```
+
+- `$a$c` is the module's `Float64Array` of block counts. `$a$c[2]++` runs every time the loop body
+  starts.
+- `$a$s[0] += 7` adds the block's price to a running total, used for inclusive steps.
+- `R.enter` and `R.exit` push and pop the function on a shadow call stack.
+- The counters come from a small virtual module per file (`abax:module/<hash>`), imported first,
+  so a function called early through an import cycle still finds them.
+
+Nothing is inserted on a line of its own, so line numbers do not move.
+
+### Blocks
+
+A block is straight-line code: once it starts, all of it runs. Each of these starts a block:
+
+- a function body, a loop body, each branch of `if`, each `case` of a `switch`, `catch` and
+  `finally`
+- the code after a loop or a branch
+- the right side of `&&`, `||` and `??`, and each side of `?:`
+- the part after `?.` (counted through `R.opt`)
+- a default parameter value
+
+From a real module:
+
+```js
+export function label(user: { name?: string } | null, fallback = ($a$c[2]++,'anon')): string {...
+	const name = $a$R.opt($a$c,3,1,user)?.name ?? ($a$c[4]++,fallback);
+	return name.length > 0 && ($a$c[5]++,$a$s[0]+=1,name !== 'root') ? ($a$c[6]++,$a$s[0]+=6,$a$R.str($a$d,2,`@${name}`)) : ($a$c[7]++,fallback);
+```
+
+Every function is counted: exported or not, nested, arrow, method, getter, class field
+initializer. Module-level code is a function too, named `<top>`.
+
+## Prices
+
+A block's price is fixed when the module is transformed: the sum of the operations in it, each at
+the price in `prices.json`.
+
+| Operation                   | Steps | Operation                        | Steps |
+| --------------------------- | ----: | -------------------------------- | ----: |
+| property read               |     1 | call                             |     4 |
+| property write              |     2 | `new`                            |     6 |
+| arithmetic, comparison      |     1 | template literal                 |     2 |
+| logical, branch, unary      |     1 | string concatenation             |     2 |
+| assignment, `++`/`--`       |     1 | start a `for..of` (the iterator) |     8 |
+| allocation                  |     4 | each `for..of` step              |     4 |
+| each allocated field (word) |     1 | each `for..in` step              |     6 |
+| `await`                     |    20 | `yield`                          |    10 |
+| `throw`                     |    30 |                                  |       |
+
+In `score`, the first block is an assignment, a property read (`row.tags`) and the start of a
+`for..of`: 1 + 1 + 8 = 10. The loop body is a property read, an addition, an assignment and an
+iterator step: 1 + 1 + 1 + 4 = 7. For 20 rows of 3 tags, `score` costs 20 × 10 + 60 × 7 = 620
+steps, which is what the report says.
+
+Some costs depend on sizes only known at run time. The runtime adds them when the code runs:
+
+| Dynamic cost                     | Steps |
+| -------------------------------- | ----: |
+| each key of an object spread     |     3 |
+| each element of an array spread  |     2 |
+| each element of a rest parameter |     1 |
+| each element of `arguments`      |     1 |
+| each character of a built string |  0.25 |
+
+**Steps** of a function are `sum(block count × block price)` plus these dynamic costs plus the
+built-ins it called.
+
+## Built-ins
+
+`sort`, `split`, `JSON.parse` and the like do work that the code does not spell out. While the
+measuring window is open, each priced built-in is replaced by a wrapper that calls the original
+and charges `base + k × f(n)`, where `n` is the size that drives the work (the array's length,
+the string's length) and `f` is one of `1`, `n`, `n log n` or `n²`. 57 built-ins have a price
+today. A few:
+
+| Built-in                 | Price          |
+| ------------------------ | -------------- |
+| `Map.prototype.get`      | 24.5           |
+| `Set.prototype.add`      | 147            |
+| `Array.prototype.sort`   | 66 n log n     |
+| `Array.prototype.map`    | 150 + 53 n     |
+| `String.prototype.split` | 366 + 18.5 n   |
+| `String.prototype.slice` | 17.75          |
+| `JSON.parse`             | 400 + 11 n     |
+| `RegExp.prototype.exec`  | 109 + 0.1875 n |
+| `structuredClone`        | 3120 + 105 n   |
+
+The transform marks each call site that may reach a built-in (`R.site_last(...)` around the
+callback or argument), so the charge lands on the line of the call. A built-in called by another
+built-in is not charged twice. A built-in with no price (`Array.prototype.push`, for one) costs
+what any call costs: 4 steps.
+
+Code that is not counted, such as a dependency run without `--deps`, costs nothing of its own. The
+priced built-ins it calls are charged to the counted function that called into it, on line 0 in
+the report, because they still happen on that function's behalf.
+
+Where the prices come from is in [calibration.md](calibration.md).
+
+## The same count every time
+
+A count is only useful if the same code with the same input gives the same number. Inside the
+measuring window:
+
+- **Clock.** `Date`, `Date.now`, `performance.now` and `process.hrtime` read a virtual clock. It
+  starts at 2024-01-01T00:00:00Z and moves 1 ms per read.
+- **Randomness.** `Math.random` and `crypto.getRandomValues`, `randomUUID`, `randomBytes` and
+  `randomInt` come from one seeded generator (sfc32, seed `0xabac`).
+- **Timers.** `setTimeout`, `setInterval` and `setImmediate` go to a fake loop that runs them in
+  order of due time, then creation, moving the virtual clock to each one's due time.
+- **IO.** The warm-up run records file reads and `fetch` responses; the measured runs replay them.
+  A read that was not recorded, any write, and any socket (`http`, `https`, `net`) throws.
+- **Finalizers.** `FinalizationRegistry` callbacks only run between runs. A `WeakRef` made in the
+  window keeps its target, so `deref()` never changes during a run.
+- **Module state.** Each run imports a fresh copy of the bench file and everything it imports
+  (`?abax_gen=N`), so a cache or counter in module scope starts empty every time. `--state shared`
+  turns this off.
+
+Each case runs three times: a warm-up that records IO, then two measured runs. If the two
+measured counts differ in any function, the case is reported **unstable**. That is a finding: the
+code reads something the window does not control.
+
+The runtime never charges itself. Its own tables are typed arrays and plain objects, not `Map`s
+(a priced built-in), and its hot path has no regular expressions.
+
+## Lines and source maps
+
+A report places every block on a line of the original source:
+
+- **TypeScript** is stripped by Node's own type stripping, which replaces types with spaces, so
+  offsets and lines stay the same. This also means only erasable TypeScript loads: no `enum`,
+  `namespace` or parameter properties.
+- **`.svelte` and `.svelte.ts`** are compiled with the project's own Svelte compiler (server
+  output by default). The compiler's source map is combined with the transform's, so a block in
+  compiled output reports the `.svelte` line.
+- **In a Vite build** the plugin runs last and maps through the combined map of every plugin
+  before it.
+
+## The call stack
+
+The runtime keeps a shadow call stack: an `Int32Array` of function ids. `R.enter` pushes, `R.exit`
+pops in a `finally`, so a throw unwinds it correctly.
+
+- **Self steps** of a function are the steps of its own blocks and built-in calls.
+- **Inclusive steps** are every step that ran while the function was anywhere on the stack,
+  counted once even when it is on the stack several times (recursion).
+- **Edges** count caller to callee calls.
+
+An `async` function or a generator gets a frame object. At each `await` or `yield` the transform
+saves its part of the stack and restores it on resume:
+
+```js
+const text = $a$R.resume($a$r, await $a$R.suspend($a$r, read()));
+```
+
+so work done by other code while it waits is not charged to it. `await using` blocks are
+rewritten so the disposal awaits are spelled out and handled the same way.
+
+## Allocations and bytes
+
+The transform finds every allocation site in counted code: object and array literals, closures,
+classes, `new`, regex literals, built strings, `bind`, rest parameters, `arguments`, object and
+array spreads, spread arguments, the promise of an async call, the generator object. Each time a
+site runs it adds one allocation and an estimated size.
+
+The size model is V8 on 64 bits with pointer compression, Node's default:
+
+| What                     | Bytes                                                                         |
+| ------------------------ | ----------------------------------------------------------------------------- |
+| Object                   | 12 header + 4 per field; `{}` reserves 4 fields (28)                          |
+| `new C()`                | 12 + 4 per field V8 can predict (class fields, `this.x =` in the constructor) |
+| Array                    | 16; a non-empty one adds an 8-byte backing store header + 4 per element       |
+| Closure                  | 32 + 4 per captured variable                                                  |
+| Bound function           | 24, plus 8 + 4 per bound argument                                             |
+| Promise of an async call | 20 + 28 for the suspended function                                            |
+| Generator                | 40 + 8 + 4 per local                                                          |
+| Regex literal            | 28                                                                            |
+| One-byte string          | 12 + 1 per character, rounded up to 4                                         |
+| `Map` / `Set` (empty)    | 88 / 72                                                                       |
+
+This is what the code asks for. The engine may give less: escape analysis removes objects that
+never leave an optimized function. It may also give more: arrays and strings that built-ins return
+(`split`, `slice`, `map`, `JSON.parse`) and the backing store that `push` grows are not in the
+estimate. The [real bytes layer](layers.md#real-bytes) measures what V8 allocates, per function,
+and the report shows both.
+
+## Private functions
+
+The transform appends one statement at the end of every module:
+
+```js
+export const __abax = { score };
+```
+
+listing the top-level bindings the module does not export. A `let` that can be reassigned is
+exposed through a getter so the bench sees its current value. The statement is at the end, so it
+changes no initialization order. `abax dts` asks the TS checker for each module's declarations
+with the same statement appended and writes them into a module augmentation, so the bench file is
+type-checked. The plain build used by the time, bytes and leak layers appends the same statement,
+so bench files run unchanged on it.
+
+## Identity
+
+A function is `module > path`: `packages/router/src/match.ts > match_one`, or
+`router.ts > Router > match` for a method, or `rank.ts > total > reduce:0` for an arrow passed to
+`reduce` inside `total`. A block is its function plus an index
+(`... > match_one > block 4`). Dependencies are named from their package (`devalue/src/...`).
+
+`abax diff` matches functions by identity, through git renames of the file, and by body shape
+when the function itself was renamed (80% similar block prices). A function whose own steps,
+allocations and bytes did not change produces nothing, however far its lines moved. When it did
+change, unchanged lines are mapped through `git diff` and compared one to one; lines inside a
+changed hunk are compared as a whole, so a reformatted line costs nothing, and the hunk's new
+lines are reported as "new code".

@@ -13,6 +13,20 @@ Benchmarks for [ogygia](https://github.com/ogygiajs/ogygia). One pnpm workspace:
 - [`packages/compare`](packages/compare): the noise rule for a PR build against its base, and the
   one benchmark comment on an ogygia PR.
 
+## Abax
+
+[Abax](packages/abax/README.md) is the function-level half of this repository. It rewrites
+ogygia's source so every function counts its own work, block by block, with built-ins priced by
+input size and the clock, randomness, timers and IO made deterministic. The same code with the
+same input gives the same count on every run, so one run of a PR and one of its base show which
+line got slower, with no repeats and no noise floor. Engine health, time, real bytes, leaks,
+growth and a worst-case search run next to the count and cover what counting cannot see.
+
+On every ogygia PR, Abax writes the first section of the benchmark comment. It counts from source,
+so it does not wait for the published preview the app benchmark needs. `abax verify` checks 32 planted cases on every change to this
+repository. [packages/abax/README.md](packages/abax/README.md) has the details, the limits and
+the numbers.
+
 ## Run it
 
 You need Node 22.18 or newer and pnpm. Scripts are TypeScript run by plain `node`.
