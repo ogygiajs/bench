@@ -298,7 +298,9 @@ export class Generator {
 				[2, () => `(${this.e('str', d)}).slice(${this.lit('num')}, ${this.lit('num')})`],
 				[2, () => `(${this.e('arr', d)}).join(${this.e('str', 0)})`],
 				[1, () => `String(${this.e(r.pick(['num', 'bool'] as const), d)})`],
-				[1, () => `JSON.stringify(${this.e(r.pick(['obj', 'arr'] as const), d)})`],
+				// Capped: a string stored back into the object it was made from doubles its escapes
+				// with every pass of a loop (`g0.c = JSON.stringify(g0)`), out of memory in V8's zone.
+				[1, () => `JSON.stringify(${this.e(r.pick(['obj', 'arr'] as const), d)}).slice(0, 64)`],
 				[
 					1,
 					() =>
@@ -313,7 +315,7 @@ export class Generator {
 				// call, a receiver that is a sequence, a receiver inside an optional chain.
 				[1, () => `((${r.pick(['null', "'abc'"])})?.slice(1) ?? '')`],
 				[1, () => `(0, ${this.e('str', d)}).slice(1)`],
-				[1, () => `(((${this.e('obj', d)})?.${r.pick(KEYS)} ?? 'xy') + '').slice(1)`]
+				[1, () => `((${r.pick(['null', `{ s: ${this.e('str', d)} }`])})?.s.slice(1) ?? '')`]
 			],
 			bool: [
 				[

@@ -199,9 +199,15 @@ async function main(): Promise<number> {
 		deadline
 	);
 
-	// the same reports in other processes
+	// the same reports in other processes. Not a program that recurses until the stack overflows:
+	// where it overflows depends on frame sizes, so its counts differ by nature (check.ts, `deep`).
 	const sample = results.filter(
-		(r) => r.suite === 'programs' && r.hash && r.failures.length === 0 && r.seed % 10 === 3
+		(r) =>
+			r.suite === 'programs' &&
+			r.hash &&
+			r.failures.length === 0 &&
+			r.seed % 10 === 3 &&
+			!r.features.includes('stack-overflow')
 	);
 	const by_seed = new Map(sample.map((r) => [r.seed, r]));
 	const again: SeedResult[] = [];
