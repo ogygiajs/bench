@@ -237,3 +237,30 @@ test('engine health leaves exported bound functions, proxies and built-ins alone
 	const sum = r.cases[0].functions.find((f) => f.path === 'sum')!;
 	assert.equal(sum.optimized, true);
 });
+
+test('engine health ends when a measured module leaves a live interval, and kills a child that never ends', async () => {
+	const abax = fileURLToPath(new URL('../', import.meta.url));
+	const dir = temp_dir('abax-engine-hang-');
+	write_files(dir, {
+		'lib.ts': [
+			'export const ticks = { n: 0 };',
+			'setInterval(() => ticks.n++, 1000);',
+			'export function twice(x: number): number {',
+			'	return x * 2;',
+			'}',
+			''
+		].join('\n'),
+		'x.bench.ts': [
+			`import { bench } from ${JSON.stringify(join(abax, 'src/bench.ts'))};`,
+			"import { twice } from './lib.ts';",
+			"bench('interval', () => twice(21));",
+			"bench('forever', () => { for (;;) twice(1); });",
+			''
+		].join('\n')
+	});
+	const r = await engine_health({ files: [join(dir, 'x.bench.ts')], root: dir, timeout_ms: 5000 });
+	const [interval, forever] = r.cases;
+	assert.equal(interval.error, null);
+	assert.equal(interval.stable, true);
+	assert.match(forever.error ?? '', /did not finish within 5 s/);
+});

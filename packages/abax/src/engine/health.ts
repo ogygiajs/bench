@@ -1,14 +1,13 @@
-import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { LEAST_UPPER_BOUND, TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { instrument } from '../transform/instrument.ts';
 import { load_prices } from '../prices.ts';
 import type { FunctionMeta } from '../meta.ts';
+import { ProcessError, run_process } from '../proc.ts';
 import { fn_key, parse_v8_log } from './log.ts';
 import type { LogFacts, LogFunction } from './log.ts';
 import type { ChildConfig, ChildModule, ChildResult } from './child.ts';
@@ -16,7 +15,6 @@ import { merge_runs, same_runs, unstable_entries } from './stability.ts';
 import { ENGINE_SCHEMA, IC_RANK, TIER_RANK, is_optimized } from './types.ts';
 import type { EngineCase, EngineDeopt, EngineReport, EngineSite, IcState, Tier } from './types.ts';
 
-const run_file = promisify(execFile);
 const CHILD = fileURLToPath(new URL('./child.ts', import.meta.url));
 
 /**
@@ -70,6 +68,8 @@ export interface HealthOptions {
 	 * varies shows up and is marked unstable.
 	 */
 	retries?: number;
+	/** Time limit of one child run (default 10 minutes): past it, the case fails. */
+	timeout_ms?: number;
 	deps?: boolean | string[];
 	svelte?: 'server' | 'client';
 	log?: (line: string) => void;
@@ -80,25 +80,27 @@ interface Child {
 	log: string;
 }
 
+const CHILD_TIMEOUT_MS = 10 * 60 * 1000;
+
 async function spawn_child(
 	dir: string,
 	config: Omit<ChildConfig, 'out'>,
-	tag: string
+	tag: string,
+	timeout_ms: number
 ): Promise<Child> {
 	const out = join(dir, `${tag}.json`);
 	const logfile = join(dir, `${tag}.log`);
 	const config_file = join(dir, `${tag}.config.json`);
 	writeFileSync(config_file, JSON.stringify({ ...config, out }));
 	try {
-		await run_file(
+		await run_process(
 			process.execPath,
 			[...HEALTH_FLAGS, `--logfile=${logfile}`, CHILD, config_file],
-			{
-				cwd: config.root,
-				maxBuffer: 1 << 26
-			}
+			{ cwd: config.root, timeout_ms, max_buffer: 1 << 26 }
 		);
 	} catch (e) {
+		if (e instanceof ProcessError && e.timed_out)
+			throw new Error(`abax health: the child ${e.message} (killed)`);
 		const err = e as { stderr?: string; message: string };
 		throw new Error(`abax health: the child failed: ${(err.stderr || err.message).trim()}`);
 	}
@@ -466,9 +468,10 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 		runs,
 		cases: []
 	};
+	const timeout = opts.timeout_ms ?? CHILD_TIMEOUT_MS;
 	const retries = opts.retries ?? 2;
 	try {
-		const listed = await spawn_child(dir, base, 'list');
+		const listed = await spawn_child(dir, base, 'list', timeout);
 		const seen = new Map<string, number>();
 		let tag = 0;
 		for (const c of listed.result.cases) {
@@ -477,7 +480,7 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 			if (opts.filter && !c.name.includes(opts.filter)) continue;
 			const config = { ...base, case: { name: c.name, index } };
 			const once = async (): Promise<EngineCase> => {
-				const child = await spawn_child(dir, config, `case${tag}`);
+				const child = await spawn_child(dir, config, `case${tag}`, timeout);
 				rmSync(join(dir, `case${tag++}.log`), { force: true });
 				return analyze(child, c.name, c.file);
 			};
