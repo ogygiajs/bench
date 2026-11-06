@@ -19,6 +19,8 @@ export type { AppRequest } from './server.ts';
 export { add_loaded, is_app_case, unit_key } from './types.ts';
 export type { AppCaseInfo, AppCaseReport, AppReport, AppUnit, LoadedModules } from './types.ts';
 export { render_app_diff } from './diff.ts';
+export { overlay_diff } from './overlay.ts';
+export type { FileDiff } from '../diff/git.ts';
 
 /** One app report from the cases of every scenario run. */
 export function app_report(o: {

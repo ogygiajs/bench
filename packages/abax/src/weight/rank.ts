@@ -139,7 +139,9 @@ export function rank_changes(
 			module: c.module,
 			function: c.function,
 			key,
-			line: c.findings[0]?.line ?? c.line,
+			// the line that moved most
+			line: c.findings.reduce((a, f) => (Math.abs(f.delta.steps) > Math.abs(a.delta.steps) ? f : a))
+				.line,
 			delta_per_call: Math.round(delta * 1e4) / 1e4,
 			ns_per_call: ns === null ? null : Math.round(ns * 1e3) / 1e3,
 			judgement: judge(delta, app.functions[key], app.units, ns)

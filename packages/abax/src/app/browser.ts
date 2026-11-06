@@ -98,6 +98,44 @@ interface PwPage {
 	evaluate<R>(expression: string): Promise<R>;
 	on(event: 'pageerror', cb: (e: Error) => void): unknown;
 	on(event: 'request', cb: (r: PwRequest) => void): unknown;
+	route(url: string, handler: (route: PwRoute) => unknown): Promise<void>;
+}
+
+interface PwRoute {
+	fetch(): Promise<unknown>;
+	fulfill(o: { response: unknown }): Promise<void>;
+	abort(): Promise<void>;
+}
+
+/**
+ * The page's network, in order: every request is answered one at a time, in the order the page
+ * made them, and the harness waits for the queue to drain before it acts or reads. While a
+ * response is out, virtual time stands still (`pauseIfNetworkFetchesPending`); answering in order
+ * also fixes which of two concurrent responses the page sees first (a prefetch against the click
+ * that wants the same page), which the real network would decide.
+ */
+class OrderedNetwork {
+	#chain: Promise<void> = Promise.resolve();
+	#pending = 0;
+
+	answer(route: PwRoute): void {
+		this.#pending++;
+		this.#chain = this.#chain.then(async () => {
+			try {
+				const response = await route.fetch();
+				await route.fulfill({ response });
+			} catch {
+				await route.abort().catch(() => {});
+			} finally {
+				this.#pending--;
+			}
+		});
+	}
+
+	/** Resolves once every request made so far has been answered. */
+	async drained(): Promise<void> {
+		while (this.#pending > 0) await this.#chain;
+	}
 }
 
 interface PwContext {
@@ -143,11 +181,21 @@ class Driver {
 	page: PwPage;
 	cdp: CdpSession;
 	errors: string[];
+	net: OrderedNetwork;
 
-	constructor(page: PwPage, cdp: CdpSession, errors: string[]) {
+	constructor(page: PwPage, cdp: CdpSession, errors: string[], net: OrderedNetwork) {
 		this.page = page;
 		this.cdp = cdp;
 		this.errors = errors;
+		this.net = net;
+	}
+
+	/** Every response out, and the page done with what they started (no virtual time passes). */
+	async quiet(): Promise<void> {
+		await this.net.drained();
+		// two round trips through the page's task queue: the responses' own tasks run first
+		for (let i = 0; i < 2; i++) await this.page.evaluate('0').catch(() => 0);
+		await this.net.drained();
 	}
 
 	/** Grant `ms` of virtual time; resolves when it has passed. */
@@ -165,6 +213,7 @@ class Driver {
 
 	async tick(): Promise<void> {
 		await this.grant(FRAME_MS);
+		await this.quiet();
 		await this.page
 			.evaluate(() => {
 				const t = (globalThis as unknown as { __abax_tick?: () => number }).__abax_tick;
@@ -178,6 +227,7 @@ class Driver {
 	}
 
 	async act(a: Record<string, unknown>): Promise<void> {
+		await this.quiet();
 		await this.page.evaluate((x) => {
 			const act = (globalThis as unknown as { __abax_act: (y: unknown) => void }).__abax_act;
 			act(x);
@@ -218,6 +268,7 @@ class Driver {
 		} else {
 			const max = action.max_ms ?? 10_000;
 			for (let t = 0; ; t += FRAME_MS) {
+				await this.quiet();
 				const ok = await this.page.evaluate<boolean>(`Boolean(${action.until})`).catch(() => false);
 				if (ok) return;
 				if (t >= max) throw new Error(`abax: timed out (${max} virtual ms) on ${action.until}`);
@@ -228,6 +279,7 @@ class Driver {
 
 	/** The page's counts; null when the document has no counted runtime (yet). */
 	async read(metas_from: number): Promise<{ counts: PageCounts; origin: number } | null> {
+		await this.quiet();
 		return this.page
 			.evaluate((from) => {
 				const api = (globalThis as unknown as { __abax?: { read(n: number): PageCounts } }).__abax;
@@ -254,6 +306,8 @@ export async function run_session(
 		await context.addInitScript(page_clock, PAGE_SEED);
 		const page = await context.newPage();
 		page.on('pageerror', (e) => errors.push(e.message));
+		const net = new OrderedNetwork();
+		await page.route('**/*', (route) => net.answer(route));
 		const requests: AppRequest[] = [];
 		page.on('request', (r) => {
 			const u = new URL(r.url());
@@ -274,13 +328,18 @@ export async function run_session(
 			policy: 'pause',
 			initialVirtualTime: VIRTUAL_EPOCH_S
 		});
-		const d = new Driver(page, cdp, errors);
+		const d = new Driver(page, cdp, errors, net);
 
 		const runtimes: ModuleMeta[][] = [];
 		const phases: Phase[] = [];
 		let origin = -1;
 		let before = empty_snapshot();
-		const take = async (name: string, unit: Phase['unit']): Promise<void> => {
+		const seen_names = new Map<string, number>();
+		const take = async (label: string, unit: Phase['unit']): Promise<void> => {
+			// phases are matched by name across runs and builds: a repeated step gets `#2`, `#3`
+			const n = (seen_names.get(label) ?? 0) + 1;
+			seen_names.set(label, n);
+			const name = n === 1 ? label : `${label} #${n}`;
 			let r = await d.read(origin === -1 ? 0 : runtimes[runtimes.length - 1].length);
 			if (r && r.origin !== origin) {
 				// A new document: a new runtime, read from its first module.

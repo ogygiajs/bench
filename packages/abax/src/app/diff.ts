@@ -18,10 +18,12 @@ interface Row {
 	delta: number;
 }
 
-function top_finding(findings: Finding[], case_name: string): Finding | null {
+/** The line that moved the phase most in the direction it moved (a +1K line in a phase that got
+ * 5K cheaper overall does not explain it). */
+function top_finding(findings: Finding[], case_name: string, direction: number): Finding | null {
 	let best: Finding | null = null;
 	for (const f of findings) {
-		if (f.case !== case_name) continue;
+		if (f.case !== case_name || Math.sign(f.delta.steps) !== Math.sign(direction)) continue;
 		if (!best || Math.abs(f.delta.steps) > Math.abs(best.delta.steps)) best = f;
 	}
 	return best;
@@ -57,7 +59,7 @@ export function app_lines(d: DiffResult, base: AppReport, pr: AppReport): Row[] 
 		const np = ns_per_unit(pc);
 		const ns =
 			nb !== null && np !== null ? `, ≈ ${format_ns(np - nb, true)} per ${pc.app.unit}` : '';
-		const top = top_finding(d.findings, pc.name);
+		const top = top_finding(d.findings, pc.name, delta);
 		const where = top
 			? `, mostly \`${top.module}:${top.line}\` (${top.delta.steps > 0 ? '+' : ''}${format_steps(top.delta.steps / Math.max(1, pc.app.units))})`
 			: '';

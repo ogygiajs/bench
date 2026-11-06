@@ -59,7 +59,9 @@ export async function count_apps(
 			const scenario = make();
 			const build = await counted_build({
 				app_dir,
-				work_dir: join(work, `${name}-${o.side ?? 'pr'}`),
+				// The same directory for both sides of a comparison: paths end up in strings the
+				// app builds (asset names, ids), and a longer path would cost steps of its own.
+				work_dir: join(work, name),
 				packages,
 				overlay: o.overlay,
 				env: scenario.env

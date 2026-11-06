@@ -168,6 +168,41 @@ export function page_clock(seed: number): void {
 	w.IntersectionObserver = TickIntersectionObserver;
 	w.ResizeObserver = TickResizeObserver;
 
+	// The document's scroll events come with a rendering update (the real clock). They are held
+	// back and sent on the tick that sees the scroll position change instead.
+	const held = (e: Event): void => {
+		if (e.isTrusted && (e.target === document || e.target === window)) e.stopImmediatePropagation();
+	};
+	addEventListener('scroll', held, { capture: true });
+	addEventListener('scrollend', held, { capture: true });
+	let scroll_x = 0;
+	let scroll_y = 0;
+
+	// View transitions finish with rendering too: the update runs as the API says (in a
+	// microtask), `ready` follows it, `finished` resolves on the next tick.
+	let transitions: Array<() => void> = [];
+	if (typeof document.startViewTransition === 'function') {
+		document.startViewTransition = ((
+			arg?: ViewTransitionUpdateCallback | { update?: ViewTransitionUpdateCallback }
+		) => {
+			const update = typeof arg === 'function' ? arg : arg?.update;
+			const updateCallbackDone = Promise.resolve().then(() => (update ? update() : undefined));
+			const ready = updateCallbackDone.then(() => undefined);
+			const finished = updateCallbackDone.then(
+				() => new Promise<undefined>((r) => transitions.push(() => r(undefined)))
+			);
+			ready.catch(() => {});
+			finished.catch(() => {});
+			return {
+				updateCallbackDone,
+				ready,
+				finished,
+				skipTransition() {},
+				types: new Set<string>()
+			} as unknown as ViewTransition;
+		}) as typeof document.startViewTransition;
+	}
+
 	const report = (e: unknown): void => {
 		try {
 			reportError(e);
@@ -176,9 +211,21 @@ export function page_clock(seed: number): void {
 		}
 	};
 
-	/** One frame: animation frame callbacks, observers, then idle callbacks. Returns callbacks run. */
+	/**
+	 * One frame: held scroll events, animation frame callbacks, observers, finished view
+	 * transitions, then idle callbacks. Returns callbacks run.
+	 */
 	w.__abax_tick = (): number => {
 		const now = performance.now();
+		if (scrollX !== scroll_x || scrollY !== scroll_y) {
+			scroll_x = scrollX;
+			scroll_y = scrollY;
+			document.dispatchEvent(new Event('scroll', { bubbles: true }));
+			document.dispatchEvent(new Event('scrollend', { bubbles: true }));
+		}
+		const done = transitions;
+		transitions = [];
+		for (const r of done) r();
 		const due = frames;
 		frames = [];
 		for (const [, cb] of due) {
