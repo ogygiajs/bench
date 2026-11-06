@@ -230,7 +230,10 @@ export function format_prices(p: PriceFile): string {
 	const t = '\t';
 	const lines = ['{', `${t}"version": ${p.version},`];
 	if (p.note) lines.push(`${t}"note": ${JSON.stringify(p.note)},`);
-	if (p.calibration) lines.push(`${t}"calibration": ${JSON.stringify(p.calibration)},`);
+	if (p.calibration) {
+		const block = JSON.stringify(p.calibration, null, t).split('\n').join(`\n${t}`);
+		lines.push(`${t}"calibration": ${block},`);
+	}
 	const block = (name: string, obj: Record<string, unknown>, last: boolean, inline = false) => {
 		const keys = Object.keys(obj);
 		lines.push(`${t}${JSON.stringify(name)}: {`);
