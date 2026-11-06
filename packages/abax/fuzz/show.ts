@@ -14,7 +14,26 @@ function name_of(v: object): string {
 	return c && typeof c.name === 'string' ? c.name : 'null';
 }
 
-export function show(v: unknown, depth = 0, seen: unknown[] = []): string {
+/**
+ * How much of one value is written. A program can nest a capped array in itself again and again
+ * (`g = cap([g].concat(g))`): every level shares the one below, so the value is small and its text
+ * grows by the width at each level (48⁴ leaves at depth 3, seed 305890).
+ */
+const LIMIT = 4096;
+let left = 0;
+
+export function show(v: unknown): string {
+	left = LIMIT;
+	return go(v, 0, []);
+}
+
+/** `piece` added to `s`, or `…` once the budget is spent (then the caller stops). */
+function add(s: string, piece: string): string {
+	left -= piece.length;
+	return s + piece;
+}
+
+function go(v: unknown, depth: number, seen: unknown[]): string {
 	switch (typeof v) {
 		case 'number':
 			return Object.is(v, -0) ? '-0' : String(v);
@@ -40,30 +59,39 @@ export function show(v: unknown, depth = 0, seen: unknown[] = []): string {
 		if (o instanceof Promise) return 'Promise';
 		if (o instanceof Map) {
 			let s = 'Map{';
-			for (const [k, x] of o) s += `${show(k, depth + 1, seen)}=>${show(x, depth + 1, seen)},`;
+			for (const [k, x] of o) {
+				if (left <= 0) return s + '…}';
+				s = add(s, `${go(k, depth + 1, seen)}=>${go(x, depth + 1, seen)},`);
+			}
 			return s + '}';
 		}
 		if (o instanceof Set) {
 			let s = 'Set{';
-			for (const x of o) s += `${show(x, depth + 1, seen)},`;
+			for (const x of o) {
+				if (left <= 0) return s + '…}';
+				s = add(s, `${go(x, depth + 1, seen)},`);
+			}
 			return s + '}';
 		}
 		if (is_array(o)) {
 			let s = '[';
-			for (let i = 0; i < o.length; i++)
-				s += (i in o ? show(o[i], depth + 1, seen) : '<hole>') + ',';
+			for (let i = 0; i < o.length; i++) {
+				if (left <= 0) return s + '…]';
+				s = add(s, (i in o ? go(o[i], depth + 1, seen) : '<hole>') + ',');
+			}
 			return s + ']';
 		}
 		const keys = own_keys(o);
 		let s = name_of(o) + '{';
 		for (let i = 0; i < keys.length; i++) {
+			if (left <= 0) return s + '…}';
 			let x: unknown;
 			try {
 				x = (o as Record<string, unknown>)[keys[i]];
 			} catch (e) {
 				x = e;
 			}
-			s += `${keys[i]}:${show(x, depth + 1, seen)},`;
+			s = add(s, `${keys[i]}:${go(x, depth + 1, seen)},`);
 		}
 		return s + '}';
 	} finally {

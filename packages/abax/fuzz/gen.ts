@@ -1401,7 +1401,11 @@ export class Generator {
 			'let fuel = 1500;',
 			'let depth = 0;',
 			`function cap(x${this.t(': any')}) {`,
-			'\treturn x.length > 48 ? x.slice(0, 48) : x;',
+			'\tconst y = x.length > 48 ? x.slice(0, 48) : x;',
+			// a value nested in itself (`g = cap([g, ...g])`) would grow its text (String, sort) by
+			// the width at every level: an array two levels down is kept as its length
+			'\tif (!Array.isArray(y)) return y;',
+			`\treturn y.map((e${this.t(': any')}) => (Array.isArray(e) ? e.map((f${this.t(': any')}) => (Array.isArray(f) ? f.length : f)) : e));`,
 			'}',
 			`function tag(strs${this.t(': TemplateStringsArray')}, ...vals${this.t(': unknown[]')}) {`,
 			"\treturn strs.raw.join('|') + vals.length;",

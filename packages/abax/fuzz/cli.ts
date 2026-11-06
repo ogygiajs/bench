@@ -14,7 +14,8 @@ import { check_corpus } from './corpus.ts';
  *
  *   --seed N        first seed (default 1); program i is seed N + i, so a run is reproducible
  *   --runs M        programs per suite (default 100)
- *   --time T        stop starting new programs after T seconds (default: no limit)
+ *   --time T        stop starting new programs after T seconds (default: no limit); the
+ *                   cross-process check and minimizing run after it
  *   --jobs J        worker processes at once (default: half the cores, at most 4)
  *   --suites a,b    programs, diff, maps, runtime (default all)
  *   --corpus dirs   also transform every .ts/.js file under these directories (and check the
@@ -147,10 +148,15 @@ function run_worker(job: Job): Promise<SeedResult[]> {
 	});
 }
 
-async function pool(list: Job[], on_result: (r: SeedResult) => void): Promise<void> {
+/** `until`: start no job after it (the --time limit is on new programs, not on the checks after). */
+async function pool(
+	list: Job[],
+	on_result: (r: SeedResult) => void,
+	until = Infinity
+): Promise<void> {
 	let next = 0;
 	const lane = async (): Promise<void> => {
-		while (next < list.length && Date.now() < deadline) {
+		while (next < list.length && Date.now() < until) {
 			const job = list[next++];
 			for (const r of await run_worker(job)) on_result(r);
 		}
@@ -176,18 +182,22 @@ async function main(): Promise<number> {
 	for (let i = 0; per.some((p) => i < p.length); i++)
 		for (const p of per) if (i < p.length) list.push(p[i]);
 	let done = 0;
-	await pool(list, (r) => {
-		results.push(r);
-		done++;
-		if (r.failures.length > 0) {
-			const f = r.failures[0];
-			console.log(
-				`FAIL ${r.suite} seed ${r.seed}: ${f.oracle}: ${f.detail.split('\n')[0].slice(0, 300)}`
-			);
-		}
-		if (done % 50 === 0)
-			console.log(`... ${done} programs, ${Math.round((Date.now() - t0) / 1000)} s`);
-	});
+	await pool(
+		list,
+		(r) => {
+			results.push(r);
+			done++;
+			if (r.failures.length > 0) {
+				const f = r.failures[0];
+				console.log(
+					`FAIL ${r.suite} seed ${r.seed}: ${f.oracle}: ${f.detail.split('\n')[0].slice(0, 300)}`
+				);
+			}
+			if (done % 50 === 0)
+				console.log(`... ${done} programs, ${Math.round((Date.now() - t0) / 1000)} s`);
+		},
+		deadline
+	);
 
 	// the same reports in other processes
 	const sample = results.filter(
