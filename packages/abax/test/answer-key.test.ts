@@ -26,6 +26,12 @@ const BENCH_API = fileURLToPath(new URL('../src/bench.ts', import.meta.url));
 interface Expect {
 	what: string;
 	planted: Array<[number, number]>;
+	/** Extra `abax run` flags (the plain-build layers: `--measure bytes`). */
+	flags?: string[];
+	/** Planted allocations the engine elides: shown, est >> real, never a regression. */
+	elided?: Array<[number, number]>;
+	/** The PR leaks (where), or must not (null). */
+	leak?: { module: string; function: string; variable: string; line: number } | null;
 }
 
 function files_of(dir: string): Record<string, string> {
@@ -52,7 +58,7 @@ function git(cwd: string, args: string[]): string {
 	).trim();
 }
 
-async function measure(dir: string, sha: string): Promise<Report> {
+async function measure(dir: string, sha: string, flags: string[] = []): Promise<Report> {
 	await run(
 		process.execPath,
 		[
@@ -65,7 +71,8 @@ async function measure(dir: string, sha: string): Promise<Report> {
 			'--out',
 			'report.json',
 			'--sha',
-			sha
+			sha,
+			...flags
 		],
 		{
 			cwd: dir
@@ -101,10 +108,9 @@ for (const name of fixtures) {
 
 		write_all(join(tmp, 'base'), base_files);
 		write_all(join(tmp, 'pr'), pr_files);
-		const [base, pr] = await Promise.all([
-			measure(join(tmp, 'base'), base_sha),
-			measure(join(tmp, 'pr'), pr_sha)
-		]);
+		// Timing-sensitive layers (real bytes, leaks) measure one side at a time.
+		const base = await measure(join(tmp, 'base'), base_sha, expect.flags);
+		const pr = await measure(join(tmp, 'pr'), pr_sha, expect.flags);
 		assert.equal(base.cases[0].stable, true);
 		assert.equal(pr.cases[0].stable, true);
 
@@ -127,6 +133,42 @@ for (const name of fixtures) {
 		}
 		const total = findings.reduce((s, f) => s + f.delta.steps, 0);
 		assert.ok(total > 0, 'a planted slowdown costs more steps');
-		assert.ok(render_markdown(d).includes('lib.ts'));
+		const md = render_markdown(d);
+		assert.ok(md.includes('lib.ts'));
+
+		if (expect.elided) {
+			// Shown as est >> real on the PR side, and not a regression in the diff.
+			const bytes = pr.cases[0].measure?.bytes;
+			assert.ok(bytes, 'real bytes measured');
+			const fn = bytes.functions.find((f) => f.elided);
+			assert.ok(fn, `an elided function: ${JSON.stringify(bytes.functions)}`);
+			assert.ok(fn.estimated > 4 * fn.real, `estimated ${fn.estimated} B, real ${fn.real} B`);
+			for (const [a, b] of expect.elided) {
+				assert.ok(
+					fn.lines.some((l) => l >= a && l <= b),
+					`elided lines ${fn.lines}`
+				);
+			}
+			assert.ok(
+				findings.every((f) => f.elided),
+				`a finding is not marked elided:\n${shown}`
+			);
+			assert.ok(md.includes('No function changed'), md);
+			assert.ok(md.includes('Allocations the engine elides'), md);
+		}
+		if (expect.leak !== undefined) {
+			const leak = pr.cases[0].measure?.leak;
+			assert.ok(leak, 'leak check ran');
+			assert.equal(base.cases[0].measure?.leak?.leaked, false, 'the base does not leak');
+			if (expect.leak === null) {
+				assert.equal(leak.leaked, false, JSON.stringify(leak));
+				assert.equal(d.measure?.leaks.length, 0);
+			} else {
+				assert.equal(leak.leaked, true, JSON.stringify(leak));
+				assert.deepEqual(leak.source, expect.leak);
+				assert.equal(d.measure?.leaks.length, 1);
+				assert.ok(md.includes('**Leaks**') && md.includes('`seen`'), md);
+			}
+		}
 	});
 }
