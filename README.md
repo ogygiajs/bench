@@ -173,7 +173,9 @@ ogygia's CI sends a `repository_dispatch` here after pkg.pr.new has published a 
 The PR comment is grouped by scenario: one summary table (a row per scenario: load, JS, INP,
 navigation or streaming, server page views per second, lines of code, and how many metrics
 regressed), then every metric of each scenario in its own collapsed `<details>`, with the PR's
-median, the base's, the change and the spread (max − min) of each build's repeats.
+median, the base's, the change and the lowest and highest of each build's repeats; every metric
+that changed beyond noise also lists all its repeats, in pass order. A change within noise reads
+as ≈ and the summary gives it no percent.
 
 Results are kept on the orphan `results` branch:
 
@@ -193,9 +195,9 @@ an A/B run), and beside them
 A PR is only ever compared with its base measured in the same run. A result from another run is
 another machine: the same SvelteKit app, unchanged, served 25 to 54 page views per second on the
 dashboard across this repository's runs, depending on the runner it got. Within the run, a timing
-counts as a regression only when every one of the PR's repeats is worse than every one of the
-base's (with five each, a 1-in-252 chance for two builds that perform the same), the medians
-differ by more than the larger spread of the two builds' repeats, and the change is above the
+counts as changed (worse or better) only when the two builds' repeats do not overlap (with five
+each, a 1-in-126 chance either way for two builds that perform the same), the medians differ by
+more than the larger spread (max − min) of the two builds' repeats, and the change is above the
 metric's floor. Sizes and lines of code are measured once and exact: a regression when worse by
 more than the floor. Both rules and the floors are in `compare.ts`.
 
