@@ -27,6 +27,19 @@ const is_enumerable = Object.prototype.propertyIsEnumerable;
 const reflect_apply = Reflect.apply;
 const is_array = Array.isArray;
 
+/** A run counted more steps than its cap (Runtime.cap): it would not have ended on its own. */
+export class StepCapError extends Error {
+	override name = 'StepCapError';
+	cap: number;
+	steps: number;
+
+	constructor(cap: number, steps: number) {
+		super(`abax: the run went past its step cap of ${cap} steps`);
+		this.cap = cap;
+		this.steps = steps;
+	}
+}
+
 export interface ModuleRecord {
 	meta: ModuleMeta;
 	/** Block counts. */
@@ -63,6 +76,9 @@ export interface Snapshot {
 	incl: Float64Array;
 	bsite_steps: Float64Array;
 	bsite_calls: Float64Array;
+	/** Estimated bytes of the results built-ins made, and how many of the calls made one. */
+	bsite_bytes: Float64Array;
+	bsite_allocs: Float64Array;
 	/** Built-in size units per site (see BUILTIN_UNIT_SHIFT). */
 	bunits: Table;
 	/** `(caller + 1) * 2^26 + callee` -> count. Caller -1 is the root (uninstrumented code). */
@@ -141,6 +157,8 @@ export class Runtime {
 	bsite_name: Int32Array = new Int32Array(64);
 	bsite_steps: Float64Array = new Float64Array(64);
 	bsite_calls: Float64Array = new Float64Array(64);
+	bsite_bytes: Float64Array = new Float64Array(64);
+	bsite_allocs: Float64Array = new Float64Array(64);
 	/** Built-in keys (`Array.prototype.sort`...); a key's id is its index. */
 	bkeys: string[];
 	/** Built-in size units per site; see BUILTIN_UNIT_SHIFT. */
@@ -162,6 +180,12 @@ export class Runtime {
 	rx_n = 0;
 	/** Stack depth at which a built-in wrapper is running (-1: none); nested built-ins are free. */
 	bdepth = -1;
+	/**
+	 * Step cap of the current run: past it, the next function entry or loop iteration throws a
+	 * StepCapError (and so does every one after it, so no catch keeps the run going). Infinity
+	 * unless the caller sets one (the slow-input search does, per input).
+	 */
+	cap = Infinity;
 
 	price_spread_key: number;
 	price_spread_element: number;
@@ -215,6 +239,8 @@ export class Runtime {
 		this.bsite_name = grow_i32(this.bsite_name, m, -1);
 		this.bsite_steps = grow_f64(this.bsite_steps, m);
 		this.bsite_calls = grow_f64(this.bsite_calls, m);
+		this.bsite_bytes = grow_f64(this.bsite_bytes, m);
+		this.bsite_allocs = grow_f64(this.bsite_allocs, m);
 		for (let i = 0; i < meta.bsites.length; i++) {
 			this.bsite_name[this.bsite_count + i] = this.name_ids.get(meta.bsites[i].name) ?? -1;
 		}
@@ -224,7 +250,13 @@ export class Runtime {
 
 	// ------------------------------------------------------------ call stack
 
+	/** The run went past the step cap. */
+	over(): never {
+		throw new StepCapError(this.cap, this.s[0]);
+	}
+
 	enter(fid: number): number {
+		if (this.s[0] > this.cap) this.over();
 		const d = this.depth;
 		const caller = d > 0 ? this.stack[d - 1] : ROOT;
 		// A site announces the call made right after it: a counted function was called instead.
@@ -491,7 +523,13 @@ export class Runtime {
 	spread_iter(d: Float64Array, i: number, x: Iterable<unknown>): Iterable<unknown> {
 		let out: unknown[];
 		if (is_array(x)) out = x as unknown[];
-		else out = [...x];
+		else {
+			// Not iterable: the spread itself throws, with the language's own message for where it
+			// is (a call's arguments and an array literal word it differently).
+			const it = x == null ? undefined : (x as { [Symbol.iterator]?: unknown })[Symbol.iterator];
+			if (typeof it !== 'function') return x;
+			out = [...x];
+		}
 		const n = out.length;
 		d[2 * i] += 4 * n;
 		d[2 * i + 1] += n;
@@ -517,12 +555,17 @@ export class Runtime {
 	 * Charge a priced built-in call to its site (called by the wrappers in builtins.ts, which
 	 * check that counted code made the call at that site). `key_id` is the built-in's index in
 	 * `bkeys` and `n` its size: the size terms are kept per site so a report can be recounted with
-	 * other prices (units.ts).
+	 * other prices (units.ts). `bytes`: the estimated size of what the call allocated for its
+	 * result (builtins.ts, result_bytes), 0 for none.
 	 */
-	charge(site: number, cost: number, key_id = -1, n = 0): void {
+	charge(site: number, cost: number, key_id = -1, n = 0, bytes = 0): void {
 		this.s[0] += cost;
 		this.bsite_steps[site] += cost;
 		this.bsite_calls[site]++;
+		if (bytes > 0) {
+			this.bsite_bytes[site] += bytes;
+			this.bsite_allocs[site]++;
+		}
 		if (key_id >= 0) add_units(this.bunits, site * BUILTIN_UNIT_SHIFT + key_id, n);
 	}
 
@@ -543,6 +586,8 @@ export class Runtime {
 		this.edges = table();
 		this.bsite_steps.fill(0);
 		this.bsite_calls.fill(0);
+		this.bsite_bytes.fill(0);
+		this.bsite_allocs.fill(0);
 		this.bunits = table();
 		this.depth = 0;
 		this.rx = NO_RECEIVER;
@@ -564,6 +609,8 @@ export class Runtime {
 			incl: this.incl.slice(0, this.fn_count),
 			bsite_steps: this.bsite_steps.slice(0, this.bsite_count),
 			bsite_calls: this.bsite_calls.slice(0, this.bsite_count),
+			bsite_bytes: this.bsite_bytes.slice(0, this.bsite_count),
+			bsite_allocs: this.bsite_allocs.slice(0, this.bsite_count),
 			bunits: { ...this.bunits },
 			edges: { ...this.edges },
 			steps: this.s[0]
@@ -607,5 +654,6 @@ export function same_counts(a: Snapshot, b: Snapshot): boolean {
 	if (!eq(a.incl.subarray(0, m), b.incl.subarray(0, m))) return false;
 	const k = Math.min(a.bsite_steps.length, b.bsite_steps.length);
 	if (!eq(a.bsite_steps.subarray(0, k), b.bsite_steps.subarray(0, k))) return false;
+	if (!eq(a.bsite_bytes.subarray(0, k), b.bsite_bytes.subarray(0, k))) return false;
 	return same_table(a.edges, b.edges) && same_table(a.bunits, b.bunits);
 }

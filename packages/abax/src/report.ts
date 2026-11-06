@@ -54,6 +54,9 @@ export interface BuiltinReport {
 	steps: number;
 	/** This site's size units (a recount prices them again: two sites on one line stay apart). */
 	units?: Units;
+	/** Estimated bytes of the results the calls made (layout.ts), and how many calls made one. */
+	bytes?: number;
+	allocations?: number;
 }
 
 export interface LineReport {
@@ -335,11 +338,20 @@ export function build_case_report(
 				add_units(l.units, u);
 				add_units(f.units, u);
 			}
+			// what the calls allocated for their results is the function's, on the line of the call
+			const bytes = snap.bsite_bytes?.[mod.b + k] ?? 0;
+			const allocations = snap.bsite_allocs?.[mod.b + k] ?? 0;
+			f.allocations += allocations;
+			f.bytes += bytes;
+			l.allocations += allocations;
+			l.bytes += bytes;
 			f.builtins.push({
 				name: bs.name,
 				line: bs.line,
 				calls: snap.bsite_calls[mod.b + k],
 				steps: round(steps),
+				bytes: round(bytes),
+				allocations,
 				...(u ? { units: rounded(u) } : {})
 			});
 		}

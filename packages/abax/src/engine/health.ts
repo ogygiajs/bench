@@ -13,7 +13,16 @@ import type { LogFacts, LogFunction } from './log.ts';
 import type { ChildConfig, ChildModule, ChildResult } from './child.ts';
 import { merge_runs, same_runs, unstable_entries } from './stability.ts';
 import { ENGINE_SCHEMA, IC_RANK, TIER_RANK, is_optimized } from './types.ts';
-import type { EngineCase, EngineDeopt, EngineReport, EngineSite, IcState, Tier } from './types.ts';
+import type {
+	EngineCase,
+	EngineDeopt,
+	EngineFunction,
+	EngineReport,
+	EngineSite,
+	IcState,
+	Tier
+} from './types.ts';
+import { is_cold } from './diff.ts';
 
 const CHILD = fileURLToPath(new URL('./child.ts', import.meta.url));
 
@@ -229,6 +238,8 @@ interface FnAcc {
 	forced: boolean;
 	on_path: boolean;
 	deopts: Map<string, EngineDeopt>;
+	/** Some code of it was optimized (Maglev or TurboFan) at some point. */
+	had_optimized: boolean;
 }
 
 /** Tier from the log alone: the last non-OSR code, unless a later deopt took it away. */
@@ -241,6 +252,22 @@ function logged_tier(f: LogFunction, facts: LogFacts): Tier {
 		if (facts.deopts.some((d) => d.address === address)) return 'deoptimized';
 	}
 	return last.tier;
+}
+
+/**
+ * Why a function is not optimized (EngineFunction.not_optimized): it lost optimized code; it was
+ * forced to optimize and V8 did not; or it simply never ran hot enough (cold).
+ */
+export function why_not_optimized(
+	tier: Tier,
+	had_optimized: boolean,
+	forced: boolean,
+	deopts: readonly EngineDeopt[]
+): 'cold' | 'refused' | 'deoptimized' {
+	if (tier === 'deoptimized' || had_optimized) return 'deoptimized';
+	if (forced) return 'refused';
+	if (deopts.some((d) => !is_cold(d.reason))) return 'deoptimized';
+	return 'cold';
 }
 
 function had_optimized(f: LogFunction): boolean {
@@ -284,7 +311,8 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 				tier: 'not compiled',
 				forced: false,
 				on_path: false,
-				deopts: new Map()
+				deopts: new Map(),
+				had_optimized: false
 			};
 			accs.set(key, a);
 		}
@@ -308,6 +336,7 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 		}
 		if (a.tier === 'not compiled' || tier === 'deoptimized' || TIER_RANK[tier] > TIER_RANK[a.tier])
 			a.tier = tier;
+		if (had_optimized(f)) a.had_optimized = true;
 		if (f.in_window || is_optimized(tier)) a.on_path = true;
 	}
 
@@ -350,6 +379,8 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 		key: string;
 		state: IcState;
 		maps: Set<string>;
+		/** The keys a keyed site saw (the log's key field: a property name or an index). */
+		keys: Set<string>;
 	}
 	const sites = new Map<string, SiteAcc>();
 	for (const ic of facts.ics) {
@@ -369,13 +400,15 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 				col,
 				key: KEYED.has(ic.type) ? '[]' : key_label(ic.key),
 				state,
-				maps: new Set()
+				maps: new Set(),
+				keys: new Set()
 			};
 			sites.set(k, s);
 		}
 		if (IC_RANK[state] > IC_RANK[s.state] || (state === 'megamorphic' && s.state === 'generic'))
 			s.state = state;
 		if (ic.map && ic.map !== '0x0' && ic.map !== '0') s.maps.add(ic.map);
+		if (KEYED.has(ic.type) && ic.key !== '') s.keys.add(ic.key);
 	}
 
 	const deopted = new Set(facts.deopts.map((d) => d.address));
@@ -390,19 +423,23 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 
 	for (const a of accs.values()) {
 		if (!a.on_path || a.meta.kind === 'top') continue;
-		kase.functions.push({
+		const optimized = is_optimized(a.tier) || inlined.has(a);
+		const deopts = [...a.deopts.values()].sort(
+			(x, y) => x.line - y.line || (x.reason < y.reason ? -1 : x.reason > y.reason ? 1 : 0)
+		);
+		const fn: EngineFunction = {
 			id: fn_id(a),
 			module: modules[a.module].id,
 			path: a.meta.path,
 			line: fn_line(a),
 			tier: a.tier,
 			inlined: inlined.has(a),
-			optimized: is_optimized(a.tier) || inlined.has(a),
+			optimized,
 			forced: a.forced,
-			deopts: [...a.deopts.values()].sort(
-				(x, y) => x.line - y.line || (x.reason < y.reason ? -1 : x.reason > y.reason ? 1 : 0)
-			)
-		});
+			deopts
+		};
+		if (!optimized) fn.not_optimized = why_not_optimized(a.tier, a.had_optimized, a.forced, deopts);
+		kase.functions.push(fn);
 	}
 	kase.functions.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
 
@@ -432,6 +469,12 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 				state: s.state,
 				maps: s.maps.size
 			};
+			if (KEYED.has(s.type)) site.keys = s.keys.size;
+			if (IC_RANK[s.state] >= IC_RANK.megamorphic) {
+				// V8 keeps one property name per keyed cache: a second name makes it megamorphic on a
+				// single shape. More shapes than a polymorphic cache holds (4) is the other cause.
+				site.cause = KEYED.has(s.type) && s.keys.size > 1 && s.maps.size <= 4 ? 'keys' : 'shapes';
+			}
 			kase.sites.push(site);
 		}
 	}
@@ -506,6 +549,8 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 			}
 			report.cases.push(kase);
 			const optimized = kase.functions.filter((f) => f.optimized).length;
+			const cold = kase.functions.filter((f) => f.not_optimized === 'cold').length;
+			const lost = kase.functions.length - optimized - cold;
 			const bad = kase.sites.filter((s) => IC_RANK[s.state] >= 2).length;
 			const u = unstable_entries(kase);
 			const shaky =
@@ -513,7 +558,7 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 					? `; not repeatable in ${kase.repeats} runs: ${u.functions} function(s), ${u.sites} site(s) (marked unstable)`
 					: '';
 			log(
-				`${kase.error ? 'FAILED  ' : kase.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${optimized}/${kase.functions.length} optimized, ${bad} poly/megamorphic site(s)${shaky}${kase.error ? ': ' + kase.error : ''}`
+				`${kase.error ? 'FAILED  ' : kase.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${optimized}/${kase.functions.length} optimized, ${cold} cold, ${lost} refused or deoptimized, ${bad} poly/megamorphic site(s)${shaky}${kase.error ? ': ' + kase.error : ''}`
 			);
 		}
 	} finally {

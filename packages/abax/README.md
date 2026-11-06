@@ -351,9 +351,10 @@ only comparable on one V8.
 - **Built-ins without a price cost one call.** `Array.prototype.push` is 4 steps whatever it does.
 - **Regular expressions are priced by input length.** A pattern that backtracks badly costs no more
   steps than one that does not, and the worst-case search does not find it.
-- **The byte estimate covers allocations written in counted code.** Arrays and strings that
-  built-ins return (`split`, `slice`, `map`, `JSON.parse`) and the backing store `push` grows are
-  not in it. In the quick start, `rank` is estimated at 16 B and V8 allocates 907.66 B.
+- **The byte estimate misses what grows in place.** It covers allocations written in counted code
+  and what priced built-ins return (`split`, `slice`, `map`, `JSON.parse`). The backing store
+  that `push` grows is not in it. In the quick start, `rank` is estimated at 16 B and V8 allocates
+  907.66 B, most of it the `out` array growing.
 - **Real bytes are per function, not per line.**
 - **Built-ins called in ways the transform cannot see are free.** A priced built-in costs steps
   when counted code calls it by name (`xs.slice(1)`, `structuredClone(v)`, `Array.prototype.map.call(xs, f)`).
@@ -455,6 +456,31 @@ When steps moved by 3% or more, time moved the same way (2 of 2). Steps raised n
 one time change steps missed is the `a99a49a` engine effect above. The history is short: only 3
 rows changed enough to matter. [calibration/results.md](calibration/results.md) has every row and
 how the machine was checked for quiet first.
+
+### The fuzzer
+
+`pnpm --filter @bench/abax fuzz -- --seed N --runs M --time T` generates programs from a seed and
+checks the counting build against things it does not control:
+
+- **Semantics.** The counted program logs the same values, in the same order, and returns or
+  throws the same as the plain one.
+- **Counts.** Every block's count and every function's calls equal V8's own precise coverage of
+  the same code; every allocation site's count equals V8's count at the allocation.
+- **Call graph.** Every caller to callee edge equals one read from V8 stack traces.
+- **Determinism.** A second count on fresh module state, and a count in another process, give the
+  same report.
+- **Diff.** Rewrites that change nothing (comments, renames, reordering, indentation) report
+  nothing; a planted cost is reported on its line with the right delta.
+- **Source maps.** Lines map back through the TypeScript transpiler and the Svelte compiler.
+- **Robustness.** The transform takes every file of a corpus (ogygia and its dependencies); huge
+  counts, deep recursion and loops that never end are handled.
+
+A failing program is cut down to the smallest one that still fails. CI runs 60 programs on fixed
+seeds for every PR of this repository, and a nightly job runs for longer on new seeds. One local
+run: 160,000 programs, 392,728 executions, 18,070,739 block counts and 6,085,991 allocation sites
+compared with V8, 3,997 reports compared across processes, all 61 syntax node types the transform
+handles, and 369 corpus files. What it found is fixed, each with a test in
+`test/fuzz-regressions.test.ts`.
 
 ## More
 

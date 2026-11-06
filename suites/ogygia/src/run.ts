@@ -6,8 +6,16 @@
  *
  * And the time layer across two trees: `abax time` loads both in one process and times them in
  * turns, judged by the bench repo's same-job noise rule.
+ *
+ * Where a PR run's time went (11 bench files, 15 min on a 4-core runner): per tree about 2 min of
+ * engine health (every case twice, in V8-logging children), 2.4 min of growth (one bench file 96 s)
+ * and 25 s of counting, all one file after another; then 5.4 min of timing. Installs took seconds.
+ * The files now run side by side (counts, health and growth are exact under any load; only the
+ * time layer needs the machine to itself). Health still runs every case twice, on PRs too: only
+ * that check can mark what V8 does not repeat, and an unmarked flake would reach the comment.
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REPORT_SCHEMA, renderTime } from '@bench/abax';
@@ -120,14 +128,17 @@ async function abax(
 	file: string,
 	out: string,
 	log_file: string,
-	measure: string | null
+	measure: string | null,
+	check: boolean
 ): Promise<string | null> {
 	const extra =
 		command === 'growth'
 			? ['--scaled', 'on']
 			: command === 'run' && measure
 				? ['--measure', measure]
-				: [];
+				: command === 'health' && !check
+					? ['--check', 'off']
+					: [];
 	const r = await spawn_abax(
 		tree,
 		[command, file, '--root', tree.dir, '--out', out, '--sha', tree.sha, ...extra],
@@ -137,6 +148,15 @@ async function abax(
 	const report = read_report(out);
 	const wrote = report !== null && report[WRITES[command]] !== undefined;
 	return command_error(r, wrote, `abax ${command}`, LIMIT_MIN[command]);
+}
+
+/** Run `tasks`, at most `jobs` at once. */
+export async function pool(tasks: Array<() => Promise<void>>, jobs: number): Promise<void> {
+	let next = 0;
+	const lane = async (): Promise<void> => {
+		while (next < tasks.length) await tasks[next++]();
+	};
+	await Promise.all(Array.from({ length: Math.max(1, Math.min(jobs, tasks.length)) }, lane));
 }
 
 /**
@@ -183,8 +203,18 @@ export function empty_report(sha: string, like: Report): Report {
 	return report;
 }
 
+export interface TreeOptions {
+	/**
+	 * Bench files run side by side (default: the cores). Counts, engine health and growth are exact
+	 * whatever else runs; when `measure` has the time layer, the files run one at a time.
+	 */
+	jobs?: number;
+	/** Engine health runs every case twice to check V8 did the same thing (default true). */
+	check?: boolean;
+}
+
 /**
- * Count, check and grow `files` on `tree`; reports and the log go under `out_dir`. `measure`: the
+ * Count, check and grow `files` on `tree`; reports and logs go under `out_dir`. `measure`: the
  * plain-build layers `abax run` adds (`time,bytes,leaks`, `all`), or null for none.
  */
 export async function run_tree(
@@ -193,29 +223,36 @@ export async function run_tree(
 	out_dir: string,
 	log: (line: string) => void,
 	measure: string | null = null,
-	commands: readonly Command[] = ['run', 'health', 'growth']
+	commands: readonly Command[] = ['run', 'health', 'growth'],
+	o: TreeOptions = {}
 ): Promise<TreeRun> {
 	mkdirSync(out_dir, { recursive: true });
-	const log_file = join(out_dir, 'abax.log');
-	const parts: Report[] = [];
-	const load_errors: LoadError[] = [];
-	for (const [i, file] of files.entries()) {
-		const out = join(out_dir, `${i}.json`);
-		rmSync(out, { force: true });
-		for (const command of commands) {
-			log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
-			const error = await abax(tree, command, file, out, log_file, measure);
-			if (error !== null) {
-				load_errors.push({ file, command, error });
-				if (command === 'run') break;
+	const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
+	const jobs = timed ? 1 : (o.jobs ?? availableParallelism());
+	const parts: Array<Report | null> = files.map(() => null);
+	const errors: LoadError[][] = files.map(() => []);
+	await pool(
+		files.map((file, i) => async () => {
+			const out = join(out_dir, `${i}.json`);
+			// a log per bench file: they run side by side
+			const log_file = join(out_dir, `abax-${i}.log`);
+			rmSync(out, { force: true });
+			for (const command of commands) {
+				log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
+				const error = await abax(tree, command, file, out, log_file, measure, o.check ?? true);
+				if (error !== null) {
+					errors[i].push({ file, command, error });
+					if (command === 'run') break;
+				}
 			}
-		}
-		// What a process that died wrote is kept (its counts are whole: a report is written once
-		// every case ran); the error above says the file's layers are not all there.
-		const report = read_report(out);
-		if (report) parts.push(report);
-	}
-	return { report: merge_reports(parts, tree.sha), load_errors };
+			// What a process that died wrote is kept (its counts are whole: a report is written once
+			// every case ran); the error above says the file's layers are not all there.
+			parts[i] = read_report(out);
+		}),
+		jobs
+	);
+	const done = parts.filter((p): p is Report => p !== null);
+	return { report: merge_reports(done, tree.sha), load_errors: errors.flat() };
 }
 
 /**

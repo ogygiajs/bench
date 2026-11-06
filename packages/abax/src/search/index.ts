@@ -4,6 +4,7 @@ import { Measurer, load_cases } from '../growth/measure.ts';
 import type { LoadOptions } from '../growth/measure.ts';
 import { clone, input_size } from '../growth/scale.ts';
 import { Rng, mutate } from './mutate.ts';
+import { StepCapError } from '../runtime/index.ts';
 
 /*
  * Slow-input search (spec 9). Starting from the case's own input, mutate it and keep a mutation
@@ -13,7 +14,9 @@ import { Rng, mutate } from './mutate.ts';
  * of the same size is slowest.
  *
  * Bounded by evaluations, by total steps counted and by wall time. The first two are
- * deterministic; when the time budget ends a search the result says so.
+ * deterministic; when the time budget ends a search the result says so. Each input runs under a
+ * step cap (what is left of the step budget): an input on which the code would run forever ends
+ * its run at the cap, and is the worst input found (`runaway`).
  *
  * Built-ins are priced by input size, so a regular expression that backtracks badly costs no more
  * steps than one that does not: catastrophic regexes are not found by this search.
@@ -37,6 +40,8 @@ export interface SearchCase {
 	input: string;
 	/** Mutations from the case's input to the worst one. */
 	mutations: string[];
+	/** On the worst input the run went past its step cap: it may never end. */
+	runaway?: boolean;
 	error: string | null;
 }
 
@@ -148,8 +153,15 @@ export async function search_case(
 			let steps: number;
 			try {
 				// the case may change its input: count on a copy, keep the original
-				steps = (await m.once(c, clone(next.input), 'replay')).steps;
-			} catch {
+				steps = (await m.once(c, clone(next.input), 'replay', o.steps - spent)).steps;
+			} catch (e) {
+				if (e instanceof StepCapError) {
+					// it would have used the whole budget, and maybe never ended: the worst input
+					best = { input: next.input, steps: e.steps, trail: [...cur.trail, next.what].slice(-20) };
+					out.runaway = true;
+					out.stopped = 'steps';
+					break;
+				}
 				stale++;
 				continue; // an input the code rejects is not a slow input
 			}
@@ -208,7 +220,12 @@ export function diff_search(base: SearchReport, pr: SearchReport, flag = 4): Sea
 		if (p.error) continue;
 		const b = by_name.get(p.name);
 		const base_ratio = b && !b.error ? b.ratio : 1;
-		if (p.ratio >= flag && p.ratio >= 2 * base_ratio) {
+		if (p.runaway && !b?.runaway) {
+			out.push({
+				case: p.name,
+				text: `${'`'}${p.name}${'`'} has an input it may never finish on: past ${Math.round(p.worst)} steps (${Math.round(p.typical)} typical)`
+			});
+		} else if (p.ratio >= flag && p.ratio >= 2 * base_ratio) {
 			out.push({
 				case: p.name,
 				text: `${code(p.name)} has a slow input: ${Math.round(p.worst)} steps vs ${Math.round(p.typical)} typical (${p.ratio}x, base ${base_ratio}x)`

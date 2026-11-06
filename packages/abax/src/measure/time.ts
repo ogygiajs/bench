@@ -15,10 +15,21 @@ import { pair_cases } from '../cases.ts';
  *   cpu_ns           process CPU (user + system, process.cpuUsage) per call over the timed phase,
  *                    minus the CPU of the case's setup/teardown alone over as many calls
  *
- * PR vs base: both builds are loaded in ONE process and take turns, case by case; the order flips
- * on every repeat (base first, then PR first, ...) so warm-up, GC debt and thermal drift land on
- * both sides alike. Each repeat gives one sample per metric and side; the samples are judged by
- * the no-overlap noise rule of @bench/compare (`judge`), the same rule the app benchmark uses.
+ * PR vs base: both builds are loaded in ONE process and take turns; the order flips on every
+ * round (base first, then PR first, ...) so warm-up, GC debt and thermal drift land on both sides
+ * alike. Each round gives one sample per metric and side; the samples are judged by the no-overlap
+ * noise rule of @bench/compare (`judge`), the same rule the app benchmark uses.
+ *
+ * Two things keep identical code from being judged changed (an A/A run on a CI runner flagged
+ * cases 3-8% apart, every sample of one side below every sample of the other):
+ *
+ * - Each round runs on fresh copies of both builds (`load`). One copy of a build keeps the code V8
+ *   compiled for it, and its luck (inlining, code layout, which feedback came first) for every
+ *   round: a steady offset between two copies of the same code that no number of repeats averages
+ *   out. A fresh copy per round draws it again, so it shows up as spread instead.
+ * - A metric that looks changed after the rounds is confirmed: as many rounds again, on fresh
+ *   copies, and judged on all of them. With 57 cases and 4 metrics, 228 judgements a run, a 1 in
+ *   126 chance per judgement is two false findings a run; confirming makes it 1 in 184756.
  */
 
 export interface TimeStats {
@@ -179,6 +190,8 @@ export interface TimeCase {
 	base: TimeStats[];
 	pr: TimeStats[];
 	verdicts: Record<TimeMetric, Verdict>;
+	/** Rounds run more to confirm a metric that looked changed (the verdicts are over all). */
+	confirmed?: number;
 }
 
 export interface TimeComparison {
@@ -208,16 +221,36 @@ export function judge_time(base: TimeStats[], pr: TimeStats[]): Record<TimeMetri
 	return out;
 }
 
+export interface CompareOptions extends TimeOptions {
+	/** Rounds (default 5). */
+	repeats?: number;
+	/** Rounds more for a case with a metric that looks changed (default: `repeats`; 0: none). */
+	confirm?: number;
+	/**
+	 * Fresh copies of one side's cases for a round (`round` counts from 0). Without it every round
+	 * runs on the lists given.
+	 */
+	load?: (side: 'base' | 'pr', round: number) => Promise<BenchCase[]>;
+	log?: (line: string) => void;
+}
+
+function changed(v: Record<TimeMetric, Verdict>): boolean {
+	return TIME_METRICS.some((m) => v[m].regressed || v[m].improved);
+}
+
 /**
- * PR vs base, in this process: per case, `repeats` rounds; each round times both sides, the side
- * that goes first alternating. Cases are matched by name.
+ * PR vs base, in this process: `repeats` rounds over every case (each round on fresh copies of
+ * both sides, when `load` is given); in each round both sides are timed, the side that goes first
+ * alternating. A case with a metric that looks changed gets `confirm` rounds more. Cases are
+ * paired by bench file and name (pair_cases).
  */
 export async function compare_time(
 	base: BenchCase[],
 	pr: BenchCase[],
-	o: TimeOptions & { repeats?: number; log?: (line: string) => void } = {}
+	o: CompareOptions = {}
 ): Promise<TimeComparison> {
 	const repeats = o.repeats ?? 5;
+	const confirm = o.confirm ?? repeats;
 	const paired = pair_cases(base, pr);
 	const out: TimeComparison = {
 		schema: 'abax-time/1',
@@ -230,36 +263,58 @@ export async function compare_time(
 		},
 		errors: []
 	};
-	for (const [b, p] of paired.pairs) {
-		const tc: TimeCase = {
-			name: b.name,
-			order: [],
-			base: [],
-			pr: [],
-			verdicts: {} as TimeCase['verdicts']
+	// A pair is known by its index; each side finds its own case again (by its file and name) in
+	// the fresh copy a round loads.
+	const names = paired.pairs.map((_, i) => i);
+	const cases = new Map<number, TimeCase>();
+	for (const i of names) {
+		const name = paired.pairs[i][0].name;
+		cases.set(i, { name, order: [], base: [], pr: [], verdicts: {} as TimeCase['verdicts'] });
+	}
+	const failed = new Set<number>();
+	let round = 0;
+	const run_round = async (only: readonly number[]): Promise<void> => {
+		const r = round++;
+		const lists = {
+			base: o.load ? await o.load('base', r) : base,
+			pr: o.load ? await o.load('pr', r) : pr
 		};
-		let failed = false;
-		for (let r = 0; r < repeats && !failed; r++) {
-			const first: 'base' | 'pr' = r % 2 === 0 ? 'base' : 'pr';
+		const find = (side: 'base' | 'pr', i: number): BenchCase | undefined => {
+			const want = paired.pairs[i][side === 'base' ? 0 : 1];
+			return lists[side].find((c) => c.name === want.name && c.file === want.file);
+		};
+		const first: 'base' | 'pr' = r % 2 === 0 ? 'base' : 'pr';
+		for (const i of only) {
+			if (failed.has(i)) continue;
+			const tc = cases.get(i)!;
+			const name = tc.name;
 			tc.order.push(first);
 			for (const side of first === 'base' ? (['base', 'pr'] as const) : (['pr', 'base'] as const)) {
 				try {
-					tc[side].push(await time_case(side === 'base' ? b : p, o));
+					const c = find(side, i);
+					if (!c) throw new Error(`abax: ${name} is gone from a fresh copy of ${side}`);
+					tc[side].push(await time_case(c, o));
 				} catch (e) {
-					out.errors.push({
-						name: b.name,
-						side,
-						error: e instanceof Error ? e.message : String(e)
-					});
-					failed = true;
+					out.errors.push({ name, side, error: e instanceof Error ? e.message : String(e) });
+					failed.add(i);
 					break;
 				}
 			}
 		}
-		if (failed) continue;
-		tc.verdicts = judge_time(tc.base, tc.pr);
+	};
+	for (let r = 0; r < repeats; r++) await run_round(names);
+	for (const [i, tc] of cases) if (!failed.has(i)) tc.verdicts = judge_time(tc.base, tc.pr);
+	const doubt = names.filter((n) => !failed.has(n) && changed(cases.get(n)!.verdicts));
+	for (let r = 0; r < confirm && doubt.length > 0; r++) await run_round(doubt);
+	for (const i of names) {
+		if (failed.has(i)) continue;
+		const tc = cases.get(i)!;
+		if (doubt.includes(i)) {
+			tc.verdicts = judge_time(tc.base, tc.pr);
+			tc.confirmed = confirm;
+		}
 		o.log?.(
-			`time    ${b.name}  p50 ${fmt_ns(median_of(tc.base, 'p50_ns'))} -> ${fmt_ns(median_of(tc.pr, 'p50_ns'))}`
+			`time    ${tc.name}  p50 ${fmt_ns(median_of(tc.base, 'p50_ns'))} -> ${fmt_ns(median_of(tc.pr, 'p50_ns'))}${tc.confirmed ? ` (confirmed over ${tc.base.length} rounds)` : ''}`
 		);
 		out.cases.push(tc);
 	}

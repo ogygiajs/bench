@@ -143,11 +143,27 @@ test('time PR vs base: turns alternate, judged by the no-overlap rule', async ()
 	});
 	assert.equal(r.errors.length, 0);
 	const work = r.cases.find((c) => c.name === 'work')!;
-	assert.deepEqual(work.order, ['base', 'pr', 'base', 'pr', 'base']);
-	assert.equal(work.base.length, 5);
+	// five rounds, then five more to confirm what looked changed: the order keeps alternating
+	assert.deepEqual(work.order, [
+		'base',
+		'pr',
+		'base',
+		'pr',
+		'base',
+		'pr',
+		'base',
+		'pr',
+		'base',
+		'pr'
+	]);
+	assert.equal(work.confirmed, 5);
+	assert.equal(work.base.length, 10);
 	assert.equal(work.verdicts.p50_ns.regressed, true);
 	assert.equal(work.verdicts.throughput.regressed, true);
-	assert.ok(work.verdicts.p50_ns.prSamples!.length === 5);
+	assert.ok(work.verdicts.p50_ns.prSamples!.length === 10);
+	// the case that did not change had no reason to be confirmed
+	const same = r.cases.find((c) => c.name === 'same')!;
+	assert.equal(same.base.length, 5);
 });
 
 test('real bytes: sampled V8 allocations per function; escape analysis shows as zero', async () => {

@@ -34,3 +34,17 @@ jobs:
       - name: Verify table
         if: always()
         run: cat "$RUNNER_TEMP/verify.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || true
+      # The fuzzer on fixed seeds (about a minute): random programs checked against V8 (what they
+      # do, block, call and allocation counts, callers, inclusive steps, the same report twice and
+      # in another process), abax diff on cost-free rewrites and planted costs, block lines through
+      # TypeScript and Svelte, runs cut short by the step cap. The same programs every run; the
+      # nightly fuzz workflow draws new ones.
+      - name: Abax fuzz (fixed seeds)
+        run: pnpm --filter @bench/abax fuzz -- --seed 1 --runs 60 --jobs 4 --out "$RUNNER_TEMP/fuzz"
+      - name: Fuzz repros
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-repros
+          path: ${{ runner.temp }}/fuzz
+          if-no-files-found: ignore

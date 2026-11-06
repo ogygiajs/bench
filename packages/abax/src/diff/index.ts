@@ -324,30 +324,46 @@ function diff_case(
 	}
 	const unmatched_pr = pr.functions.filter((f) => !matched_pr.has(f.id));
 
-	// Renamed functions: same module, same (or nearly the same) body shape.
-	const still_base: FunctionReport[] = [];
-	for (const b of unmatched_base) {
-		const module = paths.pr_module(b.module);
-		let best: FunctionReport | null = null;
-		let best_score = threshold;
-		for (const p of unmatched_pr) {
-			if (matched_pr.has(p.id) || p.module !== module || p.kind !== b.kind) continue;
-			let score = shape_similarity(b.shape, p.shape);
+	// Renamed functions: same module, same (or nearly the same) body shape. A function inside a
+	// renamed one is the same function under the new name (`a > map:0` is `b > map:0` once `a` is
+	// `b`), so outer functions are matched first and their insides follow by path. At each depth the
+	// best-scoring pair goes first: one base function taking a sibling's better match leaves that
+	// sibling to a worse one.
+	const matched_base = new Set<string>();
+	const accept = (b: FunctionReport, p: FunctionReport): void => {
+		pairs.push([b, p, b.path]);
+		matched_base.add(b.id);
+		matched_pr.add(p.id);
+		renames.push({ case: name, from: b.id, to: p.id });
+		const inside = `${b.path} > `;
+		for (const c of unmatched_base) {
+			if (matched_base.has(c.id) || !c.path.startsWith(inside)) continue;
+			const q = pr_by_id.get(`${p.module} > ${p.path} > ${c.path.slice(inside.length)}`);
+			if (q && !matched_pr.has(q.id) && q.kind === c.kind) accept(c, q);
+		}
+	};
+	const depth = (f: FunctionReport): number => f.path.split(' > ').length;
+	const depths = [...new Set(unmatched_base.map(depth))].sort((x, y) => x - y);
+	for (const d of depths) {
+		const candidates: Array<{ b: FunctionReport; p: FunctionReport; score: number }> = [];
+		for (const b of unmatched_base) {
+			if (matched_base.has(b.id) || depth(b) !== d) continue;
+			const module = paths.pr_module(b.module);
 			const mapped = paths.lines(module).forward(b.line);
-			if (mapped === p.line) score += 0.01;
-			if (score >= best_score) {
-				best = p;
-				best_score = score;
+			for (const p of unmatched_pr) {
+				if (matched_pr.has(p.id) || p.module !== module || p.kind !== b.kind) continue;
+				let score = shape_similarity(b.shape, p.shape);
+				if (mapped === p.line) score += 0.01;
+				if (score >= threshold) candidates.push({ b, p, score });
 			}
 		}
-		if (best) {
-			pairs.push([b, best, b.path]);
-			matched_pr.add(best.id);
-			renames.push({ case: name, from: b.id, to: best.id });
-		} else {
-			still_base.push(b);
+		// stable: equal scores keep base order, then PR order
+		candidates.sort((x, y) => y.score - x.score);
+		for (const c of candidates) {
+			if (!matched_base.has(c.b.id) && !matched_pr.has(c.p.id)) accept(c.b, c.p);
 		}
 	}
+	const still_base = unmatched_base.filter((b) => !matched_base.has(b.id));
 
 	for (const [b, p, renamed_from] of pairs) {
 		const change = function_change(name, b, p, renamed_from);

@@ -20,6 +20,9 @@ export interface PageCounts {
 	incl: number[];
 	bsite_steps: number[];
 	bsite_calls: number[];
+	/** Absent in counts taken before built-in results were sized. */
+	bsite_bytes?: number[];
+	bsite_allocs?: number[];
 	bunits: Table;
 	edges: Table;
 	steps: number;
@@ -38,6 +41,8 @@ export function serialize_snapshot(rt: Runtime, snap: Snapshot, metas_from = 0):
 		incl: to_array(snap.incl),
 		bsite_steps: to_array(snap.bsite_steps),
 		bsite_calls: to_array(snap.bsite_calls),
+		bsite_bytes: to_array(snap.bsite_bytes),
+		bsite_allocs: to_array(snap.bsite_allocs),
 		bunits: snap.bunits,
 		edges: snap.edges,
 		steps: snap.steps
@@ -52,6 +57,8 @@ export function deserialize_snapshot(p: PageCounts): Snapshot {
 		incl: f64(p.incl),
 		bsite_steps: f64(p.bsite_steps),
 		bsite_calls: f64(p.bsite_calls),
+		bsite_bytes: f64(p.bsite_bytes ?? p.bsite_steps.map(() => 0)),
+		bsite_allocs: f64(p.bsite_allocs ?? p.bsite_steps.map(() => 0)),
 		bunits: { ...p.bunits },
 		edges: { ...p.edges },
 		steps: p.steps
@@ -94,6 +101,8 @@ export function snapshot_delta(after: Snapshot, before: Snapshot): Snapshot {
 		incl: minus(after.incl, before.incl),
 		bsite_steps: minus(after.bsite_steps, before.bsite_steps),
 		bsite_calls: minus(after.bsite_calls, before.bsite_calls),
+		bsite_bytes: minus(after.bsite_bytes, before.bsite_bytes),
+		bsite_allocs: minus(after.bsite_allocs, before.bsite_allocs),
 		bunits: minus_table(after.bunits, before.bunits),
 		edges: minus_table(after.edges, before.edges),
 		steps: after.steps - before.steps
@@ -109,6 +118,8 @@ export function empty_snapshot(): Snapshot {
 		incl: z,
 		bsite_steps: z,
 		bsite_calls: z,
+		bsite_bytes: z,
+		bsite_allocs: z,
 		bunits: table(),
 		edges: table(),
 		steps: 0

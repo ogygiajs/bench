@@ -202,3 +202,33 @@ test('git: a revision from a report is never an option; quoted and spaced paths 
 		]
 	);
 });
+
+test('a renamed function brings the functions inside it along, by path', () => {
+	// Found by the fuzzer (a rename-only rewrite reported steps moving between two callbacks): the
+	// callbacks inside a renamed function have the same body shape, so matching each by shape alone
+	// paired `map:0` with the other one's new path.
+	const inner = (outer: string, k: string, self: number, line: number) => ({
+		...fn('a.ts', `${outer} > ${k}`, self, line),
+		shape: [3]
+	});
+	const base = report([
+		fn('a.ts', 'v1', 5, 1),
+		inner('v1', 'map:0', 3, 2),
+		inner('v1', 'map:0#2', 6, 3)
+	]);
+	const pr = report([
+		fn('a.ts', 'z1', 5, 11),
+		inner('z1', 'map:0', 3, 12),
+		inner('z1', 'map:0#2', 6, 13)
+	]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(d.findings, []);
+	assert.deepEqual(
+		d.renames.map((r) => [r.from, r.to]),
+		[
+			['a.ts > v1', 'a.ts > z1'],
+			['a.ts > v1 > map:0', 'a.ts > z1 > map:0'],
+			['a.ts > v1 > map:0#2', 'a.ts > z1 > map:0#2']
+		]
+	);
+});

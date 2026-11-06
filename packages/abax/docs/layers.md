@@ -56,13 +56,26 @@ is kept. The diff leaves unstable entries out on both sides and says how many in
 cleared", "dependent allocation site tenuring changed") are kept in the report but are never
 findings. A health child has a 10 minute limit; one that runs past it is that case's error.
 
+A keyed access (`obj[key]`) keeps one property name in its cache. A second name makes it
+megamorphic, even when every object has the same shape. Such a site is reported as
+`generic (keys of many names, not many shapes)`, so it is not read as "many object shapes". A
+site that saw more shapes than a polymorphic cache holds (4) stays `megamorphic`.
+
+A function that is not optimized gets one of three reasons:
+
+| Reason      | What happened                                                              |
+| ----------- | -------------------------------------------------------------------------- |
+| cold        | It did not run often enough to be optimized. Not a problem.                |
+| refused     | It was marked to optimize and V8 did not.                                  |
+| deoptimized | It had optimized code and lost it, or a deopt on code that had run hit it. |
+
 ```
-ok       rank: twenty rows  2/2 optimized, 1 poly/megamorphic site(s)
+ok       rank: twenty rows  2/2 optimized, 0 cold, 0 refused or deoptimized, 1 poly/megamorphic site(s)
 ```
 
 PR against base, these are findings:
 
-- a function that is no longer optimized
+- a function that is no longer optimized, unless it is now only cold
 - a deopt reason the base did not have
 - an inline cache that reached more shapes (monomorphic to polymorphic to megamorphic)
 - new code that deopts or is megamorphic
@@ -102,11 +115,19 @@ How long the plain build takes, measured with tinybench. Per case:
 the side that goes first flips every turn, so warm-up, GC debt and heat land on both sides. The
 default is 5 turns, 300 ms timed and 100 ms warm-up per measurement, at least 64 calls.
 
+Each turn loads fresh copies of both trees. One copy of a build keeps the machine code V8 made for
+it for every turn, and with it a steady offset: two copies of the same code measured 3 to 8% apart
+on a CI runner, every turn of one below every turn of the other, and the rule below called them
+changed. A fresh copy per turn draws that offset again, so it shows as spread instead.
+
+A case that looks changed after the 5 turns gets 5 more, on fresh copies, and is judged on all 10.
+The log line ends in `(confirmed over 10 rounds)`.
+
 The verdict is the no-overlap rule from `packages/compare`, the same one the app benchmark uses. A
 metric changed only when all three hold:
 
 1. every PR turn is on the same side of every base turn (with 5 and 5, that happens by chance once
-   in 126 for two builds that perform the same)
+   in 126 for two builds that perform the same; with 10 and 10, once in 92,378)
 2. the medians differ by more than the larger spread of the two sides
 3. the change is above the floor: 3% for p50, ops/s and CPU/op, 5% for p99
 
@@ -139,11 +160,20 @@ comment lists time-led cases under the step table: for them, trust the time laye
 ## Real bytes
 
 What V8 allocates. On the plain build the case is warmed until its code is optimized, then run in
-batches under V8's sampling heap profiler, with a small interval and with objects later collected
-kept in the profile, so every allocation counts, not only what survives. The child runs without
-inlining, so a function's frame holds its own bytes. Each sampled byte is charged to the nearest
-frame on its stack that belongs to a counted source module, so bytes allocated inside `map` are
-charged to the function that called `map`.
+batches under V8's sampling heap profiler, with objects later collected kept in the profile, so
+every allocation counts, not only what survives. The child runs without inlining, so a function's
+frame holds its own bytes.
+
+The interval starts small (32 B between samples) and doubles until a batch stays under 200,000
+samples, judged from a first coarse look at what one call allocates. Without that, a case that
+allocates a lot came back with a profile too large for one string and crashed the child. A larger
+interval spreads the same estimate over fewer samples; it is not biased.
+
+Bytes are charged the way the estimate counts them. A byte allocated in a built-in or in Node's own
+`node:` modules goes to the nearest source function under it, so bytes allocated inside `map` are
+charged to the function that called `map`. A byte allocated in a dependency, the bench file or the
+harness is charged to none of them: a dependency is not counted, so its allocations are not in the
+estimate either.
 
 ```
 bytes   rank: twenty rows  estimated 16 B, real 907.66 B
@@ -168,13 +198,13 @@ Allocations the engine elides (estimated, not real bytes; not counted as a regre
 That is the `abax verify` case: `const w = { len: t.length }` inside the loop of `score`. Per
 function, `score` was estimated at 960 B (60 objects of 16 B) and V8 allocated 5.68 B. The case
 totals look close only because `rank`'s real bytes (1000.9 B, the growing `out` array) are not
-in the estimate.
+in the estimate: `push` grows the array in place, and the estimate does not follow that.
 
 Elision qualifies the bytes, not the steps. A function whose steps changed is always in the step
 table; when its added allocations are elided, its bytes cell says so (`+960 B (elided)`), and the
 "Where" rows for those lines do too.
 
-Real bytes above the estimate (arrays and strings built-ins return, backing stores that grow) are
+Real bytes above the estimate (backing stores that grow, what unpriced built-ins return) are
 reported, never flagged.
 
 ## Leaks
@@ -242,6 +272,10 @@ change is a string edit (repeat a character, special characters, reverse), an ar
 NaN, half; never bigger, so a size given as a number cannot grow the work), or extra nesting. It restarts from the worst input found after 40 tries without
 progress. It stops at 300 evaluations, 2×10⁸ counted steps or 30 s, whichever comes first; the
 first two are deterministic.
+
+The step budget also caps each input: an input that would run past what is left of it is stopped
+inside the loop or call that keeps going, not after it. Such a case is reported as a runaway (an
+input that does not finish), and the search stops there.
 
 ```
 ok       rank: twenty rows  worst 897 vs typical 897 steps (1x, 100 inputs, stopped by evals)

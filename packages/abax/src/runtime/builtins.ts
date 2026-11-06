@@ -2,6 +2,14 @@ import { builtin_call_name, builtin_cost } from '../prices.ts';
 import type { BuiltinPrice } from '../prices.ts';
 import { ANY_RECEIVER } from './index.ts';
 import type { Runtime } from './index.ts';
+import {
+	KNOWN_CONSTRUCTORS,
+	array_bytes,
+	match_bytes,
+	object_bytes,
+	string_bytes,
+	substring_bytes
+} from '../layout.ts';
 
 /*
  * Size-aware prices for engine built-ins (spec 2). While the measuring window is open each priced
@@ -124,6 +132,87 @@ function graph_size(v: unknown): number {
 	return n;
 }
 
+/** Estimated bytes of a graph a built-in built new (JSON.parse, structuredClone), bounded. */
+function graph_bytes(v: unknown): number {
+	const seen = new Set<unknown>();
+	const todo: unknown[] = [v];
+	let bytes = 0;
+	let n = 0;
+	while (todo.length > 0 && n < 1_000_000) {
+		const x = todo.pop();
+		n++;
+		if (typeof x === 'string') {
+			bytes += string_bytes(x.length);
+			continue;
+		}
+		if (x === null || typeof x !== 'object' || seen.has(x)) continue;
+		seen.add(x);
+		if (x instanceof Map || x instanceof Set) {
+			bytes += x instanceof Map ? KNOWN_CONSTRUCTORS.Map : KNOWN_CONSTRUCTORS.Set;
+			for (const e of x instanceof Map ? x : x.values()) todo.push(e);
+		} else if (is_array(x)) {
+			bytes += array_bytes(x.length);
+			for (let i = 0; i < x.length; i++) todo.push(x[i]);
+		} else {
+			const keys = object_keys(x);
+			bytes += object_bytes(keys.length);
+			for (let i = 0; i < keys.length; i++) todo.push((x as Record<string, unknown>)[keys[i]]);
+		}
+	}
+	return bytes;
+}
+
+/** Built-ins whose string result is a substring of their input (layout.ts, substring_bytes). */
+const SUBSTRINGS = new Set([
+	'String.prototype.slice',
+	'String.prototype.substring',
+	'String.prototype.trim'
+]);
+
+/**
+ * Estimated bytes of what a priced built-in allocated for its result (layout.ts): a new array or
+ * string, plus what is new inside it (the strings `split` cuts, the pairs of `Object.entries`, a
+ * match's captures, what `JSON.parse` and `structuredClone` build). Nothing for a result the call
+ * already had (`sort` returns its array, `Object.assign` its target, `Map#set` the map) or a
+ * primitive. Elements an array gets from elsewhere (`map`'s callback results) are counted where
+ * they are made.
+ */
+export function result_bytes(key: string, self: unknown, args: unknown[], result: unknown): number {
+	if (result === self || result === args[0] || result == null) return 0;
+	if (typeof result === 'string') {
+		return SUBSTRINGS.has(key) ? substring_bytes(result.length) : string_bytes(result.length);
+	}
+	if (typeof result !== 'object') return 0;
+	switch (key) {
+		case 'JSON.parse':
+		case 'structuredClone':
+			return graph_bytes(result);
+		case 'Object.fromEntries':
+			return object_bytes(object_keys(result).length);
+	}
+	if (!is_array(result)) return 0;
+	const list = result as unknown[];
+	let bytes = array_bytes(list.length);
+	switch (key) {
+		case 'String.prototype.split':
+			for (let i = 0; i < list.length; i++) bytes += substring_bytes(len(list[i]));
+			break;
+		case 'RegExp.prototype.exec':
+		case 'String.prototype.match': {
+			// a match (exec, match without /g) or the list of whole matches (match with /g)
+			const is_match = typeof (result as { index?: unknown }).index === 'number';
+			if (is_match) bytes += match_bytes(list.length) - array_bytes(list.length);
+			for (let i = 0; i < list.length; i++)
+				if (typeof list[i] === 'string') bytes += substring_bytes((list[i] as string).length);
+			break;
+		}
+		case 'Object.entries':
+			bytes += list.length * array_bytes(2);
+			break;
+	}
+	return bytes;
+}
+
 /** What drives each built-in's work. Anything priced but not listed is sized by `this.length`. */
 const SIZES: Record<string, Size> = {
 	'Array.prototype.slice': result_len,
@@ -228,6 +317,7 @@ function resolve_owner(key: string): { owner: Record<string, unknown>; prop: str
 function make_wrapper(
 	rt: Runtime,
 	orig: (...args: unknown[]) => unknown,
+	key: string,
 	name_id: number,
 	key_id: number,
 	price: BuiltinPrice,
@@ -252,7 +342,8 @@ function make_wrapper(
 			const result = reflect_apply(orig, this, args);
 			// Sizing and charging run with the guard still up: nothing they touch is charged again.
 			const n = size(this, args, result, from);
-			rt.charge(site, builtin_cost(price, n), key_id, n);
+			const bytes = result_bytes(key, this, args, result);
+			rt.charge(site, builtin_cost(price, n), key_id, n, bytes);
 			return result;
 		} finally {
 			rt.bdepth = prev;
@@ -281,6 +372,7 @@ export class Builtins {
 			const wrapper = make_wrapper(
 				rt,
 				desc.value,
+				key,
 				name_id,
 				key_id,
 				price,
