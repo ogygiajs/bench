@@ -1,0 +1,323 @@
+# Layers
+
+Steps are a model of the work the code asks for. Each layer here checks something the model
+cannot see, or turns the count into an answer to a different question. Engine health, time, real
+bytes and leaks run on the **plain build**: the code as it ships, nothing counted. The plain build
+still compiles `.svelte` files and appends the `__abax` export, so the same bench files run on it.
+
+| Layer             | Command                                | Build    | On PRs             | On main and nightly |
+| ----------------- | -------------------------------------- | -------- | ------------------ | ------------------- |
+| Steps             | `abax run`                             | counting | yes                | yes                 |
+| Engine health     | `abax health`                          | plain    | yes                | yes                 |
+| Growth            | `abax growth`                          | counting | cases with `scale` | cases with `scale`  |
+| Time              | `abax time`, `abax run --measure time` | plain    | yes                | yes                 |
+| Real bytes        | `abax run --measure bytes`             | plain    | no                 | yes                 |
+| Leaks             | `abax run --measure leaks`             | plain    | no                 | yes                 |
+| Worst-case search | `abax search`                          | counting | no                 | no                  |
+| Real-app weight   | `abax weights`, `abax diff --weights`  | counting | no                 | no                  |
+| Coverage          | `abax coverage`                        | counting | no                 | no                  |
+| Gate              | `abax unmeasured`                      | counting | in ogygia's CI     | no                  |
+
+The examples on this page come from runs on an M4 Max with Node 26.4.0 at Abax `7b3d7a5`: the
+quick-start project in the [README](../README.md), the planted cases of `abax verify`, the planted
+router PR, and the app benchmark's scenarios.
+
+## Engine health
+
+What V8 did with the code. `abax health` runs each case in a child process without counting, with
+`--allow-natives-syntax`, V8's code, inline-cache, deopt and function-event logs, and flags that
+make V8 tier up at the same points every time: `--single-threaded`,
+`--no-concurrent-recompilation`, `--predictable`, `--no-flush-bytecode`, fixed random and hash
+seeds.
+
+For each case:
+
+1. 20 warm-up runs (`--warmup`). V8 tiers code up on its own.
+2. Every function the bench can reach is prepared and marked to optimize on its next call
+   (`%PrepareFunctionForOptimization`, `%OptimizeFunctionOnNextCall`). This is the fixed point.
+3. One run (the forced optimization), then 3 more (`--runs`).
+4. Each function's tier is read with `%GetOptimizationStatus` and decoded into plain words:
+   interpreted, baseline, maglev, turbofan, deoptimized.
+
+Every inline cache (a property read or write, a keyed access, a global lookup) gets the worst
+state it reached: monomorphic, polymorphic or megamorphic. Deopts come with V8's reason. With
+`--check on` (the default) every case runs twice and must decode the same; if not, it is
+reported unstable.
+
+```
+ok       rank: twenty rows  2/2 optimized, 1 poly/megamorphic site(s)
+```
+
+PR against base, these are findings:
+
+- a function that is no longer optimized
+- a deopt reason the base did not have
+- an inline cache that reached more shapes (monomorphic to polymorphic to megamorphic)
+- new code that deopts or is megamorphic
+
+A deopt on code that had never run when the function was optimized (a branch taken for the first
+time) is kept in the report but is never a finding: every new branch pays it once. The other
+direction (an IC that got better) is listed, never a finding. Sites are matched by their id inside
+the function (`property read length #0`), so moved lines never show.
+
+From the planted `match_one` loop in the README:
+
+```md
+#### Engine
+
+`match_path: every request against a 300-route table`:
+
+- `packages/router/src/match.ts:140` new property read `charCodeAt` is polymorphic
+- `packages/router/src/match.ts:140` new property read `length` is polymorphic
+```
+
+`abax verify` plants a shape-order change, an int to double change, a `delete`, and a
+megamorphic access, each with a same-line twin that must stay quiet. All are found at the right
+function and line.
+
+## Time
+
+How long the plain build takes, measured with tinybench. Per case:
+
+| Metric | What                                                                             |
+| ------ | -------------------------------------------------------------------------------- |
+| p50    | Median time of one call. Setup and teardown run outside the timing.              |
+| p99    | 99th percentile.                                                                 |
+| ops/s  | Calls per second, from tinybench's mean.                                         |
+| CPU/op | Process CPU (user + system) per call, minus the CPU of setup and teardown alone. |
+
+`abax time` compares two trees. Both are loaded in one process and take turns case by case, and
+the side that goes first flips every turn, so warm-up, GC debt and heat land on both sides. The
+default is 5 turns, 300 ms timed and 100 ms warm-up per measurement, at least 64 calls.
+
+The verdict is the no-overlap rule from `packages/compare`, the same one the app benchmark uses. A
+metric changed only when all three hold:
+
+1. every PR turn is on the same side of every base turn (with 5 and 5, that happens by chance once
+   in 126 for two builds that perform the same)
+2. the medians differ by more than the larger spread of the two sides
+3. the change is above the floor: 3% for p50, ops/s and CPU/op, 5% for p99
+
+Cells show the range over the turns, base then PR, with `⚠️` (worse), `better`, or `≈`:
+
+```md
+| Case | p50 | p99 | ops/s | CPU/op |
+| --- | --- | --- | --- | --- |
+| `rank: twenty rows` | ≈ 83–84 ns → 84 ns | ≈ 125–167 ns → 125–167 ns | ≈ 10,425,649/s–11,139,814/s → 10,093,572/s–10,297,023/s | ≈ 251–492 ns → 0–380 ns |
+```
+
+That is the quick-start's planted loop: +520 steps, no change in time. CPU/op comes from
+`process.cpuUsage`, whose resolution is coarse next to a call this short, so it can read 0.
+
+`abax run --measure time` times one tree and puts p50 next to the steps in the report.
+
+### Estimated ns and time-led cases
+
+A report also carries an estimate: the case's operation counts times the fitted ns per operation
+from `weights.json` ([calibration.md](calibration.md)). That is the `≈ +21 ns` next to a Δ in the
+step table. A case is **time-led** when steps do not predict its time well: its family fitted
+below R² 0.9 in calibration, or the measured time is more than 2x off the estimate either way. The
+comment lists time-led cases under the step table: for them, trust the time layer.
+
+## Real bytes
+
+What V8 allocates. On the plain build the case is warmed until its code is optimized, then run in
+batches under V8's sampling heap profiler, with a small interval and with objects later collected
+kept in the profile, so every allocation counts, not only what survives. The child runs without
+inlining, so a function's frame holds its own bytes. Each sampled byte is charged to the nearest
+frame on its stack that belongs to a counted source module, so bytes allocated inside `map` are
+charged to the function that called `map`.
+
+```
+bytes   rank: twenty rows  estimated 16 B, real 907.66 B
+```
+
+The profile is per function, not per line. It is sampled, so it moves a little between runs: the
+same code measured 907.66 B in one run and 928.11 B in the next.
+
+When a function's estimate is at least 32 B and its real bytes are below half of it, the function
+**elides** allocations: escape analysis removed objects that never leave it. The gap is put on
+the function's allocation sites, largest first. An elided allocation is shown, never called a
+regression:
+
+```
+bytes   rank: twenty rows  estimated 976 B, real 1006.58 B, 1 elided
+```
+
+```md
+Allocations the engine elides (estimated, not real bytes; not counted as a regression): `src/rank.ts:9`
+```
+
+That is the `abax verify` case: `const w = { len: t.length }` inside the loop of `score`. Per
+function, `score` was estimated at 960 B (60 objects of 16 B) and V8 allocated 5.68 B. The case
+totals look close only because `rank`'s real bytes (1000.9 B, the growing `out` array) are not
+in the estimate.
+
+When every changed line of a function is an elided allocation, the function is left out of the
+step table as well, though its steps went up (here by 600). The diff JSON still has it.
+
+Real bytes above the estimate (arrays and strings built-ins return, backing stores that grow) are
+reported, never flagged.
+
+## Leaks
+
+Does the retained heap grow with every call? In a child with `--expose-gc`:
+
+1. One warm-up round, then 6 rounds of 1,000 calls. After each round, two full GCs and the used
+   heap. The slope of heap over calls is the retained bytes per call. The case grows when the slope
+   is at least 4 B per call and the heap went up in all rounds but at most one (a cache that fills
+   in the first rounds is not a trend).
+2. Only then: a heap snapshot, 2 more rounds, GC, a second snapshot. Objects in the second that
+   are newer than everything in the first were made by those rounds and are still held. They are
+   grouped by type; the largest group is the top retained type.
+3. For one of them, the shortest strong retainer chain from the GC roots, read back to the first
+   variable a closure or the module keeps alive. That gives the variable, the function and the
+   line.
+
+The planted leak in `abax verify` keeps every row in a module-level array:
+
+```
+leaks   rank: twenty rows  LEAKS  3407.16 B/call
+```
+
+```md
+**Leaks** (retained heap grows with every call):
+
+- `rank: twenty rows`: 3407.16 B per call, 40.211 (string) per call held by `seen` (`src/rank.ts:14`, kept growing by `rank`)
+```
+
+Its twin keeps only the last row and is not flagged.
+
+## Growth
+
+How steps grow with the input. `abax growth` counts each case at 1x, 10x and 100x its input
+(`--sizes`) and fits `steps = a + b × f(k)` for constant, log, linear, n log n and quadratic,
+picking the best fit and the simpler class on a tie. Counts are exact, so three sizes are enough.
+
+```
+ok       rank: twenty rows  linear (exponent 0.999; 897 / 8817 / 88017 steps)
+```
+
+The input is grown by a generic scaler: arrays and strings repeated k times, `Map` and `Set`
+entries repeated with distinct keys, linked chains made k times deeper, plain objects scaled
+property by property. Each collection grows once, so the input grows linearly in k. An input that
+cannot grow that way (a size given as a number, a structure that must stay valid) declares its
+own:
+
+```ts
+bench('match_path: every request against a 300-route table', ({ table, paths }) => ..., {
+	setup: () => ({ table: compile_all(patterns(30)), paths: requests(30) }),
+	scale: (_ctx, k) => ({ table: compile_all(patterns(30 * k)), paths: requests(30) })
+});
+```
+
+PR against base, a class change (linear to quadratic) is a finding. The same class with more
+steps is not: the step table already shows that. CI grows only the cases that declare `scale`
+(`--scaled on`).
+
+## Worst-case search
+
+Which input of the same size costs the most steps? `abax search` starts from the case's own input,
+changes one place in it at a time, and keeps a change when it costs at least as many steps. A
+change is a string edit (repeat a character, special characters, reverse), an array edit
+(reverse, sort, shuffle, rotate, make every element the same), a number moved to an edge (0, -1,
+NaN, half; never bigger, so a size given as a number cannot grow the work), or extra nesting. It restarts from the worst input found after 40 tries without
+progress. It stops at 300 evaluations, 2×10⁸ counted steps or 30 s, whichever comes first; the
+first two are deterministic.
+
+```
+ok       rank: twenty rows  worst 897 vs typical 897 steps (1x, 100 inputs, stopped by evals)
+```
+
+A PR case is flagged when its worst input costs at least 4 times its typical one and at least
+twice the base's ratio. In `abax verify`, the search finds an input that costs 10.64x the typical
+steps for `xs.slice().sort()` and 4.61x for `text.split(pat)`, and nothing for a plain summing
+loop (1.00x).
+
+Built-ins are priced by input size, so a regular expression that backtracks badly costs no more
+steps than one that does not. This search does not find catastrophic regexes.
+
+## Real-app weight
+
+A change of 40 steps per call matters if the function runs 10,000 times per request, and not if
+it runs once at startup. `suites/apps/abax` runs the app benchmark's scenarios on a counted build
+of ogygia and Svelte: the server counted per request inside the deterministic window, and the
+pages counted per load and per interaction in Chromium under virtual time, with frames, timers and
+observers on a fixed clock. Every phase runs twice and must count the same.
+
+One run on this machine: 5 scenarios, 42 phases, every phase the same on both runs. `abax weights`
+turns that into calls and steps per unit of real work for 1,063 functions:
+
+```
+dashboard server request: 11,501,659 steps per unit
+docs page load: 118,159 steps per unit
+shop interaction: 59,612 steps per unit
+```
+
+`abax diff --weights app-weights.json` ranks the changed functions by what they cost per unit:
+the change per call times the calls per unit. Whether a change is shown is decided in one place:
+
+| Path  | When                                              | Shown when                         |
+| ----- | ------------------------------------------------- | ---------------------------------- |
+| heavy | ≥ 100 calls per unit, or ≥ 1% of the unit's steps | always                             |
+| warm  | runs in some unit                                 | impact ≥ 0.01% of the unit's steps |
+| cold  | no scenario runs it                               | ≥ 50 steps per call                |
+
+From `abax verify`: a hot function that gained 4 steps per call is shown (14 calls per request), a
+cold one that gained 5 steps is suppressed, a cold one that gained 774 steps is shown.
+
+The ogygia PR comment does not rank by weight yet; this is a CLI step today.
+
+## Coverage of the app scenarios
+
+`abax coverage` lists every function of the installed ogygia packages and whether a counted
+scenario reached it. From the run above (ogygia 0.12.3, as installed in the app benchmark):
+
+| Package           | Functions | Reached | Reached % | % of loaded modules | Loaded, not run | Not loaded |
+| ----------------- | --------: | ------: | --------: | ------------------: | --------------: | ---------: |
+| `@ogygia/content` |      1505 |       0 |    **0%** |                  0% |               0 |       1505 |
+| `@ogygia/core`    |      3434 |     619 |   **18%** |               41.8% |             862 |       1953 |
+| `ogygia`          |         2 |       0 |    **0%** |                  0% |               0 |          2 |
+| all               |      4941 |     619 | **12.5%** |               41.8% |             862 |       3460 |
+
+The modules no scenario loaded are led by insights (`page-insights.js`, 337 functions), the
+beacon, and the compiler and Vite plugin, which run at build time. No scenario uses
+`@ogygia/content` yet.
+
+The function list comes from the packages installed in the `--app` directory. A package that app
+does not install is left out of the table: here only the blog app installs `@ogygia/content`.
+
+## The measurement-source gate
+
+Every function should have something that measures it. A function is **measured** when a bench
+case ran it, or when ogygia's unit tests ran it with the input recorder on and its recorded inputs
+replay to the same output (then those inputs are a measurement source of their own).
+
+The recorder is a Vite plugin (`src/coverage/plugin.ts`) wired into the test runner's config. For each function no bench reached, it records arguments and `this` (cloned at
+entry) and the result. `abax replay` calls each function again with a copy of each sample:
+
+| Result         | Meaning                                                               |
+| -------------- | --------------------------------------------------------------------- |
+| reproduced     | every sample gave the same output: the inputs explain the output      |
+| hidden state   | some output differs: the function reads state its inputs do not carry |
+| not cloneable  | inputs or output cannot be structured-cloned                          |
+| not replayable | no handle to call it again (a nested closure, a class method)         |
+| not recorded   | async, a generator, or an arrow with destructured parameters          |
+| never ran      | nothing called it                                                     |
+
+`abax unmeasured` fails only on **new** functions with no source: functions the PR's tree has and
+the base's does not. Functions unmeasured before are listed, not failed, so the gate can be
+turned on for a codebase that is far from covered. An exemption names a function and a reason:
+
+```json
+{ "exempt": [{ "id": "src/rank.ts > total", "reason": "a one-line sum over rank" }] }
+```
+
+An exemption covers that function only. A closure inside it (`src/rank.ts > total > reduce:0`)
+is a function of its own and needs its own entry or its own source.
+
+On ogygia PR #180 (CI run 42288359583): 1,524 of 8,234 functions (18.5%) had a measurement
+source, 555 through a bench and 969 through recorded test inputs. Of the rest, 2,822 never ran,
+2,563 were not replayable, 676 not recorded, 523 not cloneable and 126 had hidden state. No new
+function was unmeasured, so the gate passed. [ci.md](ci.md#the-gate-on-ogygia) shows how ogygia
+runs it.
