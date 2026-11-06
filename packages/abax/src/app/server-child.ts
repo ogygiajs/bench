@@ -1,4 +1,5 @@
-import { createReadStream, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, readFileSync, writeFileSync } from 'node:fs';
+import { static_file } from './static.ts';
 import { createServer } from 'node:http';
 import type { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
@@ -11,6 +12,8 @@ import { run_case } from '../runner.ts';
 import { build_case_report } from '../report.ts';
 import type { BenchCase } from '../bench.ts';
 import { unstable_functions } from './stability.ts';
+import { add_loaded } from './types.ts';
+import type { LoadedModules } from './types.ts';
 import type { AppRequest, ChildMessage, CountedServerCase, ParentMessage } from './server.ts';
 
 /*
@@ -50,23 +53,6 @@ const MIME: Record<string, string> = {
 	'.woff2': 'font/woff2'
 };
 
-function static_file(pathname: string): string | null {
-	const tries =
-		pathname === '/'
-			? ['/index.html']
-			: pathname.endsWith('/')
-				? [pathname + 'index.html', pathname.slice(0, -1) + '.html']
-				: [pathname, pathname + '.html', pathname + '/index.html'];
-	for (const dir of static_dirs) {
-		for (const t of tries) {
-			const file = join(dir, t);
-			if (!file.startsWith(dir)) continue;
-			if (existsSync(file) && statSync(file).isFile()) return file;
-		}
-	}
-	return null;
-}
-
 function to_request(r: AppRequest, origin: string): Request {
 	const method = r.method ?? 'GET';
 	return new Request(new URL(r.path, origin), {
@@ -89,18 +75,20 @@ async function node_request(req: IncomingMessage, origin: string): Promise<Reque
 	});
 }
 
+/**
+ * The whole response at once: a streamed body (a chat reply paced by server timers) would reach
+ * the page in chunks cut by the real clock, and the page's work per chunk would differ run to run.
+ */
 async function send(res: ServerResponse, response: Response): Promise<void> {
 	const headers: Record<string, string | string[]> = {};
 	response.headers.forEach((v, k) => (headers[k] = v));
 	const cookies = response.headers.getSetCookie();
 	if (cookies.length) headers['set-cookie'] = cookies;
+	const body = Buffer.from(await response.arrayBuffer());
+	delete headers['transfer-encoding'];
+	headers['content-length'] = String(body.length);
 	res.writeHead(response.status, headers);
-	if (!response.body) {
-		res.end();
-		return;
-	}
-	for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) res.write(chunk);
-	res.end();
+	res.end(body);
 }
 
 async function listen(): Promise<string> {
@@ -109,7 +97,7 @@ async function listen(): Promise<string> {
 		void (async () => {
 			try {
 				const pathname = decodeURIComponent(new URL(req.url ?? '/', origin).pathname);
-				const file = req.method === 'GET' ? static_file(pathname) : null;
+				const file = req.method === 'GET' ? static_file(static_dirs, pathname) : null;
 				if (file) {
 					const body = readFileSync(file);
 					res.writeHead(200, {
@@ -177,7 +165,12 @@ async function count(cases: CountedServerCase[], origin: string, out: string): P
 			results.push({ name: c.name, error: (e as Error)?.stack ?? String(e) });
 		}
 	}
-	writeFileSync(out, JSON.stringify(results));
+	const loaded: LoadedModules = {};
+	add_loaded(
+		loaded,
+		rt.modules.map((m) => m.meta)
+	);
+	writeFileSync(out, JSON.stringify({ results, loaded }));
 }
 
 async function init(m: Extract<ParentMessage, { type: 'init' }>): Promise<void> {

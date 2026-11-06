@@ -28,15 +28,39 @@ export interface AppCaseReport extends CaseReport {
 	app: AppCaseInfo;
 }
 
+/** Every function of each loaded module, from the transform's metas: `[path, line, end_line, kind]`. */
+export type LoadedModules = Record<string, Array<[string, number, number, string]>>;
+
 export interface AppReport extends Report {
 	cases: AppCaseReport[];
 	app: {
 		/** Packages the build counted (`ogygia`, `@ogygia/*`, `svelte`). */
 		packages: string[];
-		/** The ogygia that was installed: spec and versions, as the app's install says. */
+		/** The ogygia that was installed: package -> version. */
 		ogygia: Record<string, string>;
 		scenarios: string[];
+		/** Counted modules the runs loaded (server or page) and every function in them. */
+		loaded: LoadedModules;
 	};
+}
+
+/** Add the functions of `metas` to `into` (a module loaded on both sides keeps both sets). */
+export function add_loaded(
+	into: LoadedModules,
+	metas: ReadonlyArray<{
+		id: string;
+		functions: ReadonlyArray<{ path: string; line: number; end_line: number; kind: string }>;
+	}>
+): void {
+	for (const m of metas) {
+		const list = (into[m.id] ??= []);
+		const seen = new Set(list.map((f) => f[0]));
+		for (const f of m.functions) {
+			if (seen.has(f.path)) continue;
+			seen.add(f.path);
+			list.push([f.path, f.line, f.end_line, f.kind]);
+		}
+	}
 }
 
 /** `dashboard server request`: the key real-app weights are kept under. */

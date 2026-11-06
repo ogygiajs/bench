@@ -3,6 +3,7 @@ import { deserialize_snapshot, empty_snapshot, snapshot_delta } from './snapshot
 import type { PageCounts } from './snapshot.ts';
 import type { Snapshot } from '../runtime/index.ts';
 import type { ModuleMeta } from '../meta.ts';
+import type { AppRequest } from './server.ts';
 
 /*
  * A counted browser session (spec 8): a page of the counted client build loaded in Chromium under
@@ -19,12 +20,19 @@ import type { ModuleMeta } from '../meta.ts';
  * document (a full navigation) starts a new runtime; its counts are read from zero again.
  */
 
+/**
+ * What a step does. Elements are a CSS selector, narrowed by `text` (the element's text starts
+ * with it) and `nth` (the nth match, default the first).
+ */
 export type PageAction =
-	| { click: string; text?: string }
-	| { hover: string; text?: string }
-	| { type: string; value: string; text?: string; char_ms?: number }
-	| { select: string; value: string }
-	| { scroll: string; text?: string }
+	| { click: string; text?: string; nth?: number }
+	| { hover: string; text?: string; nth?: number }
+	/** Click the field, then type one character every `char_ms` virtual ms (default 80). */
+	| { type: string; value: string; text?: string; nth?: number; char_ms?: number }
+	| { select: string; value: string; nth?: number }
+	| { scroll: string; text?: string; nth?: number }
+	/** Run `expr` in the page (a reset the scenario needs, e.g. clearing a field). */
+	| { script: string }
 	| { wait_ms: number }
 	/** Run frames until the page expression is truthy (at most `max_ms` virtual ms, else fail). */
 	| { until: string; max_ms?: number };
@@ -59,6 +67,19 @@ export interface SessionResult {
 	runtimes: ModuleMeta[][];
 	phases: Phase[];
 	errors: string[];
+	/**
+	 * Requests the page made to the app itself while it ran (fetch / XHR, not static files): the
+	 * server's share of a page view, for the server to count (`server_follow` in run.ts).
+	 */
+	requests: AppRequest[];
+}
+
+interface PwRequest {
+	url(): string;
+	method(): string;
+	resourceType(): string;
+	postData(): string | null;
+	headers(): Record<string, string>;
 }
 
 /** Virtual ms per frame. */
@@ -74,7 +95,9 @@ interface CdpSession {
 
 interface PwPage {
 	evaluate<R, A>(fn: (arg: A) => R | Promise<R>, arg: A): Promise<R>;
+	evaluate<R>(expression: string): Promise<R>;
 	on(event: 'pageerror', cb: (e: Error) => void): unknown;
+	on(event: 'request', cb: (r: PwRequest) => void): unknown;
 }
 
 interface PwContext {
@@ -163,27 +186,39 @@ class Driver {
 
 	async run(action: PageAction): Promise<void> {
 		if ('click' in action) {
-			await this.act({ kind: 'click', selector: action.click, text: action.text });
+			await this.act({ kind: 'click', selector: action.click, text: action.text, nth: action.nth });
 		} else if ('hover' in action) {
-			await this.act({ kind: 'hover', selector: action.hover, text: action.text });
+			await this.act({ kind: 'hover', selector: action.hover, text: action.text, nth: action.nth });
 		} else if ('scroll' in action) {
-			await this.act({ kind: 'scroll', selector: action.scroll, text: action.text });
+			await this.act({
+				kind: 'scroll',
+				selector: action.scroll,
+				text: action.text,
+				nth: action.nth
+			});
 		} else if ('select' in action) {
-			await this.act({ kind: 'select', selector: action.select, value: action.value });
+			await this.act({
+				kind: 'select',
+				selector: action.select,
+				value: action.value,
+				nth: action.nth
+			});
 		} else if ('type' in action) {
-			await this.act({ kind: 'click', selector: action.type, text: action.text });
+			const at = { selector: action.type, text: action.text, nth: action.nth };
+			await this.act({ kind: 'click', ...at });
 			for (const ch of action.value) {
-				await this.act({ kind: 'type', selector: action.type, text: action.text, value: ch });
+				await this.act({ kind: 'type', ...at, value: ch });
 				await this.frames(action.char_ms ?? 80);
 			}
+		} else if ('script' in action) {
+			// Playwright evaluates a string as an expression in the page.
+			await this.page.evaluate(`void (${action.script})`);
 		} else if ('wait_ms' in action) {
 			await this.frames(action.wait_ms);
 		} else {
 			const max = action.max_ms ?? 10_000;
 			for (let t = 0; ; t += FRAME_MS) {
-				const ok = await this.page
-					.evaluate((expr) => Boolean((0, eval)(expr)), action.until)
-					.catch(() => false);
+				const ok = await this.page.evaluate<boolean>(`Boolean(${action.until})`).catch(() => false);
 				if (ok) return;
 				if (t >= max) throw new Error(`abax: timed out (${max} virtual ms) on ${action.until}`);
 				await this.tick();
@@ -195,9 +230,7 @@ class Driver {
 	async read(metas_from: number): Promise<{ counts: PageCounts; origin: number } | null> {
 		return this.page
 			.evaluate((from) => {
-				const api = (
-					globalThis as unknown as { __abax?: { read(n: number): PageCounts } }
-				).__abax;
+				const api = (globalThis as unknown as { __abax?: { read(n: number): PageCounts } }).__abax;
 				return api ? { counts: api.read(from), origin: performance.timeOrigin } : null;
 			}, metas_from)
 			.catch(() => null);
@@ -221,6 +254,21 @@ export async function run_session(
 		await context.addInitScript(page_clock, PAGE_SEED);
 		const page = await context.newPage();
 		page.on('pageerror', (e) => errors.push(e.message));
+		const requests: AppRequest[] = [];
+		page.on('request', (r) => {
+			const u = new URL(r.url());
+			if (u.origin !== new URL(base).origin) return;
+			if (r.resourceType() !== 'fetch' && r.resourceType() !== 'xhr') return;
+			const h = r.headers();
+			const headers: Record<string, string> = {};
+			for (const k of ['accept', 'content-type']) if (h[k]) headers[k] = h[k];
+			requests.push({
+				method: r.method(),
+				path: u.pathname + u.search,
+				body: r.postData() ?? undefined,
+				headers
+			});
+		});
 		const cdp = await context.newCDPSession(page);
 		await cdp.send('Emulation.setVirtualTimePolicy', {
 			policy: 'pause',
@@ -265,7 +313,7 @@ export async function run_session(
 			}
 			await take(step.name, 'interaction');
 		}
-		return { runtimes, phases, errors };
+		return { runtimes, phases, errors, requests };
 	} finally {
 		await context.close();
 	}

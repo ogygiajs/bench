@@ -208,12 +208,17 @@ export function page_clock(seed: number): void {
 	};
 
 	// ---- interactions
-	const find = (selector: string, text?: string): Element => {
+	/** The `nth` (default first) element matching `selector` whose text starts with `text`. */
+	const find = (selector: string, text?: string, nth = 0): Element => {
 		const all = document.querySelectorAll(selector);
+		let n = 0;
 		for (const el of all) {
-			if (text === undefined || (el.textContent ?? '').trim().startsWith(text)) return el;
+			if (text !== undefined && !(el.textContent ?? '').trim().startsWith(text)) continue;
+			if (n++ === nth) return el;
 		}
-		throw new Error(`abax: no element ${selector}${text === undefined ? '' : ` "${text}"`}`);
+		throw new Error(
+			`abax: no element ${selector}${text === undefined ? '' : ` "${text}"`} #${nth}`
+		);
 	};
 	const pointer = (el: Element, type: string): void => {
 		const r = el.getBoundingClientRect();
@@ -244,9 +249,10 @@ export function page_clock(seed: number): void {
 		kind: 'click' | 'type' | 'select' | 'scroll' | 'hover';
 		selector: string;
 		text?: string;
+		nth?: number;
 		value?: string;
 	}): void => {
-		const el = find(a.selector, a.text);
+		const el = find(a.selector, a.text, a.nth);
 		if (a.kind === 'scroll') {
 			el.scrollIntoView({ block: 'center' });
 			return;
@@ -278,7 +284,9 @@ export function page_clock(seed: number): void {
 		for (const ch of a.value ?? '') {
 			key(el, 'keydown', ch);
 			input.value += ch;
-			el.dispatchEvent(new InputEvent('input', { bubbles: true, data: ch, inputType: 'insertText' }));
+			el.dispatchEvent(
+				new InputEvent('input', { bubbles: true, data: ch, inputType: 'insertText' })
+			);
 			key(el, 'keyup', ch);
 		}
 	};

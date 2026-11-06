@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CaseReport } from '../report.ts';
 import type { UnstableFunction } from './stability.ts';
+import type { LoadedModules } from './types.ts';
 
 /*
  * The parent side of the counted server (server-child.ts): start it on a counted build, let the
@@ -120,11 +121,18 @@ export class CountedServer {
 	}
 
 	/** Count the cases (each: warm-up, then two measured runs) against `origin`. */
-	async count(cases: CountedServerCase[], origin: string, tmp: string): Promise<ServerCaseResult[]> {
+	async count(
+		cases: CountedServerCase[],
+		origin: string,
+		tmp: string
+	): Promise<{ results: ServerCaseResult[]; loaded: LoadedModules }> {
 		const out = join(tmp, `server-count-${process.pid}-${Date.now()}.json`);
 		await this.#ask({ type: 'count', cases, origin, out });
 		try {
-			return JSON.parse(readFileSync(out, 'utf8')) as ServerCaseResult[];
+			return JSON.parse(readFileSync(out, 'utf8')) as {
+				results: ServerCaseResult[];
+				loaded: LoadedModules;
+			};
 		} finally {
 			rmSync(out, { force: true });
 		}

@@ -39,6 +39,8 @@ export interface CountedBuildOptions extends Omit<CountedPluginOptions, 'root'> 
 	/** Where the copy is made and built (emptied first). */
 	work_dir: string;
 	log?: (line: string) => void;
+	/** Environment of the build (a prerendered page signs with the secret it is built with). */
+	env?: Record<string, string>;
 }
 
 export interface CountedBuild {
@@ -107,6 +109,7 @@ export async function counted_build(o: CountedBuildOptions): Promise<CountedBuil
 	o.log?.(`  counted build of ${app}`);
 	await run(vite, ['build', '--config', COUNTED_CONFIG, '--logLevel', 'warn'], dir, {
 		...process.env,
+		...o.env,
 		NODE_ENV: 'production'
 	});
 	const ms = Math.round(performance.now() - t0);
@@ -124,7 +127,10 @@ export async function counted_build(o: CountedBuildOptions): Promise<CountedBuil
 }
 
 /** The installed ogygia packages of an app: name -> version (from their package.json files). */
-export function installed_versions(app_dir: string, packages: readonly string[]): Record<string, string> {
+export function installed_versions(
+	app_dir: string,
+	packages: readonly string[]
+): Record<string, string> {
 	const out: Record<string, string> = {};
 	for (const p of packages) {
 		if (p.endsWith('/*')) {
