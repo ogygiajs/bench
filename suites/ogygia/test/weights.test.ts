@@ -106,7 +106,7 @@ test('no weights, unreadable ones or another environment: one line, nothing rank
 	const missing = rank_by_weights('/nonexistent/app-weights.json', diff, head);
 	assert.equal(missing.status, 'missing');
 	assert.deepEqual(weight_lines(missing), [
-		'**Real-app weight**: not ranked: no stored weights from a main run yet.',
+		'**Real-app weight**: not ranked, no stored weights from a main run yet.',
 		''
 	]);
 	assert.equal(rank_by_weights(file_of('{oops'), diff, head).status, 'unreadable');
@@ -116,7 +116,7 @@ test('no weights, unreadable ones or another environment: one line, nothing rank
 	assert.equal(other.ranked.length, 0);
 	assert.match(
 		weight_lines(other)[0],
-		/not ranked: they were counted in another environment \(Node v25\.0\.0 vs v\d.*\) \(main `bbbbbbb`\)\./
+		/not ranked, they were counted in another environment \(Node v25\.0\.0 vs v\d.*\) \(main `bbbbbbb`\)\./
 	);
 	const unstamped = rank_by_weights(file_of(stored({ env: undefined })), diff, head);
 	assert.equal(unstamped.status, 'mismatch');

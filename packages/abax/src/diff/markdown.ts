@@ -34,8 +34,13 @@ export function shown(f: Finding): boolean {
 	return f.delta.steps !== 0 || !f.elided;
 }
 
-function finding_row(f: Finding): string {
-	return `| ${f.kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${bytes_cell(f.delta.bytes, f.elided === true)} |`;
+/** A "Where" row after its case cell: the same text in two cases is one change, said once. */
+function finding_cells(f: Finding): string {
+	return `${f.kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${bytes_cell(f.delta.bytes, f.elided === true)} |`;
+}
+
+function cases_cell(cases: string[]): string {
+	return cases.length === 1 ? cell(cases[0]) : `${cell(cases[0])} and ${cases.length - 1} more`;
 }
 
 function change_row(c: FunctionChange, ns?: number): string {
@@ -86,13 +91,21 @@ export function render_markdown(d: DiffResult): string {
 			'',
 			'<details><summary>Where</summary>',
 			'',
-			'| | Line | Δ steps | Δ allocs | Δ bytes |',
-			'| --- | --- | ---: | ---: | ---: |'
+			'| Case | | Line | Δ steps | Δ allocs | Δ bytes |',
+			'| --- | --- | --- | ---: | ---: | ---: |'
 		);
 		// A function changed the same way in many cases gives one set of rows, not one per case.
-		const rows = new Set<string>();
-		for (const c of sorted) for (const f of c.findings) if (shown(f)) rows.add(finding_row(f));
-		const where = [...rows];
+		const rows = new Map<string, string[]>();
+		for (const c of sorted) {
+			for (const f of c.findings) {
+				if (!shown(f)) continue;
+				const key = finding_cells(f);
+				const cases = rows.get(key);
+				if (!cases) rows.set(key, [c.case]);
+				else if (!cases.includes(c.case)) cases.push(c.case);
+			}
+		}
+		const where = [...rows].map(([cells, cases]) => `| ${cases_cell(cases)} | ${cells}`);
 		lines.push(...where.slice(0, MAX_ROWS));
 		if (where.length > MAX_ROWS)
 			lines.push('', `${where.length - MAX_ROWS} more lines are in the JSON result.`);
