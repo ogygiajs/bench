@@ -1,0 +1,482 @@
+import { execFile } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
+import { LEAST_UPPER_BOUND, TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
+import { instrument } from '../transform/instrument.ts';
+import { load_prices } from '../prices.ts';
+import type { FunctionMeta } from '../meta.ts';
+import { fn_key, parse_v8_log } from './log.ts';
+import type { LogFacts, LogFunction } from './log.ts';
+import type { ChildConfig, ChildModule, ChildResult } from './child.ts';
+import { ENGINE_SCHEMA, IC_RANK, TIER_RANK, is_optimized } from './types.ts';
+import type { EngineCase, EngineDeopt, EngineReport, EngineSite, IcState, Tier } from './types.ts';
+
+const run_file = promisify(execFile);
+const CHILD = fileURLToPath(new URL('./child.ts', import.meta.url));
+
+/**
+ * Flags of the health child. Single-threaded, no concurrent recompilation and no bytecode flushing:
+ * V8 tiers code up at the same points on every run, so two runs decode to the same result.
+ */
+export const HEALTH_FLAGS = [
+	'--no-warnings',
+	'--allow-natives-syntax',
+	'--no-concurrent-recompilation',
+	'--single-threaded',
+	'--predictable',
+	'--no-flush-bytecode',
+	'--random-seed=1',
+	'--hash-seed=1',
+	'--log-code',
+	'--log-ic',
+	'--log-deopt',
+	'--log-function-events',
+	'--no-logfile-per-isolate'
+];
+
+export interface HealthOptions {
+	files: string[];
+	root?: string;
+	/** Only cases whose name contains this. */
+	filter?: string;
+	/** Runs before the fixed point (default 20). */
+	warmup?: number;
+	/** Runs after the forced optimization (default 3). */
+	runs?: number;
+	/** Run every case twice and compare (default true). */
+	check?: boolean;
+	deps?: boolean | string[];
+	svelte?: 'server' | 'client';
+	log?: (line: string) => void;
+}
+
+interface Child {
+	result: ChildResult;
+	log: string;
+}
+
+async function spawn_child(
+	dir: string,
+	config: Omit<ChildConfig, 'out'>,
+	tag: string
+): Promise<Child> {
+	const out = join(dir, `${tag}.json`);
+	const logfile = join(dir, `${tag}.log`);
+	const config_file = join(dir, `${tag}.config.json`);
+	writeFileSync(config_file, JSON.stringify({ ...config, out }));
+	try {
+		await run_file(
+			process.execPath,
+			[...HEALTH_FLAGS, `--logfile=${logfile}`, CHILD, config_file],
+			{
+				cwd: config.root,
+				maxBuffer: 1 << 26
+			}
+		);
+	} catch (e) {
+		const err = e as { stderr?: string; message: string };
+		throw new Error(`abax health: the child failed: ${(err.stderr || err.message).trim()}`);
+	}
+	const result = JSON.parse(readFileSync(out, 'utf8')) as ChildResult;
+	const log = config.case ? readFileSync(logfile, 'latin1') : '';
+	return { result, log };
+}
+
+// ------------------------------------------------------------------ decoding
+
+const IC_KIND: Record<string, string> = {
+	LoadIC: 'property read',
+	StoreIC: 'property write',
+	KeyedLoadIC: 'keyed read',
+	KeyedStoreIC: 'keyed write',
+	KeyedHasIC: 'keyed in',
+	LoadGlobalIC: 'global read',
+	StoreGlobalIC: 'global write',
+	StoreInArrayLiteralIC: 'array literal write',
+	DefineNamedOwnIC: 'property define',
+	DefineKeyedOwnIC: 'keyed define'
+};
+
+const KEYED = new Set([
+	'KeyedLoadIC',
+	'KeyedStoreIC',
+	'KeyedHasIC',
+	'StoreInArrayLiteralIC',
+	'DefineKeyedOwnIC'
+]);
+
+const STATES: Record<string, IcState> = {
+	X: 'no feedback',
+	'0': 'uninitialized',
+	'1': 'monomorphic',
+	'^': 'monomorphic',
+	P: 'polymorphic',
+	N: 'megamorphic',
+	G: 'generic'
+};
+
+/** `symbol("Symbol.iterator" hash 19d909b0)` -> `[Symbol.iterator]`; names stay as they are. */
+function key_label(key: string): string {
+	if (!key.startsWith('symbol(')) return key;
+	const open = key.indexOf('"');
+	const close = open === -1 ? -1 : key.indexOf('"', open + 1);
+	return close === -1 ? '[symbol]' : `[${key.slice(open + 1, close)}]`;
+}
+
+interface FnTable {
+	metas: FunctionMeta[];
+	/** Generated start offset of each meta function. */
+	starts: number[];
+	/** Meta indexes sorted by start. */
+	order: number[];
+	lines: number[];
+	map: TraceMap | null;
+}
+
+function line_starts(code: string): number[] {
+	const starts = [0];
+	for (let i = 0; i < code.length; i++) if (code.charCodeAt(i) === 10) starts.push(i + 1);
+	return starts;
+}
+
+function line_of(starts: number[], offset: number): number {
+	let lo = 0;
+	let hi = starts.length - 1;
+	while (lo < hi) {
+		const mid = (lo + hi + 1) >> 1;
+		if (starts[mid] <= offset) lo = mid;
+		else hi = mid - 1;
+	}
+	return lo + 1;
+}
+
+function fn_table(m: ChildModule): FnTable {
+	const p = load_prices();
+	const r = instrument(m.code, {
+		id: m.id,
+		filename: m.path.endsWith('.svelte') ? m.path + '.js' : m.path,
+		lang: 'js',
+		prices: p.prices,
+		prices_hash: p.hash,
+		module_specifier: 'abax:health',
+		expose: false
+	});
+	const lines = line_starts(m.code);
+	const metas = r.meta.functions;
+	const starts = metas.map((f) => (lines[f.line - 1] ?? 0) + f.col);
+	const order = metas.map((_, i) => i).sort((a, b) => starts[a] - starts[b] || a - b);
+	return {
+		metas,
+		starts,
+		order,
+		lines,
+		map: m.map ? new TraceMap(m.map as SourceMapInput) : null
+	};
+}
+
+/** Innermost function containing a generated offset (latest start whose lines still cover it). */
+function meta_at(t: FnTable, offset: number): number {
+	const line = line_of(t.lines, offset);
+	let best = -1;
+	for (const i of t.order) {
+		if (t.starts[i] > offset) break;
+		if (t.metas[i].end_line >= line || t.metas[i].kind === 'top') best = i;
+	}
+	return best;
+}
+
+/** Generated 1-based line/col -> original 1-based line/col. */
+function original(t: FnTable, line: number, col: number): [number, number] {
+	if (!t.map) return [line, col];
+	const column = Math.max(0, col - 1);
+	let o = originalPositionFor(t.map, { line, column });
+	if (o.line == null) o = originalPositionFor(t.map, { line, column, bias: LEAST_UPPER_BOUND });
+	// compiler-made code (Svelte's helpers) maps nowhere: 0, and the caller picks a fallback
+	return o.line == null ? [0, 0] : [o.line, (o.column ?? 0) + 1];
+}
+
+interface FnAcc {
+	meta: FunctionMeta;
+	module: number;
+	tier: Tier;
+	forced: boolean;
+	on_path: boolean;
+	deopts: Map<string, EngineDeopt>;
+}
+
+/** Tier from the log alone: the last non-OSR code, unless a later deopt took it away. */
+function logged_tier(f: LogFunction, facts: LogFacts): Tier {
+	let last: LogFunction['codes'][number] | null = null;
+	for (const c of f.codes) if (!c.osr) last = c;
+	if (!last) return 'not compiled';
+	if (last.tier === 'maglev' || last.tier === 'turbofan') {
+		const address = last.address;
+		if (facts.deopts.some((d) => d.address === address)) return 'deoptimized';
+	}
+	return last.tier;
+}
+
+function had_optimized(f: LogFunction): boolean {
+	return f.codes.some((c) => c.tier === 'maglev' || c.tier === 'turbofan');
+}
+
+/** Decode one child run into the case report. */
+export function analyze(child: Child, name: string, file: string): EngineCase {
+	const { result } = child;
+	const kase: EngineCase = {
+		name,
+		file,
+		stable: true,
+		error: result.error,
+		functions: [],
+		sites: []
+	};
+	const modules = result.modules;
+	const facts = parse_v8_log(
+		child.log,
+		modules.map((m) => ({ url: m.url, path: m.path, code: m.code }))
+	);
+	const tables = modules.map(fn_table);
+	const reach = new Map<string, Tier>();
+	for (const r of result.reachable) {
+		const mi = facts.scripts.get(r.script_id);
+		if (mi !== undefined) reach.set(fn_key(mi, r.position), r.tier);
+	}
+
+	const accs = new Map<string, FnAcc>();
+	const acc_of = (module: number, offset: number): FnAcc | null => {
+		const t = tables[module];
+		const mi = offset === 0 ? t.metas.findIndex((f) => f.kind === 'top') : meta_at(t, offset);
+		if (mi < 0) return null;
+		const key = `${module}:${mi}`;
+		let a = accs.get(key);
+		if (!a) {
+			a = {
+				meta: t.metas[mi],
+				module,
+				tier: 'not compiled',
+				forced: false,
+				on_path: false,
+				deopts: new Map()
+			};
+			accs.set(key, a);
+		}
+		return a;
+	};
+
+	// V8 function -> abax function, with its tier
+	const owner = new Map<string, FnAcc>();
+	for (const [key, f] of facts.functions) {
+		const a = acc_of(f.module, f.offset);
+		if (!a) continue;
+		owner.set(key, a);
+		const forced_tier = reach.get(key);
+		let tier: Tier;
+		if (forced_tier !== undefined) {
+			// forced to optimize: not optimized now, after having been, means it was thrown out
+			a.forced = true;
+			tier = !is_optimized(forced_tier) && had_optimized(f) ? 'deoptimized' : forced_tier;
+		} else {
+			tier = logged_tier(f, facts);
+		}
+		if (a.tier === 'not compiled' || tier === 'deoptimized' || TIER_RANK[tier] > TIER_RANK[a.tier])
+			a.tier = tier;
+		if (f.in_window || is_optimized(tier)) a.on_path = true;
+	}
+
+	for (const d of facts.deopts) {
+		let a: FnAcc | null = null;
+		let line = 0;
+		if (d.at) {
+			const t = tables[d.at.module];
+			const off = (t.lines[d.at.line - 1] ?? 0) + d.at.col - 1;
+			a = acc_of(d.at.module, off);
+			line = original(t, d.at.line, d.at.col)[0];
+		}
+		if (!a && d.module >= 0) a = owner.get(fn_key(d.module, d.fn)) ?? null;
+		if (!a) continue;
+		const k = `${d.reason}\n${d.kind}\n${line}`;
+		const e = a.deopts.get(k);
+		if (e) e.count++;
+		else a.deopts.set(k, { reason: d.reason, kind: d.kind, line, count: 1 });
+	}
+
+	const fn_id = (a: FnAcc): string => `${modules[a.module].id} > ${a.meta.path}`;
+	const fn_line = (a: FnAcc): number => {
+		const t = tables[a.module];
+		const at = original(t, a.meta.line, a.meta.col + 1)[0];
+		if (at !== 0) return at;
+		// a compiler-made function start: the first line of its body that maps to the source
+		for (let l = a.meta.line + 1; l <= a.meta.end_line; l++) {
+			const o = original(t, l, 1)[0];
+			if (o !== 0) return o;
+		}
+		return 0;
+	};
+
+	// sites: worst state per inline cache of an on-path function
+	interface SiteAcc {
+		fn: FnAcc;
+		type: string;
+		line: number;
+		col: number;
+		key: string;
+		state: IcState;
+		maps: Set<string>;
+	}
+	const sites = new Map<string, SiteAcc>();
+	for (const ic of facts.ics) {
+		const a = owner.get(fn_key(ic.module, ic.fn));
+		if (!a || !a.on_path) continue;
+		const state = STATES[ic.state];
+		if (state === undefined) continue;
+		const k = `${ic.module}:${ic.fn}:${ic.type}:${ic.line}:${ic.col}`;
+		let s = sites.get(k);
+		if (!s) {
+			let [line, col] = original(tables[ic.module], ic.line, ic.col);
+			if (line === 0) [line, col] = [fn_line(a), 0];
+			s = {
+				fn: a,
+				type: ic.type,
+				line,
+				col,
+				key: KEYED.has(ic.type) ? '[]' : key_label(ic.key),
+				state,
+				maps: new Set()
+			};
+			sites.set(k, s);
+		}
+		if (IC_RANK[state] > IC_RANK[s.state] || (state === 'megamorphic' && s.state === 'generic'))
+			s.state = state;
+		if (ic.map && ic.map !== '0x0' && ic.map !== '0') s.maps.add(ic.map);
+	}
+
+	const deopted = new Set(facts.deopts.map((d) => d.address));
+	const inlined = new Set<FnAcc>();
+	for (const r of facts.inlined) {
+		if (deopted.has(r.address)) continue;
+		for (const k of r.fns) {
+			const a = owner.get(k);
+			if (a) inlined.add(a);
+		}
+	}
+
+	for (const a of accs.values()) {
+		if (!a.on_path || a.meta.kind === 'top') continue;
+		kase.functions.push({
+			id: fn_id(a),
+			module: modules[a.module].id,
+			path: a.meta.path,
+			line: fn_line(a),
+			tier: a.tier,
+			inlined: inlined.has(a),
+			optimized: is_optimized(a.tier) || inlined.has(a),
+			forced: a.forced,
+			deopts: [...a.deopts.values()].sort(
+				(x, y) => x.line - y.line || (x.reason < y.reason ? -1 : x.reason > y.reason ? 1 : 0)
+			)
+		});
+	}
+	kase.functions.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+
+	const by_fn = new Map<FnAcc, SiteAcc[]>();
+	for (const s of sites.values()) {
+		if (IC_RANK[s.state] === 0) continue;
+		const list = by_fn.get(s.fn) ?? [];
+		list.push(s);
+		by_fn.set(s.fn, list);
+	}
+	for (const [a, list] of by_fn) {
+		list.sort((x, y) => x.line - y.line || x.col - y.col);
+		const seen = new Map<string, number>();
+		for (const s of list) {
+			const kind = IC_KIND[s.type] ?? s.type;
+			const label = `${kind} ${s.key}`;
+			const n = seen.get(label) ?? 0;
+			seen.set(label, n + 1);
+			const site: EngineSite = {
+				id: `${fn_id(a)} > ${label} #${n}`,
+				function: fn_id(a),
+				module: modules[a.module].id,
+				line: s.line,
+				col: s.col,
+				kind,
+				key: s.key,
+				state: s.state,
+				maps: s.maps.size
+			};
+			kase.sites.push(site);
+		}
+	}
+	kase.sites.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0));
+	return kase;
+}
+
+/** Engine health of every case: one child per case (twice, to check determinism). */
+export async function engine_health(opts: HealthOptions): Promise<EngineReport> {
+	const root = resolve(opts.root ?? process.cwd());
+	const log = opts.log ?? (() => {});
+	const warmup = opts.warmup ?? 20;
+	const runs = opts.runs ?? 3;
+	const dir = mkdtempSync(join(tmpdir(), 'abax-health-'));
+	const base: Omit<ChildConfig, 'out'> = {
+		root,
+		files: opts.files.map((f) => resolve(f)),
+		case: null,
+		warmup,
+		runs,
+		deps: opts.deps ?? false,
+		svelte: opts.svelte ?? 'server'
+	};
+	const report: EngineReport = {
+		schema: ENGINE_SCHEMA,
+		node: process.version,
+		v8: process.versions.v8,
+		flags: HEALTH_FLAGS.filter((f) => f !== '--no-warnings'),
+		warmup,
+		runs,
+		cases: []
+	};
+	try {
+		const listed = await spawn_child(dir, base, 'list');
+		const seen = new Map<string, number>();
+		let tag = 0;
+		for (const c of listed.result.cases) {
+			const index = seen.get(c.name) ?? 0;
+			seen.set(c.name, index + 1);
+			if (opts.filter && !c.name.includes(opts.filter)) continue;
+			const config = { ...base, case: { name: c.name, index } };
+			let kase: EngineCase;
+			try {
+				const a = analyze(await spawn_child(dir, config, `case${tag++}`), c.name, c.file);
+				kase = a;
+				if (opts.check ?? true) {
+					const b = analyze(await spawn_child(dir, config, `case${tag++}`), c.name, c.file);
+					kase.stable = JSON.stringify(a) === JSON.stringify(b);
+				}
+			} catch (e) {
+				kase = {
+					name: c.name,
+					file: c.file,
+					stable: false,
+					error: e instanceof Error ? e.message : String(e),
+					functions: [],
+					sites: []
+				};
+			}
+			report.cases.push(kase);
+			const optimized = kase.functions.filter((f) => f.optimized).length;
+			const bad = kase.sites.filter((s) => IC_RANK[s.state] >= 2).length;
+			log(
+				`${kase.error ? 'FAILED  ' : kase.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${optimized}/${kase.functions.length} optimized, ${bad} poly/megamorphic site(s)${kase.error ? ': ' + kase.error : ''}`
+			);
+		}
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+	return report;
+}

@@ -1,0 +1,14 @@
+import { bench } from 'ABAX_BENCH';
+import { rank, sum_to } from './lib.ts';
+
+bench('rank', ({ rows }) => rank(rows), {
+	setup: () => ({
+		rows: Array.from({ length: 20 }, (_, i) => ({ id: i, tags: ['a' + i, 'bb', 'c' + i] }))
+	})
+});
+
+// a size given as a number: the generic scaler leaves numbers alone, the case scales itself
+bench('sum to n', ({ n }) => sum_to(n), {
+	setup: () => ({ n: 30 }),
+	scale: (ctx, k) => ({ n: ctx.n * k })
+});

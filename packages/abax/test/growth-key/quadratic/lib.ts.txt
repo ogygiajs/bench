@@ -1,0 +1,32 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (let i = 0; i < rows.length; i++) {
+		let before = 0;
+		for (let j = 0; j < i; j++) {
+			if (rows[j].id < rows[i].id) before++;
+		}
+		out.push(score(rows[i]) + before * 0);
+	}
+	return out;
+}
+
+export function sum_to(n: number): number {
+	let s = 0;
+	for (let i = 0; i < n; i++) {
+		s += i;
+	}
+	return s;
+}

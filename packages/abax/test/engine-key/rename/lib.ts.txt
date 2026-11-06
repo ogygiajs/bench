@@ -1,0 +1,45 @@
+export interface Item {
+	id: number;
+	price: number;
+	qty: number;
+}
+
+function make_items(n: number, batch: number): Item[] {
+	const out: Item[] = [];
+	for (let i = 0; i < n; i++) {
+		out.push({ id: i, price: i * 3, qty: (i % 4) + 1 });
+	}
+	return out;
+}
+
+function sum_items(list: Item[]): number {
+	let acc = 0;
+	for (let i = 0; i < list.length; i++) {
+		acc += list[i].price * list[i].qty;
+	}
+	return acc;
+}
+
+function make_rows(n: number): Array<{ label: string }> {
+	const out: Array<{ label: string }> = [];
+	for (let i = 0; i < n; i++) {
+		out.push({ label: 'row' + i });
+	}
+	return out;
+}
+
+function label_len(rows: Array<{ label: string }>): number {
+	let n = 0;
+	for (const r of rows) {
+		n += r.label.length;
+	}
+	return n;
+}
+
+export function run(n: number): number {
+	let s = 0;
+	for (let batch = 0; batch < 1000; batch++) {
+		s += sum_items(make_items(n, batch));
+	}
+	return s + label_len(make_rows(n));
+}

@@ -1,0 +1,31 @@
+export function order(xs: number[]): number[] {
+	const a = xs.slice();
+	for (let i = 1; i < a.length; i++) {
+		const v = a[i];
+		let j = i - 1;
+		while (j >= 0 && a[j] > v) {
+			a[j + 1] = a[j];
+			j--;
+		}
+		a[j + 1] = v;
+	}
+	return a;
+}
+
+export function count(text: string, pat: string): number {
+	let n = 0;
+	for (let i = 0; i + pat.length <= text.length; i++) {
+		let j = 0;
+		while (j < pat.length && text[i + j] === pat[j]) j++;
+		if (j === pat.length) n++;
+	}
+	return n;
+}
+
+export function total(xs: number[]): number {
+	let s = 0;
+	for (const x of xs) {
+		s += x;
+	}
+	return s;
+}
