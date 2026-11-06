@@ -20,8 +20,13 @@ export interface PageCounts {
 	incl: number[];
 	bsite_steps: number[];
 	bsite_calls: number[];
+	/** Absent in counts taken before built-in results were sized. */
+	bsite_bytes?: number[];
+	bsite_allocs?: number[];
 	unsited: Table;
 	unsited_calls: Table;
+	unsited_bytes?: Table;
+	unsited_allocs?: Table;
 	bunits: Table;
 	uunits: Table;
 	edges: Table;
@@ -41,8 +46,12 @@ export function serialize_snapshot(rt: Runtime, snap: Snapshot, metas_from = 0):
 		incl: to_array(snap.incl),
 		bsite_steps: to_array(snap.bsite_steps),
 		bsite_calls: to_array(snap.bsite_calls),
+		bsite_bytes: to_array(snap.bsite_bytes),
+		bsite_allocs: to_array(snap.bsite_allocs),
 		unsited: snap.unsited,
 		unsited_calls: snap.unsited_calls,
+		unsited_bytes: snap.unsited_bytes,
+		unsited_allocs: snap.unsited_allocs,
 		bunits: snap.bunits,
 		uunits: snap.uunits,
 		edges: snap.edges,
@@ -58,8 +67,12 @@ export function deserialize_snapshot(p: PageCounts): Snapshot {
 		incl: f64(p.incl),
 		bsite_steps: f64(p.bsite_steps),
 		bsite_calls: f64(p.bsite_calls),
+		bsite_bytes: f64(p.bsite_bytes ?? p.bsite_steps.map(() => 0)),
+		bsite_allocs: f64(p.bsite_allocs ?? p.bsite_steps.map(() => 0)),
 		unsited: { ...p.unsited },
 		unsited_calls: { ...p.unsited_calls },
+		unsited_bytes: { ...p.unsited_bytes },
+		unsited_allocs: { ...p.unsited_allocs },
 		bunits: { ...p.bunits },
 		uunits: { ...p.uunits },
 		edges: { ...p.edges },
@@ -103,8 +116,12 @@ export function snapshot_delta(after: Snapshot, before: Snapshot): Snapshot {
 		incl: minus(after.incl, before.incl),
 		bsite_steps: minus(after.bsite_steps, before.bsite_steps),
 		bsite_calls: minus(after.bsite_calls, before.bsite_calls),
+		bsite_bytes: minus(after.bsite_bytes, before.bsite_bytes),
+		bsite_allocs: minus(after.bsite_allocs, before.bsite_allocs),
 		unsited: minus_table(after.unsited, before.unsited),
 		unsited_calls: minus_table(after.unsited_calls, before.unsited_calls),
+		unsited_bytes: minus_table(after.unsited_bytes, before.unsited_bytes),
+		unsited_allocs: minus_table(after.unsited_allocs, before.unsited_allocs),
 		bunits: minus_table(after.bunits, before.bunits),
 		uunits: minus_table(after.uunits, before.uunits),
 		edges: minus_table(after.edges, before.edges),
@@ -121,8 +138,12 @@ export function empty_snapshot(): Snapshot {
 		incl: z,
 		bsite_steps: z,
 		bsite_calls: z,
+		bsite_bytes: z,
+		bsite_allocs: z,
 		unsited: table(),
 		unsited_calls: table(),
+		unsited_bytes: table(),
+		unsited_allocs: table(),
 		bunits: table(),
 		uunits: table(),
 		edges: table(),

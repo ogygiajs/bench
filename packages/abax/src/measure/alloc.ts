@@ -13,9 +13,14 @@ import { Attributor } from './attribute.ts';
  * allocated there. Setup and teardown run between batches, outside sampling.
  *
  * Attribution: a profile node is a call frame (script URL, function position). Each sampled byte is
- * charged to the nearest frame on its stack that belongs to a source module under the root (so
- * bytes allocated inside a built-in such as Array.prototype.map are charged to the function that
- * called it). The child runs without inlining (spawn.ts), so a frame's bytes are its own.
+ * charged to the nearest frame on its stack that belongs to a source module under the root, through
+ * built-ins (bytes allocated inside Array.prototype.map are the function's that called it) but not
+ * through a dependency (its bytes are its own, as in the counted build): the same scope the
+ * estimate covers, whose built-in calls count what their results allocate. Both sides are per
+ * call. The child runs without inlining (spawn.ts), so a frame's bytes are its own.
+ *
+ * The interval grows with what a call allocates (MAX_SAMPLES): the profile of a batch comes back
+ * as one string, which a large case would push past the longest string V8 can make.
  *
  * The heap profile is per function, not per line: a function whose estimate is far above its real
  * bytes is a function where the engine elided (escape analysis) or folded allocations; the lines
@@ -44,6 +49,8 @@ export interface FunctionBytes {
 
 export interface BytesResult {
 	runs: number;
+	/** Average bytes between samples the batches used (see MAX_SAMPLES). */
+	interval?: number;
 	/** Real bytes per call charged to source functions under the root. */
 	bytes: number;
 	/** Bytes per call allocated with no source function on the stack (harness, runtime). */
@@ -90,15 +97,21 @@ export async function real_bytes(
 	const session = new Session();
 	session.connect();
 	const totals = new Map<string, { node: CallFrame; bytes: number }>();
+	let interval = o.interval ?? 32;
 	try {
 		await session.post('HeapProfiler.enable');
-		for (let done = 0; done < runs; done += batch) {
-			const n = Math.min(batch, runs - done);
+		/** One sampled batch of `n` calls; the profile goes to `into` (or nowhere). */
+		const sampled = async (
+			n: number,
+			every: number,
+			into: typeof totals | null
+		): Promise<number> => {
 			let sampling = false;
+			let sum = 0;
 			await run_batch(c, n, async () => {
 				if (!sampling) {
 					await session.post('HeapProfiler.startSampling', {
-						samplingInterval: o.interval ?? 32,
+						samplingInterval: every,
 						includeObjectsCollectedByMajorGC: true,
 						includeObjectsCollectedByMinorGC: true
 					});
@@ -109,8 +122,20 @@ export async function real_bytes(
 					profile: { head: ProfileNode };
 				};
 				sampling = false;
-				collect(profile.head, null, totals, (url) => attributor.wants(url));
+				sum = total_of(profile.head);
+				if (into) collect(profile.head, null, into, (url) => attributor.wants(url));
 			});
+			return sum;
+		};
+		// The profile comes back as one string, a record per sample: a case that allocates a lot
+		// would make one longer than V8 can build. A coarse first look at what a call allocates sets
+		// the interval so a batch keeps under MAX_SAMPLES samples (the estimate stays unbiased: V8
+		// scales each sample by its probability).
+		const probe_calls = Math.min(batch, 10);
+		const per_call = (await sampled(probe_calls, PROBE_INTERVAL, null)) / probe_calls;
+		while ((per_call * batch) / interval > MAX_SAMPLES) interval *= 2;
+		for (let done = 0; done < runs; done += batch) {
+			await sampled(Math.min(batch, runs - done), interval, totals);
 		}
 		await session.post('HeapProfiler.disable');
 	} finally {
@@ -138,15 +163,38 @@ export async function real_bytes(
 	const functions = [...attributor_result.values()]
 		.map((f) => ({ ...f, bytes: round(f.bytes / runs) }))
 		.sort((a, b) => b.bytes - a.bytes);
-	return { runs, bytes: round(bytes / runs), other: round(other / runs), functions };
+	return {
+		runs,
+		interval,
+		bytes: round(bytes / runs),
+		other: round(other / runs),
+		functions
+	};
 }
 
 const OTHER = '<other>';
+/** Samples a batch may hold (each is a record in the profile string). */
+export const MAX_SAMPLES = 200_000;
+/** The interval of the first, coarse look at what a call allocates. */
+const PROBE_INTERVAL = 64 * 1024;
 
 function round(n: number): number {
 	return Math.round(n * 100) / 100;
 }
 
+function total_of(node: ProfileNode): number {
+	let sum = node.selfSize;
+	for (const ch of node.children) sum += total_of(ch);
+	return sum;
+}
+
+/**
+ * Charge each node's bytes to the function that owns them, the way the estimate counts them: the
+ * nearest source function under the root for code that has no script of its own (a built-in,
+ * Node's own `node:` modules), and nothing (`OTHER`) for code that has one but is not a source
+ * function (a dependency, the bench file, the harness). A dependency's allocations are its own, as
+ * in the counted build, where it is not instrumented.
+ */
 function collect(
 	node: ProfileNode,
 	owner: CallFrame | null,
@@ -154,7 +202,8 @@ function collect(
 	wants: (url: string) => boolean
 ): void {
 	const cf = node.callFrame;
-	const here = cf.url && wants(cf.url) ? cf : owner;
+	const url = cf.url;
+	const here = !url || url.startsWith('node:') ? owner : wants(url) ? cf : null;
 	if (node.selfSize > 0) {
 		const key = here ? `${here.url}:${here.lineNumber}:${here.columnNumber}` : OTHER;
 		const t = totals.get(key);

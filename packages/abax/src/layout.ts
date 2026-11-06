@@ -19,11 +19,19 @@
  * - Regexp literal (a fresh JSRegExp each evaluation): 28 B.
  * - Strings: sequential one-byte string = 12 B header (map + hash + length) + 1 B/char, rounded up
  *   to 4 B. Two-byte strings and cons strings are not told apart (estimated as flat one-byte).
+ * - Substrings (slice, substring, trim, the parts of split, regex captures): a SlicedString of 20 B
+ *   (header + parent + offset) from 13 characters on, a copy below that.
  * - Map / Set: JSMap/JSSet header 16 B plus the initial OrderedHashMap/OrderedHashSet table.
+ * - A regex match: a JSArray with 3 more fields (index, input, groups) and its captures.
+ *
+ * Built-ins are sized by what their result holds that is new (runtime/builtins.ts, result_bytes):
+ * a new array or string, the strings `split` cuts, the [key, value] pairs of `Object.entries`,
+ * what `JSON.parse` and `structuredClone` build. A result the call already had (sort's array,
+ * Object.assign's target, a Map's set) is not new.
  *
  * These are estimates of what the engine would allocate if it elided nothing. The real-bytes
- * check (V8 allocation tracking on the uninstrumented build) is a later phase; a gap between the
- * two means the engine elided or folded the allocation.
+ * check (measure/alloc.ts: V8's sampling heap profiler on the uninstrumented build) measures the
+ * same functions per call; a gap between the two means the engine elided or folded allocations.
  */
 
 export const TAGGED = 4;
@@ -58,6 +66,19 @@ export function bound_bytes(args: number): number {
 
 export function string_bytes(length: number): number {
 	return (STRING_HEADER + length + 3) & ~3;
+}
+
+/** V8 cuts substrings of at least this many characters as SlicedStrings (a view of the parent). */
+export const SLICED_MIN = 13;
+export const SLICED_STRING = 20;
+
+export function substring_bytes(length: number): number {
+	return length >= SLICED_MIN ? SLICED_STRING : string_bytes(length);
+}
+
+/** A regex match array (index, input and groups are in-object fields). */
+export function match_bytes(captures: number): number {
+	return array_bytes(captures) + 3 * TAGGED;
 }
 
 export function generator_bytes(locals: number): number {
