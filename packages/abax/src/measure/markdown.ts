@@ -2,10 +2,7 @@ import { markOf, range } from '@bench/compare';
 import type { DiffResult } from '../diff/index.ts';
 import type { TimeComparison, TimeMetric } from './time.ts';
 import { fmt_ns } from './time.ts';
-
-function code(s: string): string {
-	return '`' + s.split('`').join("'") + '`';
-}
+import { code } from '../md.ts';
 
 /** Leaks, elided allocations and time-led cases, under the step table. */
 export function render_measure(d: DiffResult): string[] {

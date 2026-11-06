@@ -8,9 +8,10 @@ import {
 	is_svelte_module,
 	is_ts,
 	module_id,
-	strip_types,
-	transform
+	transform,
+	ts_to_js
 } from '../transform/index.ts';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { load_prices } from '../prices.ts';
 
 export interface LoaderConfig {
@@ -104,6 +105,15 @@ export class LoaderCore {
 		return readFileSync(fileURLToPath(url), 'utf8');
 	}
 
+	/**
+	 * A TypeScript module that is not counted (a bench file): as JS, compiled when type stripping
+	 * cannot run it (an `enum` in a bench file must not stop the run).
+	 */
+	plain_typescript(url: string, source: string): string {
+		const out = ts_to_js(source, fileURLToPath(url));
+		return out.map === null ? out.code : out.code + inline_map(out.map as object);
+	}
+
 	/** Instrument loaded source. Returns null when the module stays as it is (CommonJS, JSON...). */
 	instrument(url: string, source: string, format: string | null | undefined): string | null {
 		const filename = fileURLToPath(url);
@@ -122,13 +132,15 @@ export class LoaderCore {
 
 	#instrument(filename: string, source: string, format: string | null | undefined): string | null {
 		let code = source;
-		let input_map = null;
+		let input_map: SourceMapInput | null = null;
 		if (is_svelte_module(filename)) {
 			const out = compile_svelte(source, filename, this.config.svelte ?? 'server');
 			code = out.code;
 			input_map = out.map;
 		} else if (format === 'module-typescript' || (format == null && is_ts(filename))) {
-			code = strip_types(source);
+			const out = ts_to_js(source, filename);
+			code = out.code;
+			input_map = out.map;
 		} else if (format !== 'module') {
 			return null;
 		}

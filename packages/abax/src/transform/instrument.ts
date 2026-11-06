@@ -192,6 +192,14 @@ interface SiteRec {
 	arguments_of: FnRec | null;
 }
 
+/** A call that may reach a priced built-in (plan_bsite); `k` is its site index once walked. */
+interface BsitePlan {
+	name: string;
+	/** True: the receiver is not captured, the wrapper checks its caller (`site_any`). */
+	any: boolean;
+	k: number;
+}
+
 interface Edit {
 	pos: number;
 	open: boolean;
@@ -1021,10 +1029,12 @@ class Instrumenter {
 				this.walk_class(node, hint ?? (id ? text(id, 'name') : '<class>'));
 				return;
 			}
-			case 'CallExpression':
+			case 'CallExpression': {
+				const plan = this.plan_bsite(node, false);
 				this.walk_expr(get(node, 'callee')!);
-				this.walk_call_tail(node);
+				this.walk_call_tail(node, plan);
 				return;
+			}
 			case 'NewExpression': {
 				const callee = get(node, 'callee')!;
 				this.walk_expr(callee);
@@ -1216,30 +1226,76 @@ class Instrumenter {
 		}
 	}
 
+	/**
+	 * A call that may reach a priced built-in (`x.slice()`, `structuredClone(v)`,
+	 * `Array.prototype.map.call(xs, f)`): its built-in name and the receiver the call runs on (the
+	 * function itself for `f()` and `f.call()`). The receiver is wrapped in `R.rcv(k, ...)` here,
+	 * before anything inside it is walked, so the edit encloses the receiver's own edits. Where
+	 * wrapping it would change what the code does (an optional link inside it or on the call, an
+	 * `await` in the arguments that lets other calls of the same site interleave, `super`), the
+	 * site is announced with `site_any` and the wrapper checks its caller instead.
+	 */
+	plan_bsite(call: Node, in_chain: boolean): BsitePlan | null {
+		const callee = get(call, 'callee')!;
+		let name: string | null = null;
+		let recv: Node | null = null;
+		if (callee.type === 'Identifier') {
+			name = text(callee, 'name');
+			recv = callee;
+		} else if (callee.type === 'MemberExpression' && !flag(callee, 'computed')) {
+			name = this.callee_name(callee);
+			recv = get(callee, 'object');
+			if ((name === 'call' || name === 'apply') && recv) {
+				const inner =
+					recv.type === 'Identifier' ||
+					(recv.type === 'MemberExpression' && !flag(recv, 'computed'))
+						? this.callee_name(recv)
+						: null;
+				if (inner !== null && this.builtin_names.has(inner)) name = inner;
+			}
+		}
+		if (name === null || !this.builtin_names.has(name)) return null;
+		let any = recv === null || recv.type === 'Super';
+		if (!any && in_chain && (flag(call, 'optional') || has_optional_link(recv!))) any = true;
+		if (!any && nodes(call, 'arguments').some(contains_suspend)) any = true;
+		const plan: BsitePlan = { name, any, k: -1 };
+		if (!any) {
+			const base = this.n.b;
+			this.open(recv!.start, () => `${this.n.R}.rcv(${base}+${plan.k},`);
+			this.close(recv!.end, () => ')');
+		}
+		return plan;
+	}
+
 	/** Everything of a call except its callee: built-in site marking, arguments, `.bind`. */
-	walk_call_tail(call: Node): void {
+	walk_call_tail(call: Node, plan: BsitePlan | null): void {
 		const callee = get(call, 'callee')!;
 		const name = this.callee_name(callee);
 		const args = nodes(call, 'arguments');
 		const is_member = callee.type === 'MemberExpression' && !flag(callee, 'computed');
-		if ((is_member || callee.type === 'Identifier') && this.builtin_names.has(name)) {
+		if (plan) {
 			const at = this.pos.original(callee.end);
 			const k = this.bsites.length;
+			plan.k = k;
 			this.bsites.push({
 				fn: this.fn.index,
 				block: this.block.id,
 				line: at.line,
 				col: at.col,
-				name
+				name: plan.name
 			});
 			const base = this.n.b;
+			const R = this.n.R;
+			const url = plan.any ? ',import.meta.url' : '';
 			if (args.length === 0) {
-				this.add_zero_arg(call, () => `...${this.n.R}.site_zero(${base}+${k})`);
+				const fn = plan.any ? 'site_any_zero' : 'site_zero';
+				this.add_zero_arg(call, () => `...${R}.${fn}(${base}+${k}${url})`);
 			} else {
 				// The site is set after every argument is evaluated, right before the call.
 				const last = args[args.length - 1];
 				const target = last.type === 'SpreadElement' ? get(last, 'argument')! : last;
-				this.open(target.start, () => `${this.n.R}.site_last(${base}+${k},`);
+				const fn = plan.any ? 'site_any' : 'site_last';
+				this.open(target.start, () => `${R}.${fn}(${base}+${k}${url},`);
 				this.close(target.end, () => ')');
 			}
 		}
@@ -1257,6 +1313,10 @@ class Instrumenter {
 			links.push(cur);
 			cur = cur.type === 'MemberExpression' ? get(cur, 'object')! : get(cur, 'callee')!;
 		}
+		// Outermost call first: a receiver wrap encloses the receivers of the calls inside it.
+		const plans = new Map<Node, BsitePlan | null>();
+		for (const link of links)
+			if (link.type === 'CallExpression') plans.set(link, this.plan_bsite(link, true));
 		links.reverse();
 		const prev = this.block;
 		this.walk_expr(cur);
@@ -1285,7 +1345,7 @@ class Instrumenter {
 				if (flag(link, 'computed')) this.walk_expr(get(link, 'property')!);
 				this.op('prop_read', get(link, 'property')!.start);
 			} else {
-				this.walk_call_tail(link);
+				this.walk_call_tail(link, plans.get(link) ?? null);
 			}
 		}
 		this.block = prev;
@@ -1446,6 +1506,41 @@ function free_refs(f: FnRec): Set<string> {
 	for (const name of f.refs) if (!f.declared.has(name)) out.add(name);
 	free_cache.set(f, out);
 	return out;
+}
+
+/** True when an optional link (`?.`) inside this member/call chain can skip the rest of it. */
+function has_optional_link(node: Node): boolean {
+	let cur: Node | null = node;
+	while (cur && (cur.type === 'MemberExpression' || cur.type === 'CallExpression')) {
+		if (flag(cur, 'optional')) return true;
+		cur = cur.type === 'MemberExpression' ? get(cur, 'object') : get(cur, 'callee');
+	}
+	return false;
+}
+
+const FUNCTION_TYPES = new Set([
+	'FunctionExpression',
+	'FunctionDeclaration',
+	'ArrowFunctionExpression',
+	'ClassExpression',
+	'ClassDeclaration'
+]);
+
+/** True when evaluating `node` can suspend its function (`await`, `yield`), nested functions aside. */
+function contains_suspend(node: Node): boolean {
+	if (node.type === 'AwaitExpression' || node.type === 'YieldExpression') return true;
+	if (FUNCTION_TYPES.has(node.type)) return false;
+	for (const key in node) {
+		if (SKIP_KEYS.has(key)) continue;
+		const v = node[key];
+		if (Array.isArray(v)) {
+			for (const x of v)
+				if (x && typeof x === 'object' && 'type' in x && contains_suspend(x as Node)) return true;
+		} else if (v && typeof v === 'object' && 'type' in v && contains_suspend(v as Node)) {
+			return true;
+		}
+	}
+	return false;
 }
 
 function is_string_expr(node: Node): boolean {

@@ -153,7 +153,10 @@ for (const name of fixtures) {
 				findings.every((f) => f.elided),
 				`a finding is not marked elided:\n${shown}`
 			);
-			assert.ok(md.includes('No function changed'), md);
+			// Elision qualifies the bytes; the steps the new allocation costs still show.
+			assert.ok(!md.includes('No function changed'), md);
+			assert.ok(md.includes(`+${total.toLocaleString('en-US')} (`), md);
+			assert.ok(md.includes('B (elided)'), md);
 			assert.ok(md.includes('Allocations the engine elides'), md);
 		}
 		if (expect.leak !== undefined) {

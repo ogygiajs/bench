@@ -176,7 +176,7 @@ export async function search_case(
 export async function run_search(opts: SearchOptions): Promise<SearchReport> {
 	const log = opts.log ?? (() => {});
 	const list = await load_cases(opts);
-	const m = new Measurer();
+	const m = new Measurer(opts.root);
 	const options = { ...DEFAULTS };
 	for (const k of Object.keys(DEFAULTS) as Array<keyof SearchBudget>) {
 		if (opts[k] !== undefined) options[k] = opts[k]!;

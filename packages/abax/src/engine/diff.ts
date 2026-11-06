@@ -1,6 +1,8 @@
 import { IDENTITY, LineMap } from '../diff/git.ts';
 import type { FileDiff } from '../diff/git.ts';
 import { IC_RANK } from './types.ts';
+import { code } from '../md.ts';
+import { pair_cases } from '../cases.ts';
 import type { EngineCase, EngineFunction, EngineReport, EngineSite } from './types.ts';
 
 /*
@@ -44,10 +46,6 @@ export interface EngineDiffOptions {
 function strip(prefix: string, path: string): string | null {
 	if (!prefix) return path;
 	return path.startsWith(prefix + '/') ? path.slice(prefix.length + 1) : null;
-}
-
-function code(s: string): string {
-	return '`' + s.split('`').join("'") + '`';
 }
 
 function where(module: string, line: number): string {
@@ -280,10 +278,7 @@ export function diff_engine(
 		if (base_id && pr_id) module_map.set(base_id, pr_id);
 		if (pr_id) line_maps.set(pr_id, new LineMap(f.hunks));
 	}
-	const pr_cases = new Map(pr.cases.map((c) => [c.name, c]));
-	for (const b of base.cases) {
-		const p = pr_cases.get(b.name);
-		if (!p) continue;
+	for (const [b, p] of pair_cases(base.cases, pr.cases).pairs) {
 		if (b.error || p.error) {
 			out.failed.push(b.name);
 			continue;

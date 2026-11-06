@@ -4,8 +4,8 @@ import {
 	is_svelte_module,
 	is_ts,
 	module_id,
-	strip_types,
-	transform
+	transform,
+	ts_to_js
 } from '../transform/index.ts';
 import { load_prices } from '../prices.ts';
 import type { Report } from '../report.ts';
@@ -59,7 +59,9 @@ export function source_inventory(root: string, files: readonly string[]): Source
 				code = out.code;
 				input_map = out.map;
 			} else if (is_ts(file)) {
-				code = strip_types(source);
+				const out = ts_to_js(source, file);
+				code = out.code;
+				input_map = out.map;
 			}
 			const id = module_id(file, root);
 			const r = transform(code, { filename: file, id, input_map, prices, expose: false });

@@ -63,12 +63,8 @@ export interface Snapshot {
 	incl: Float64Array;
 	bsite_steps: Float64Array;
 	bsite_calls: Float64Array;
-	/** `fid * 256 + name id` -> steps (and calls in `unsited_calls`) for built-ins with no site. */
-	unsited: Table;
-	unsited_calls: Table;
-	/** Built-in size units per site / per function (see BUILTIN_UNIT_SHIFT). */
+	/** Built-in size units per site (see BUILTIN_UNIT_SHIFT). */
 	bunits: Table;
-	uunits: Table;
 	/** `(caller + 1) * 2^26 + callee` -> count. Caller -1 is the root (uninstrumented code). */
 	edges: Table;
 	steps: number;
@@ -81,7 +77,20 @@ export function table(): Table {
 export const EDGE_KEY_SHIFT = 2 ** 26;
 
 /**
- * Built-in size units: `(site or fid) * BUILTIN_UNIT_SHIFT + key id` -> 4 slots at `key * 4`:
+ * The receiver of a call site whose receiver the transform could not capture (`site_any`): the
+ * wrapper then checks that its caller is the module that announced the site.
+ */
+export const ANY_RECEIVER: unique symbol = Symbol('abax.any_receiver');
+/** The receiver of a site whose `rcv` entry is gone: matches nothing, so nothing is charged. */
+const NO_RECEIVER: unique symbol = Symbol('abax.no_receiver');
+/**
+ * Receiver entries left behind by calls that threw between `rcv` and `site_last` are dropped
+ * when this many pile up (a site always finds its own entry on top of any stale ones).
+ */
+const RECEIVER_LIMIT = 1 << 16;
+
+/**
+ * Built-in size units: `site * BUILTIN_UNIT_SHIFT + key id` -> 4 slots at `key * 4`:
  * calls, sum n, sum n log2 n (n when n <= 1, like builtin_cost), sum n^2.
  */
 export const BUILTIN_UNIT_SHIFT = 512;
@@ -132,18 +141,25 @@ export class Runtime {
 	bsite_name: Int32Array = new Int32Array(64);
 	bsite_steps: Float64Array = new Float64Array(64);
 	bsite_calls: Float64Array = new Float64Array(64);
-	unsited = table();
-	unsited_calls = table();
 	/** Built-in keys (`Array.prototype.sort`...); a key's id is its index. */
 	bkeys: string[];
-	/** Built-in size units per site and per function (no site); see BUILTIN_UNIT_SHIFT. */
+	/** Built-in size units per site; see BUILTIN_UNIT_SHIFT. */
 	bunits = table();
-	uunits = table();
 
 	stack: Int32Array = new Int32Array(1024);
 	depth = 0;
 	/** Built-in site announced by the call about to happen (-1: none). */
 	site = -1;
+	/**
+	 * The receiver that site's call was made on (or the function, for `f()` and `f.call()`), or
+	 * ANY_RECEIVER with `rx_url` naming the module that made the call.
+	 */
+	rx: unknown = NO_RECEIVER;
+	rx_url = '';
+	/** Receivers announced by `rcv`, waiting for their site (`site_last`): a stack keyed by site. */
+	rx_site: Int32Array = new Int32Array(64);
+	rx_val: unknown[] = [];
+	rx_n = 0;
 	/** Stack depth at which a built-in wrapper is running (-1: none); nested built-ins are free. */
 	bdepth = -1;
 
@@ -211,6 +227,8 @@ export class Runtime {
 	enter(fid: number): number {
 		const d = this.depth;
 		const caller = d > 0 ? this.stack[d - 1] : ROOT;
+		// A site announces the call made right after it: a counted function was called instead.
+		this.site = -1;
 		this.calls[fid]++;
 		if (this.last_caller[fid] === caller) {
 			this.last_count[fid]++;
@@ -371,12 +389,72 @@ export class Runtime {
 		return EMPTY;
 	}
 
+	/*
+	 * Built-in call sites. A priced built-in is charged only when counted code called it directly:
+	 * the transform announces the site right before the call (`site_last`, after every argument)
+	 * and the receiver the call is made on (`rcv`, where the receiver is evaluated). The wrapper
+	 * charges when the site names it and it runs on that receiver. A same-named method of
+	 * uncounted code (undici's `headers.get`, a dependency's `join`) that calls the built-in on
+	 * another object is not charged, and neither is anything uncounted code calls on its own.
+	 */
+
+	/** `R.rcv(k, x).slice(...)`: the receiver of site k, kept until the site is announced. */
+	rcv<T>(k: number, x: T): T {
+		if (x == null) return x;
+		let n = this.rx_n;
+		if (n === RECEIVER_LIMIT) n = 0;
+		if (n === this.rx_site.length) this.rx_site = grow_i32(this.rx_site, n + 1, 0);
+		this.rx_site[n] = k;
+		this.rx_val[n] = x;
+		this.rx_n = n + 1;
+		return x;
+	}
+
+	/** The newest receiver kept for site k, removed from the stack. */
+	take_rx(k: number): unknown {
+		const sites = this.rx_site;
+		const vals = this.rx_val;
+		for (let i = this.rx_n - 1; i >= 0; i--) {
+			if (sites[i] !== k) continue;
+			const v = vals[i];
+			const n = this.rx_n - 1;
+			for (let j = i; j < n; j++) {
+				sites[j] = sites[j + 1];
+				vals[j] = vals[j + 1];
+			}
+			vals[n] = undefined;
+			this.rx_n = n;
+			return v;
+		}
+		return NO_RECEIVER;
+	}
+
 	site_last<T>(k: number, v: T): T {
+		this.rx = this.take_rx(k);
 		this.site = k;
 		return v;
 	}
 
 	site_zero(k: number): readonly never[] {
+		this.rx = this.take_rx(k);
+		this.site = k;
+		return EMPTY;
+	}
+
+	/**
+	 * A site whose receiver could not be captured without changing the code's meaning (inside an
+	 * optional chain, after an `await` in the arguments, on `super`): the wrapper checks its caller.
+	 */
+	site_any<T>(k: number, url: string, v: T): T {
+		this.rx = ANY_RECEIVER;
+		this.rx_url = url;
+		this.site = k;
+		return v;
+	}
+
+	site_any_zero(k: number, url: string): readonly never[] {
+		this.rx = ANY_RECEIVER;
+		this.rx_url = url;
 		this.site = k;
 		return EMPTY;
 	}
@@ -436,23 +514,16 @@ export class Runtime {
 	// ------------------------------------------------------------ built-ins
 
 	/**
-	 * Charge a priced built-in call (called by the wrappers in builtins.ts). `key_id` is the
-	 * built-in's index in `bkeys` and `n` its size: the size terms are kept per site (or function)
-	 * so a report can be recounted with other prices (units.ts).
+	 * Charge a priced built-in call to its site (called by the wrappers in builtins.ts, which
+	 * check that counted code made the call at that site). `key_id` is the built-in's index in
+	 * `bkeys` and `n` its size: the size terms are kept per site so a report can be recounted with
+	 * other prices (units.ts).
 	 */
-	charge(site: number, name_id: number, cost: number, key_id = -1, n = 0): void {
+	charge(site: number, cost: number, key_id = -1, n = 0): void {
 		this.s[0] += cost;
-		if (site >= 0 && this.bsite_name[site] === name_id) {
-			this.bsite_steps[site] += cost;
-			this.bsite_calls[site]++;
-			if (key_id >= 0) add_units(this.bunits, site * BUILTIN_UNIT_SHIFT + key_id, n);
-			return;
-		}
-		const fid = this.stack[this.depth - 1];
-		const key = fid * 256 + name_id;
-		this.unsited[key] = (this.unsited[key] ?? 0) + cost;
-		this.unsited_calls[key] = (this.unsited_calls[key] ?? 0) + 1;
-		if (key_id >= 0) add_units(this.uunits, fid * BUILTIN_UNIT_SHIFT + key_id, n);
+		this.bsite_steps[site] += cost;
+		this.bsite_calls[site]++;
+		if (key_id >= 0) add_units(this.bunits, site * BUILTIN_UNIT_SHIFT + key_id, n);
 	}
 
 	// ------------------------------------------------------------ measuring
@@ -472,11 +543,11 @@ export class Runtime {
 		this.edges = table();
 		this.bsite_steps.fill(0);
 		this.bsite_calls.fill(0);
-		this.unsited = table();
-		this.unsited_calls = table();
 		this.bunits = table();
-		this.uunits = table();
 		this.depth = 0;
+		this.rx = NO_RECEIVER;
+		for (let i = 0; i < this.rx_n; i++) this.rx_val[i] = undefined;
+		this.rx_n = 0;
 		this.site = -1;
 		this.bdepth = -1;
 	}
@@ -493,10 +564,7 @@ export class Runtime {
 			incl: this.incl.slice(0, this.fn_count),
 			bsite_steps: this.bsite_steps.slice(0, this.bsite_count),
 			bsite_calls: this.bsite_calls.slice(0, this.bsite_count),
-			unsited: { ...this.unsited },
-			unsited_calls: { ...this.unsited_calls },
 			bunits: { ...this.bunits },
-			uunits: { ...this.uunits },
 			edges: { ...this.edges },
 			steps: this.s[0]
 		};
@@ -539,11 +607,5 @@ export function same_counts(a: Snapshot, b: Snapshot): boolean {
 	if (!eq(a.incl.subarray(0, m), b.incl.subarray(0, m))) return false;
 	const k = Math.min(a.bsite_steps.length, b.bsite_steps.length);
 	if (!eq(a.bsite_steps.subarray(0, k), b.bsite_steps.subarray(0, k))) return false;
-	return (
-		same_table(a.edges, b.edges) &&
-		same_table(a.unsited, b.unsited) &&
-		same_table(a.unsited_calls, b.unsited_calls) &&
-		same_table(a.bunits, b.bunits) &&
-		same_table(a.uunits, b.uunits)
-	);
+	return same_table(a.edges, b.edges) && same_table(a.bunits, b.bunits);
 }

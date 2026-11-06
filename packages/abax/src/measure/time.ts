@@ -3,6 +3,7 @@ import { judge } from '@bench/compare';
 import type { Rule, Verdict } from '@bench/compare';
 import type { BenchCase } from '../bench.ts';
 import { is_async_case } from './cases.ts';
+import { pair_cases } from '../cases.ts';
 
 /*
  * The time layer (spec 6). Steps say what the code does; this says how long the engine takes to do
@@ -180,22 +181,19 @@ export async function compare_time(
 	o: TimeOptions & { repeats?: number; log?: (line: string) => void } = {}
 ): Promise<TimeComparison> {
 	const repeats = o.repeats ?? 5;
-	const by_name = new Map(pr.map((c) => [c.name, c]));
-	const base_names = new Set(base.map((c) => c.name));
+	const paired = pair_cases(base, pr);
 	const out: TimeComparison = {
 		schema: 'abax-time/1',
 		repeats,
 		node: process.version,
 		cases: [],
 		missing: {
-			base: pr.filter((c) => !base_names.has(c.name)).map((c) => c.name),
-			pr: base.filter((c) => !by_name.has(c.name)).map((c) => c.name)
+			base: paired.only_pr.map((c) => c.name),
+			pr: paired.only_base.map((c) => c.name)
 		},
 		errors: []
 	};
-	for (const b of base) {
-		const p = by_name.get(b.name);
-		if (!p) continue;
+	for (const [b, p] of paired.pairs) {
 		const tc: TimeCase = {
 			name: b.name,
 			order: [],

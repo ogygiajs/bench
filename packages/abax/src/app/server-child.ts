@@ -37,7 +37,8 @@ type KitServer = {
 
 const rt = get_runtime();
 const builtins = new Builtins(rt);
-const det = new Determinism();
+// The app's directory is where its server runs: shown as VIRTUAL_ROOT inside the window.
+const det = new Determinism({ root: process.cwd() });
 let kit: KitServer | null = null;
 let static_dirs: string[] = [];
 let http: HttpServer | null = null;

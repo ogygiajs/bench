@@ -1,8 +1,12 @@
 import type { DiffResult, Finding, FunctionChange } from './index.ts';
 import { render_measure } from '../measure/markdown.ts';
+import { cell, code } from '../md.ts';
 
 /** Marker of the Abax section in the shared PR comment (upserted by section). */
 export const SECTION_MARKER = '<!-- abax:section -->';
+
+/** Rows per table: a big refactor must not push the comment past GitHub's size limit. */
+const MAX_ROWS = 50;
 
 function fmt(n: number): string {
 	const r = Math.round(n * 100) / 100;
@@ -20,12 +24,18 @@ function pct(base: number, delta: number): string {
 	return ` (${p > 0 ? '+' : ''}${p.toFixed(1)}%)`;
 }
 
-function code(s: string): string {
-	return '`' + s.split('`').join("'") + '`';
+/** Bytes, qualified when the engine elides the allocations behind them (real bytes did not grow). */
+function bytes_cell(n: number, elided: boolean): string {
+	return elided && n !== 0 ? `${signed(n, ' B')} (elided)` : signed(n, ' B');
+}
+
+/** A finding the step table shows: any step change, or an allocation change the engine keeps. */
+export function shown(f: Finding): boolean {
+	return f.delta.steps !== 0 || !f.elided;
 }
 
 function finding_row(f: Finding): string {
-	return `| ${f.kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${signed(f.delta.bytes, ' B')} |`;
+	return `| ${f.kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${bytes_cell(f.delta.bytes, f.elided === true)} |`;
 }
 
 function change_row(c: FunctionChange, ns?: number): string {
@@ -33,15 +43,22 @@ function change_row(c: FunctionChange, ns?: number): string {
 	const pr = c.pr ? c.pr.self_steps : 0;
 	const name = c.renamed_from ? `${c.function} (was ${c.renamed_from})` : c.function;
 	const est = ns === undefined ? '' : ` ≈ ${signed(ns, ' ns')}`;
-	return `| ${c.case} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${est} | ${signed(c.delta.allocations)} | ${signed(c.delta.bytes, ' B')} | ${signed(c.delta.inclusive_steps)} |`;
+	const elided = c.findings.some((f) => f.elided);
+	return `| ${cell(c.case)} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${est} | ${signed(c.delta.allocations)} | ${bytes_cell(c.delta.bytes, elided)} | ${signed(c.delta.inclusive_steps)} |`;
 }
 
 /** The Abax section of the PR comment. */
 export function render_markdown(d: DiffResult): string {
 	const lines: string[] = [SECTION_MARKER, '### Abax: steps per function', ''];
-	// Findings whose added allocations the engine elides are listed apart (render_measure).
-	const flagged = d.changes.filter((c) => c.findings.some((f) => !f.elided));
+	// Elision qualifies bytes only: a function whose steps changed always shows.
+	const flagged = d.changes.filter((c) => c.findings.some(shown));
 	const ns_of = (c: FunctionChange) => d.measure?.ns[`${c.case} > ${c.module} > ${c.function}`];
+	if (d.env && d.env.length > 0) {
+		lines.push(
+			`> ⚠️ The two reports come from different environments (${d.env.join('; ')}). Steps are compared; engine health is not.`,
+			''
+		);
+	}
 	if (!d.prices_match) {
 		lines.push('> Prices differ between the two runs: steps are not comparable.', '');
 	} else if (d.recounted) {
@@ -62,7 +79,9 @@ export function render_markdown(d: DiffResult): string {
 		const sorted = [...flagged].sort(
 			(a, b) => Math.abs(b.delta.self_steps) - Math.abs(a.delta.self_steps)
 		);
-		for (const c of sorted) lines.push(change_row(c, ns_of(c)));
+		for (const c of sorted.slice(0, MAX_ROWS)) lines.push(change_row(c, ns_of(c)));
+		if (sorted.length > MAX_ROWS)
+			lines.push('', `${sorted.length - MAX_ROWS} more changed functions are in the JSON result.`);
 		lines.push(
 			'',
 			'<details><summary>Where</summary>',
@@ -70,7 +89,13 @@ export function render_markdown(d: DiffResult): string {
 			'| | Line | Δ steps | Δ allocs | Δ bytes |',
 			'| --- | --- | ---: | ---: | ---: |'
 		);
-		for (const c of sorted) for (const f of c.findings) if (!f.elided) lines.push(finding_row(f));
+		// A function changed the same way in many cases gives one set of rows, not one per case.
+		const rows = new Set<string>();
+		for (const c of sorted) for (const f of c.findings) if (shown(f)) rows.add(finding_row(f));
+		const where = [...rows];
+		lines.push(...where.slice(0, MAX_ROWS));
+		if (where.length > MAX_ROWS)
+			lines.push('', `${where.length - MAX_ROWS} more lines are in the JSON result.`);
 		lines.push('', '</details>', '');
 	}
 	lines.push(...render_measure(d));

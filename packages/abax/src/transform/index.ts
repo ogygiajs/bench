@@ -1,7 +1,9 @@
+import '../warnings.ts';
 import { createHash } from 'node:crypto';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import { relative, sep } from 'node:path';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
+import remapping from '@jridgewell/remapping';
 import { instrument } from './instrument.ts';
 import type { InstrumentResult } from './instrument.ts';
 import { load_prices } from '../prices.ts';
@@ -87,6 +89,73 @@ export function strip_types(code: string): string {
 	return stripTypeScriptTypes(code, { mode: 'strip' });
 }
 
+interface TypeScriptCompiler {
+	transpileModule(
+		source: string,
+		o: { fileName: string; compilerOptions: Record<string, unknown>; reportDiagnostics?: boolean }
+	): { outputText: string; sourceMapText?: string };
+}
+
+const typescripts = new Map<string, TypeScriptCompiler>();
+
+/** The project's TypeScript (resolved from the file), else Abax's own; null when neither exists. */
+function typescript_for(filename: string): TypeScriptCompiler | null {
+	let path: string | null = null;
+	for (const from of [filename, import.meta.url]) {
+		try {
+			path = createRequire(from).resolve('typescript');
+			break;
+		} catch {
+			// next
+		}
+	}
+	if (path === null) return null;
+	let ts = typescripts.get(path);
+	if (!ts) {
+		ts = createRequire(import.meta.url)(path) as TypeScriptCompiler;
+		typescripts.set(path, ts);
+	}
+	return ts;
+}
+
+/**
+ * TS to JS. Type stripping first (positions stay the same, no map). TypeScript that stripping
+ * cannot handle (`enum`, `namespace`, parameter properties, legacy decorators...) is compiled with
+ * the TypeScript compiler instead, and the map it returns points every line back at the source.
+ */
+export function ts_to_js(
+	source: string,
+	filename: string
+): { code: string; map: SourceMapInput | null } {
+	try {
+		return { code: strip_types(source), map: null };
+	} catch (e) {
+		if ((e as { code?: unknown }).code !== 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX') throw e;
+	}
+	const ts = typescript_for(filename);
+	if (ts === null) {
+		throw new Error(
+			`abax: ${filename} uses TypeScript that type stripping cannot run (enum, namespace or parameter properties), and the typescript package to compile it is not installed`
+		);
+	}
+	const out = ts.transpileModule(source, {
+		fileName: filename,
+		compilerOptions: {
+			target: 99, // ESNext: syntax stays as written
+			module: 99, // ESNext
+			sourceMap: true,
+			inlineSources: false,
+			// What Node's stripping keeps, this keeps: every import that is not `import type`.
+			verbatimModuleSyntax: true,
+			useDefineForClassFields: true,
+			removeComments: false
+		}
+	});
+	const code = out.outputText.replace(/\n\/\/# sourceMappingURL=.*\s*$/, '\n');
+	const map = out.sourceMapText ? (JSON.parse(out.sourceMapText) as SourceMapInput) : null;
+	return { code, map };
+}
+
 export function is_ts(filename: string): boolean {
 	return filename.endsWith('.ts') || filename.endsWith('.mts') || filename.endsWith('.cts');
 }
@@ -136,9 +205,12 @@ export function compile_svelte(
 		const out = c.compile(source, { filename, generate, dev: false });
 		return { code: out.js.code, map: out.js.map };
 	}
-	const js = is_ts(filename) ? strip_types(source) : source;
-	const out = c.compileModule(js, { filename, generate, dev: false });
-	return { code: out.js.code, map: out.js.map };
+	const ts = is_ts(filename) ? ts_to_js(source, filename) : { code: source, map: null };
+	const out = c.compileModule(ts.code, { filename, generate, dev: false });
+	if (ts.map === null) return { code: out.js.code, map: out.js.map };
+	// Svelte's map points at the compiled TypeScript; TypeScript's points at the source.
+	const map = remapping([out.js.map, ts.map] as Parameters<typeof remapping>[0], () => null);
+	return { code: out.js.code, map: map as unknown as SourceMapInput };
 }
 
 export function is_svelte_module(filename: string): boolean {

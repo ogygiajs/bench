@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { join } from 'node:path';
-import { AbaxIoError, Determinism } from '../src/runtime/determinism.ts';
+import { join, resolve } from 'node:path';
+import { AbaxIoError, Determinism, VIRTUAL_ROOT } from '../src/runtime/determinism.ts';
 import { run_case } from '../src/runner.ts';
 import { load_module, builtins, temp_dir } from './helpers.ts';
 
@@ -99,6 +99,38 @@ test('fs reads are recorded once and replayed; writes and unrecorded reads throw
 		det.close();
 	}
 	assert.equal(readFileSync(file, 'utf8'), 'second');
+});
+
+test('the working directory is the same virtual root in every checkout; its files still read', () => {
+	const read_in = (dir: string): string[] => {
+		writeFileSync(join(dir, 'data.txt'), 'payload');
+		const det = new Determinism({ root: dir });
+		const seen: string[] = [];
+		const prev = process.cwd();
+		process.chdir(dir);
+		try {
+			for (const mode of ['record', 'replay'] as const) {
+				det.open(mode);
+				try {
+					const cwd = process.cwd();
+					seen.push(cwd, resolve('data.txt'), readFileSync(join(cwd, 'data.txt'), 'utf8'));
+					assert.throws(() => readFileSync(join(cwd, 'missing.txt')), /ENOENT/);
+				} finally {
+					det.close();
+				}
+			}
+		} finally {
+			process.chdir(prev);
+		}
+		assert.equal(process.cwd(), prev);
+		return seen;
+	};
+	const short = read_in(temp_dir('a-'));
+	const long = temp_dir('a-much-longer-checkout-path-');
+	mkdirSync(join(long, 'nested', 'deeper'), { recursive: true });
+	const deep = read_in(join(long, 'nested', 'deeper'));
+	assert.deepEqual(short, deep);
+	assert.deepEqual(short.slice(0, 3), [VIRTUAL_ROOT, join(VIRTUAL_ROOT, 'data.txt'), 'payload']);
 });
 
 test('weak references made in the window never clear', () => {

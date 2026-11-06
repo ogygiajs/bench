@@ -11,7 +11,8 @@ import type { Snapshot } from './runtime/index.ts';
 import { Builtins } from './runtime/builtins.ts';
 import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
-import { REPORT_SCHEMA, build_case_report } from './report.ts';
+import { REPORT_SCHEMA, build_case_report, environment, one_line } from './report.ts';
+import type { LoadError } from './report.ts';
 import { load_prices } from './prices.ts';
 import { apply_estimates } from './calibrate/estimate.ts';
 import { fresh_copy, next_generation, positions } from './fresh.ts';
@@ -120,16 +121,25 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	}
 	const rt = get_runtime();
 	const builtins = new Builtins(rt);
-	const det = new Determinism();
+	const det = new Determinism({ root });
 
 	const start = cases().length;
 	// Each call imports its own copy of the bench files (and what they import): a second call in
-	// the same process finds its cases again and starts from fresh module state.
+	// the same process finds its cases again and starts from fresh module state. A file that does
+	// not load is reported and costs only its own cases.
 	const gen = `?${GENERATION}${next_generation()}`;
+	const load_errors: LoadError[] = [];
 	for (const f of opts.files) {
 		const abs = resolve(f);
-		set_current_file(relative(root, abs).split(sep).join('/'));
-		await import(pathToFileURL(abs).href + gen);
+		const file = relative(root, abs).split(sep).join('/');
+		set_current_file(file);
+		try {
+			await import(pathToFileURL(abs).href + gen);
+		} catch (e) {
+			const error = one_line(e);
+			load_errors.push({ file, error });
+			log(`FAILED   ${file}: ${error}`);
+		}
 	}
 	let list = cases().slice(start);
 	const position = positions(list);
@@ -153,7 +163,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			);
 			log(`${stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${Math.round(a.snap.steps)} steps`);
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
+			const msg = one_line(e);
 			results.push({
 				name: c.name,
 				file: c.file,
@@ -174,12 +184,14 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		schema: REPORT_SCHEMA,
 		prices: { version: rt.prices.version, hash: load_prices().hash },
 		node: process.version,
+		env: environment(),
 		git: {
 			sha: opts.sha ?? git(root, ['rev-parse', 'HEAD']),
 			prefix: toplevel ? relative(toplevel, root).split(sep).join('/') : ''
 		},
 		cases: results
 	};
+	if (load_errors.length > 0) report.load_errors = load_errors;
 	apply_estimates(report);
 	if (opts.out) writeFileSync(opts.out, JSON.stringify(report, null, '\t') + '\n');
 	return report;

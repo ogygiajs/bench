@@ -41,9 +41,21 @@ function real_bytes(c: CaseReport | undefined, id: string): number | null {
 	return m.functions.find((f) => f.id === id)?.real ?? 0;
 }
 
+/** Cases by name; a name two files share is left out (its findings cannot say which file). */
+function by_unique_name(cases: CaseReport[]): Map<string, CaseReport> {
+	const out = new Map<string, CaseReport>();
+	const seen = new Set<string>();
+	for (const c of cases) {
+		if (seen.has(c.name)) out.delete(c.name);
+		else out.set(c.name, c);
+		seen.add(c.name);
+	}
+	return out;
+}
+
 export function measure_diff(d: DiffResult, base: Report, pr: Report): MeasureDiff {
-	const base_cases = new Map(base.cases.map((c) => [c.name, c]));
-	const pr_cases = new Map(pr.cases.map((c) => [c.name, c]));
+	const base_cases = by_unique_name(base.cases);
+	const pr_cases = by_unique_name(pr.cases);
 	for (const ch of d.changes) {
 		if (ch.delta.bytes <= 0 || ch.findings.length === 0) continue;
 		const id = `${ch.module} > ${ch.function}`;

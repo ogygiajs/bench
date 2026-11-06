@@ -1,5 +1,7 @@
 import { IDENTITY, LineMap } from './git.ts';
 import type { FileDiff } from './git.ts';
+import { env_mismatch } from '../report.ts';
+import { pair_cases } from '../cases.ts';
 import type { CaseReport, FunctionReport, LineReport, Report } from '../report.ts';
 import { align_prices } from '../recount.ts';
 import { measure_diff } from '../measure/diff.ts';
@@ -74,6 +76,8 @@ export interface DiffResult {
 	recounted?: { version: number; hash: string } | null;
 	/** Leaks, elided allocations, time-led cases, estimated ns (measure/diff.ts). */
 	measure?: MeasureDiff;
+	/** How the two reports' environments differ (Node, V8, platform, weights): empty when alike. */
+	env?: string[];
 }
 
 export interface DiffOptions {
@@ -433,24 +437,24 @@ export function diff_reports(
 		missing: { base: [], pr: [] },
 		cases: [],
 		prices_match: aligned.comparable,
-		recounted: aligned.recounted
+		recounted: aligned.recounted,
+		env: env_mismatch(base_report, pr_report)
 	};
-	const pr_cases = new Map(pr.cases.map((c) => [c.name, c]));
-	const base_names = new Set(base.cases.map((c) => c.name));
-	for (const bc of base.cases) {
-		const pc = pr_cases.get(bc.name);
-		if (!pc) {
-			result.missing.pr.push(bc.name);
+	const paired = pair_cases(base.cases, pr.cases);
+	for (const bc of paired.only_base) result.missing.pr.push(bc.name);
+	for (const pc of paired.only_pr) result.missing.base.push(pc.name);
+	for (const [bc, pc] of paired.pairs) {
+		// A case that failed on either side has no counts to compare: listed, not diffed.
+		if (bc.error || pc.error) {
+			result.failed.push(bc.name);
 			continue;
 		}
-		if (bc.error || pc.error) result.failed.push(bc.name);
 		if (!bc.stable || !pc.stable) result.unstable.push(bc.name);
 		result.cases.push({ name: bc.name, base_steps: bc.totals.steps, pr_steps: pc.totals.steps });
 		const d = diff_case(bc.name, bc, pc, paths, threshold, aligned.recounted === null);
 		result.changes.push(...d.changes);
 		result.renames.push(...d.renames);
 	}
-	for (const pc of pr.cases) if (!base_names.has(pc.name)) result.missing.base.push(pc.name);
 	for (const c of result.changes) result.findings.push(...c.findings);
 	result.measure = measure_diff(result, base, pr);
 	return result;

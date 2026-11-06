@@ -52,10 +52,11 @@ export class Measurer {
 	builtins: Builtins;
 	det: Determinism;
 
-	constructor() {
+	/** `root`: the run root, shown as VIRTUAL_ROOT inside the window (determinism.ts). */
+	constructor(root?: string) {
 		this.rt = get_runtime();
 		this.builtins = new Builtins(this.rt);
-		this.det = new Determinism();
+		this.det = new Determinism({ root: resolve(root ?? process.cwd()) });
 	}
 
 	/** One run of `c` on `ctx`. Throws what the case throws. */

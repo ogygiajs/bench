@@ -9,7 +9,8 @@ import type { GrowthDiff } from './growth/index.ts';
 import { diff_search } from './search/index.ts';
 import type { SearchFinding } from './search/index.ts';
 import { load_prices } from './prices.ts';
-import { REPORT_SCHEMA } from './report.ts';
+import { REPORT_SCHEMA, environment } from './report.ts';
+import { code } from './md.ts';
 import type { Report } from './report.ts';
 
 /*
@@ -44,6 +45,13 @@ export function write_section<K extends Section>(
 	if (existsSync(out)) {
 		report = JSON.parse(readFileSync(out, 'utf8')) as Report;
 		if (report.schema !== REPORT_SCHEMA) throw new Error(`abax: ${out} is not an abax report`);
+		// One report holds one environment: its layers must not mix Node versions.
+		if (report.node !== process.version) {
+			throw new Error(
+				`abax: ${out} was counted on Node ${report.node}; this is Node ${process.version} (write to another --out)`
+			);
+		}
+		report.env ??= environment();
 	} else {
 		const root = resolve(info.root);
 		const top = git(root, ['rev-parse', '--show-toplevel']);
@@ -51,6 +59,7 @@ export function write_section<K extends Section>(
 			schema: REPORT_SCHEMA,
 			prices: { version: load_prices().prices.version, hash: load_prices().hash },
 			node: process.version,
+			env: environment(),
 			git: {
 				sha: info.sha ?? git(root, ['rev-parse', 'HEAD']),
 				prefix: top ? relative(top, root).split(sep).join('/') : ''
@@ -70,9 +79,11 @@ export interface SectionsDiff {
 }
 
 export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null): SectionsDiff {
+	// What V8 did is only comparable on one V8: across Node versions the engine part is left out.
+	const same_engine = base.node === pr.node && base.env?.v8 === pr.env?.v8;
 	return {
 		engine:
-			base.engine && pr.engine
+			base.engine && pr.engine && same_engine
 				? diff_engine(base.engine, pr.engine, {
 						files,
 						base_prefix: base.git.prefix,
@@ -82,10 +93,6 @@ export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null
 		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth) : null,
 		search: base.search && pr.search ? diff_search(base.search, pr.search) : null
 	};
-}
-
-function code(s: string): string {
-	return '`' + s.split('`').join("'") + '`';
 }
 
 /** The "Engine" and "Growth" parts (empty when neither side has those sections). */

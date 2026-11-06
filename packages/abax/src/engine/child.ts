@@ -13,7 +13,7 @@ import {
 	is_svelte_module,
 	is_ts,
 	module_id,
-	strip_types
+	ts_to_js
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
 import { calibrate, decode, natives } from './natives.ts';
@@ -91,7 +91,9 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 			code = out.code;
 			map = out.map;
 		} else if (format === 'module-typescript' || (format == null && is_ts(path))) {
-			code = strip_types(source);
+			const out = ts_to_js(source, path);
+			code = out.code;
+			map = out.map;
 		} else if (format === 'module') {
 			code = source;
 		} else {
@@ -103,7 +105,15 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 	};
 	registerHooks({
 		load(url, context, next) {
-			if (!core.should_instrument(url)) return next(url, context);
+			if (!core.should_instrument(url)) {
+				const r = next(url, context);
+				if (r.format !== 'module-typescript' || r.source == null) return r;
+				const src =
+					typeof r.source === 'string'
+						? r.source
+						: Buffer.from(r.source as Uint8Array).toString('utf8');
+				return { format: 'module', source: core.plain_typescript(url, src), shortCircuit: true };
+			}
 			if (core.needs_own_read(url)) {
 				return {
 					format: 'module',

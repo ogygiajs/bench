@@ -1,4 +1,6 @@
 import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 /*
  * The deterministic environment of the measuring window (spec 3).
@@ -53,6 +55,31 @@ export interface DeterminismOptions {
 	step?: number;
 	/** Fake-loop iteration cap per settle (default 100000): runaway intervals end the run. */
 	max_timer_runs?: number;
+	/**
+	 * The run root. Inside the window `process.cwd()` (and `PWD`) name it as VIRTUAL_ROOT, so code
+	 * that slices or compares the working directory counts the same in every checkout. File reads
+	 * of VIRTUAL_ROOT paths go to the root.
+	 */
+	root?: string;
+}
+
+/** Where the run root appears to be inside the measuring window: the same on every machine. */
+export const VIRTUAL_ROOT = sep === '\\' ? 'C:\\abax\\root' : '/abax/root';
+
+/** `real` (under `root`) as the window shows it, or null when it is outside the root. */
+export function virtual_path(real: string, root: string): string | null {
+	if (real === root) return VIRTUAL_ROOT;
+	const prefix = root.endsWith(sep) ? root : root + sep;
+	return real.startsWith(prefix) ? VIRTUAL_ROOT + sep + real.slice(prefix.length) : null;
+}
+
+/** A path argument as the real file system knows it (VIRTUAL_ROOT paths moved to `root`). */
+export function real_path(p: unknown, root: string): unknown {
+	const s = p instanceof URL && p.protocol === 'file:' ? fileURLToPath(p) : p;
+	if (typeof s !== 'string') return p;
+	if (s === VIRTUAL_ROOT) return root;
+	if (s.startsWith(VIRTUAL_ROOT + sep)) return join(root, s.slice(VIRTUAL_ROOT.length + 1));
+	return p;
 }
 
 const RealDate = Date;
@@ -65,6 +92,7 @@ export class Determinism {
 	readonly epoch: number;
 	readonly step: number;
 	readonly max_timer_runs: number;
+	readonly root: string | null;
 
 	#patches: Patch[] = [];
 	#open = false;
@@ -82,6 +110,7 @@ export class Determinism {
 		this.epoch = o.epoch ?? 1_704_067_200_000;
 		this.step = o.step ?? 1;
 		this.max_timer_runs = o.max_timer_runs ?? 100_000;
+		this.root = o.root === undefined ? null : resolve(o.root);
 	}
 
 	get is_open(): boolean {
@@ -164,6 +193,7 @@ export class Determinism {
 			this.#patch_timers();
 			this.#patch_io();
 			this.#patch_weak();
+			this.#patch_paths();
 			syncBuiltinESMExports();
 		} catch (e) {
 			this.close();
@@ -435,6 +465,23 @@ export class Determinism {
 		const blocked = (name: string) => () => {
 			throw new AbaxIoError(`abax: ${name} inside the measuring window`);
 		};
+		// A read that failed while recording (a missing file) fails the same way when replayed.
+		const failed = (e: unknown): { abax_io_error: unknown } => ({ abax_io_error: e });
+		const replay = (key: string): unknown => {
+			if (!(key in io)) throw new AbaxIoError(`abax: unrecorded ${key}`);
+			const v = io[key];
+			if (v !== null && typeof v === 'object' && 'abax_io_error' in v)
+				throw (v as { abax_io_error: unknown }).abax_io_error;
+			return copy(v);
+		};
+		const root = this.root;
+		// Paths under VIRTUAL_ROOT (built from process.cwd() in the window) read the real root.
+		const real = (args: unknown[]): unknown[] => {
+			if (root === null || args.length === 0) return args;
+			const out = [real_path(args[0], root)];
+			for (let i = 1; i < args.length; i++) out.push(args[i]);
+			return out;
+		};
 		for (const name of Object.keys(fs)) {
 			const orig = fs[name];
 			if (typeof orig !== 'function' || name[0] < 'a' || name[0] > 'z') continue;
@@ -443,12 +490,17 @@ export class Determinism {
 				this.#set(fs, name, (...args: unknown[]) => {
 					const key = key_of(`fs.${name}`, args);
 					if (recording()) {
-						const v = Reflect.apply(orig as Fn, fs, args as never[]);
+						let v: unknown;
+						try {
+							v = Reflect.apply(orig as Fn, fs, real(args) as never[]);
+						} catch (e) {
+							io[key] = failed(e);
+							throw e;
+						}
 						io[key] = copy(v);
 						return v;
 					}
-					if (!(key in io)) throw new AbaxIoError(`abax: unrecorded ${key}`);
-					return copy(io[key]);
+					return replay(key);
 				});
 			} else if (name === 'readFile') {
 				this.#set(fs, name, (...args: unknown[]) => {
@@ -458,18 +510,20 @@ export class Determinism {
 					const key = key_of('fs.readFile', rest);
 					if (recording()) {
 						return Reflect.apply(orig as Fn, fs, [
-							...rest,
+							...real(rest),
 							(e: unknown, v: unknown) => {
-								if (!e) io[key] = copy(v);
+								io[key] = e ? failed(e) : copy(v);
 								cb(e, v);
 							}
 						] as never[]);
 					}
-					if (!(key in io)) {
-						queueMicrotask(() => cb(new AbaxIoError(`abax: unrecorded ${key}`)));
+					let v: unknown;
+					try {
+						v = replay(key);
+					} catch (e) {
+						queueMicrotask(() => cb(e));
 						return undefined;
 					}
-					const v = copy(io[key]);
 					queueMicrotask(() => cb(null, v));
 					return undefined;
 				});
@@ -481,12 +535,17 @@ export class Determinism {
 		this.#set(fsp, 'readFile', async (...args: unknown[]) => {
 			const key = key_of('fs.readFile', args);
 			if (recording()) {
-				const v = await Reflect.apply(read_file, fsp, args as never[]);
+				let v: unknown;
+				try {
+					v = await Reflect.apply(read_file, fsp, real(args) as never[]);
+				} catch (e) {
+					io[key] = failed(e);
+					throw e;
+				}
 				io[key] = copy(v);
 				return v;
 			}
-			if (!(key in io)) throw new AbaxIoError(`abax: unrecorded ${key}`);
-			return copy(io[key]);
+			return replay(key);
 		});
 		if (this.#mode === 'replay') {
 			for (const name of Object.keys(fsp)) {
@@ -535,6 +594,17 @@ export class Determinism {
 				if (typeof m[name] === 'function') this.#set(m, name, blocked(`${mod} ${name}`));
 			}
 		}
+	}
+
+	// -------------------------------------------------------------- paths
+
+	/** The working directory as VIRTUAL_ROOT (when it is inside the run root). */
+	#patch_paths(): void {
+		if (this.root === null) return;
+		const cwd = virtual_path(process.cwd(), this.root);
+		if (cwd === null) return;
+		this.#set(process as unknown as Obj, 'cwd', () => cwd);
+		if (process.env.PWD !== undefined) this.#set(process.env as unknown as Obj, 'PWD', cwd);
 	}
 
 	// -------------------------------------------------------------- weak references

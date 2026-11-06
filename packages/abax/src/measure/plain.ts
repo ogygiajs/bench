@@ -8,7 +8,7 @@ import {
 	inline_map,
 	is_svelte_module,
 	is_ts,
-	strip_types
+	ts_to_js
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
 
@@ -68,7 +68,9 @@ export function executed_code(
 		const out = compile_svelte(source, filename, svelte);
 		return { code: out.code, map: out.map as object };
 	}
-	return { code: is_ts(filename) ? strip_types(source) : source, map: null };
+	if (!is_ts(filename)) return { code: source, map: null };
+	const out = ts_to_js(source, filename);
+	return { code: out.code, map: out.map as object | null };
 }
 
 let installed: PlainConfig | null = null;
@@ -85,7 +87,7 @@ export function register_plain(config: PlainConfig): void {
 		load(url, context, next) {
 			if (!url.startsWith('file:')) return next(url, context);
 			const path = fileURLToPath(url);
-			if (!is_plain_source(path, cfg.roots)) return next(url, context);
+			if (!is_plain_source(path, cfg.roots)) return compiled_if_needed(next(url, context), path);
 			if (is_svelte_module(path)) {
 				const { code, map } = executed_code(path, readFileSync(path, 'utf8'), cfg.svelte);
 				const js = code + expose_suffix(code, path, 'js');
@@ -98,7 +100,28 @@ export function register_plain(config: PlainConfig): void {
 				typeof r.source === 'string'
 					? r.source
 					: Buffer.from(r.source as Uint8Array).toString('utf8');
+			if (r.format === 'module-typescript') {
+				// TypeScript stripping cannot run (an enum): the same compile the counting build used.
+				const { code, map } = executed_code(path, src);
+				if (map !== null) {
+					const js = code + expose_suffix(code, path, 'js');
+					return { format: 'module', source: js + inline_map(map), shortCircuit: true };
+				}
+			}
 			return { ...r, source: src + expose_suffix(src, path), shortCircuit: true };
 		}
 	});
+}
+
+/** A TypeScript module Node's stripping cannot run, compiled; anything else as loaded. */
+function compiled_if_needed<R extends { format?: string | null; source?: unknown }>(
+	r: R,
+	path: string
+): R | { format: 'module'; source: string; shortCircuit: true } {
+	if (r.format !== 'module-typescript' || r.source == null) return r;
+	const src =
+		typeof r.source === 'string' ? r.source : Buffer.from(r.source as Uint8Array).toString('utf8');
+	const { code, map } = ts_to_js(src, path);
+	if (map === null) return r;
+	return { format: 'module', source: code + inline_map(map as object), shortCircuit: true };
 }

@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { diff_reports } from '../diff/index.ts';
 import type { Finding } from '../diff/index.ts';
 import { git_diff } from '../diff/git.ts';
+import { render_markdown } from '../diff/markdown.ts';
 import { diff_engine } from '../engine/diff.ts';
 import type { EngineFinding } from '../engine/diff.ts';
 import type { EngineReport } from '../engine/types.ts';
@@ -114,15 +115,18 @@ function steps_check(name: string): Check {
 			}
 			if (layer === 'elision') {
 				const fn = pr.cases[0].measure?.bytes?.functions.find((x) => x.elided);
+				// Elision qualifies the bytes: the steps the allocation costs must still show.
+				const steps_shown = steps === 0 || !render_markdown(d).includes('No function changed');
 				const pass =
 					fn !== undefined &&
 					fn.estimated > 4 * fn.real &&
 					e.elided!.every(([a, b]) => fn.lines.some((l) => l >= a && l <= b)) &&
-					f.every((x) => x.elided);
+					f.every((x) => x.elided) &&
+					steps_shown;
 				return {
 					pass,
 					got: fn
-						? `elided at lines ${fn.lines.join(',')} (est ${fn.estimated} B, real ${fn.real} B)${f.every((x) => x.elided) ? '' : ', but flagged'}`
+						? `elided at lines ${fn.lines.join(',')} (est ${fn.estimated} B, real ${fn.real} B)${f.every((x) => x.elided) ? '' : ', but flagged'}${steps_shown ? '' : ', steps hidden'}`
 						: 'no elided function'
 				};
 			}
