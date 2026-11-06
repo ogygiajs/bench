@@ -48,6 +48,9 @@ on:
         default: ogygiajs/ogygia
   schedule:
     - cron: '41 3 * * *'
+  # TEMPORARY (throwaway test branch only): a push runs the manual path with the values below
+  push:
+    branches: [abax-ci-test]
 
 # A newer push to the same PR cancels the older run. Main runs queue, so every push lands its result.
 concurrency:
@@ -83,10 +86,10 @@ jobs:
           PAYLOAD_PR: ${{ github.event.client_payload.pr }}
           PAYLOAD_SHA: ${{ github.event.client_payload.sha }}
           PAYLOAD_BASE_SHA: ${{ github.event.client_payload.base_sha }}
-          INPUT_SHA: ${{ inputs.sha }}
-          INPUT_BASE_SHA: ${{ inputs.base_sha }}
-          INPUT_PR: ${{ inputs.pr }}
-          INPUT_COMMENT_REPO: ${{ inputs.comment_repo }}
+          INPUT_SHA: ${{ inputs.sha || '9fcdd7e4e445e1a145f95159f00af7ad4bbfd372' }}
+          INPUT_BASE_SHA: ${{ inputs.base_sha || 'c983461b3fe09af21d88718d92b44ef97eaf1f1c' }}
+          INPUT_PR: ${{ inputs.pr || '8' }}
+          INPUT_COMMENT_REPO: ${{ inputs.comment_repo || 'ogygiajs/bench' }}
         run: |
           set -euo pipefail
           pr=''; sha=''; base_sha=''; comment_repo="$UPSTREAM"
