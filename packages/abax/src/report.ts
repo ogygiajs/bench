@@ -4,6 +4,9 @@ import { OP_KINDS, op_price_vector } from './prices.ts';
 import { BUILTIN_TERMS, DYNAMIC_PRICE, add_unit, add_units, op_units } from './units.ts';
 import type { Units } from './units.ts';
 import type { CaseMeasure } from './measure/types.ts';
+import type { EngineReport } from './engine/types.ts';
+import type { GrowthReport } from './growth/index.ts';
+import type { SearchReport } from './search/index.ts';
 
 /*
  * The report (JSON, versioned). One entry per bench case; inside, every function the case ran.
@@ -110,6 +113,12 @@ export interface Report {
 	/** `prefix`: the run root relative to the git top level (module ids are relative to the root). */
 	git: { sha: string | null; prefix: string };
 	cases: CaseReport[];
+	/** `abax health`: what V8 did with the uninstrumented code (spec 5). */
+	engine?: EngineReport;
+	/** `abax growth`: steps over scaled inputs and their curve class (spec 9). */
+	growth?: GrowthReport;
+	/** `abax search`: the slowest input of each case's size found (spec 9). */
+	search?: SearchReport;
 }
 
 export const ROOT_ID = '<root>';
