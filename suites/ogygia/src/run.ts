@@ -7,13 +7,14 @@
  * And the time layer across two trees: `abax time` loads both in one process and times them in
  * turns, judged by the bench repo's same-job noise rule.
  */
-import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REPORT_SCHEMA, renderTime } from '@bench/abax';
 import type { CaseReport, EngineReport, GrowthReport, Report, TimeComparison } from '@bench/abax';
 import type { Tree } from './checkout.ts';
+import { spawn_group } from './spawn.ts';
+import type { GroupResult } from './spawn.ts';
 
 export const ABAX_DIR = fileURLToPath(new URL('../../../packages/abax/', import.meta.url));
 const ABAX_CLI = join(ABAX_DIR, 'src', 'cli.ts');
@@ -64,67 +65,93 @@ function read_report(path: string): Report | null {
  */
 const LIMIT_MIN: Record<Command | 'time', number> = { run: 15, health: 15, growth: 5, time: 20 };
 
-function tail_of(r: {
-	stdout?: string | null;
-	stderr?: string | null;
-	error?: Error;
-	status: number | null;
-}): string {
+function tail_of(r: GroupResult): string {
 	const text = (r.stderr || r.stdout || String(r.error ?? '')).trim();
-	return text.split('\n').slice(-6).join('\n') || `exit ${r.status}`;
+	return text.split('\n').slice(-6).join('\n');
 }
 
-function spawn_abax(tree: Tree, args: string[], log_file: string, limit_min: number) {
-	const r = spawnSync(process.execPath, [ABAX_CLI, ...args], {
-		cwd: tree.dir,
-		encoding: 'utf8',
-		maxBuffer: 1 << 28,
-		timeout: limit_min * 60_000,
-		killSignal: 'SIGKILL',
-		env: { ...process.env, NODE_OPTIONS: node_options(tree) }
-	});
-	appendFileSync(log_file, `$ abax ${args.join(' ')}\n${r.stdout ?? ''}${r.stderr ?? ''}\n`);
-	if ((r.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
-		return { ...r, stderr: `abax ${args[0]} did not finish within ${limit_min} min`, stdout: '' };
-	}
+/**
+ * Why an Abax command's part cannot be trusted, or null when it can. Exit 0 is a clean run and
+ * exit 1 is "a case failed" (the report holds that failure). Anything else, a signal or the time
+ * limit means the process died: its part of the report may be from a layer that finished before
+ * a later one crashed, so it is an error even when the part is there. A clean exit without its
+ * part is one too.
+ */
+export function command_error(
+	r: GroupResult,
+	wrote_part: boolean,
+	what: string,
+	limit_min: number
+): string | null {
+	const tail = tail_of(r);
+	const with_tail = (head: string) => (tail ? `${head}\n${tail}` : head);
+	if (r.timed_out) return `${what} did not finish within ${limit_min} min`;
+	if (r.error && r.status === null && r.signal === null)
+		return `${what} did not start: ${r.error.message}`;
+	if (r.signal) return with_tail(`${what} was killed by ${r.signal}`);
+	if (r.status !== 0 && r.status !== 1) return with_tail(`${what} exited with ${r.status}`);
+	if (!wrote_part) return tail || `${what} exited with ${r.status} and wrote nothing`;
+	return null;
+}
+
+async function spawn_abax(
+	tree: Tree,
+	args: string[],
+	log_file: string,
+	limit_min: number
+): Promise<GroupResult> {
+	const r = await spawn_group(
+		process.execPath,
+		[ABAX_CLI, ...args],
+		{ cwd: tree.dir, env: { ...process.env, NODE_OPTIONS: node_options(tree) } },
+		limit_min * 60_000
+	);
+	const end = r.timed_out
+		? `(killed after ${limit_min} min)`
+		: `(exit ${r.signal ?? r.status ?? r.error?.message})`;
+	appendFileSync(log_file, `$ abax ${args.join(' ')}\n${r.stdout}${r.stderr}\n${end}\n`);
 	return r;
 }
 
 /** One Abax command on one bench file; the error text when its part never reached the report. */
-function abax(
+async function abax(
 	tree: Tree,
 	command: Command,
 	file: string,
 	out: string,
 	log_file: string,
 	measure: string | null
-): string | null {
+): Promise<string | null> {
 	const extra =
 		command === 'growth'
 			? ['--scaled', 'on']
 			: command === 'run' && measure
 				? ['--measure', measure]
 				: [];
-	const r = spawn_abax(
+	const r = await spawn_abax(
 		tree,
 		[command, file, '--root', tree.dir, '--out', out, '--sha', tree.sha, ...extra],
 		log_file,
 		LIMIT_MIN[command]
 	);
-	// Exit 1 is "a case failed": the report holds that failure. A missing part is a crash.
 	const report = read_report(out);
-	if (report && report[WRITES[command]] !== undefined) return null;
-	return tail_of(r);
+	const wrote = report !== null && report[WRITES[command]] !== undefined;
+	return command_error(r, wrote, `abax ${command}`, LIMIT_MIN[command]);
 }
 
-/** One report from the per-file reports: their cases, engine cases and growth cases together. */
+/**
+ * One report from the per-file reports: their cases, engine cases, growth cases and the bench
+ * files that did not load, together; the environment of the first (one job counts them all).
+ */
 export function merge_reports(parts: Report[], sha: string): Report | null {
 	if (parts.length === 0) return null;
 	const cases: CaseReport[] = [];
+	const load_errors: NonNullable<Report['load_errors']> = [];
 	let engine: EngineReport | undefined;
 	let growth: GrowthReport | undefined;
 	for (const p of parts) {
 		cases.push(...p.cases);
+		if (p.load_errors) load_errors.push(...p.load_errors);
 		if (p.engine) {
 			if (engine) engine.cases.push(...p.engine.cases);
 			else engine = { ...p.engine, cases: [...p.engine.cases] };
@@ -134,8 +161,10 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 			else growth = { ...p.growth, cases: [...p.growth.cases] };
 		}
 	}
-	const { schema, prices, node } = parts[0];
+	const { schema, prices, node, env } = parts[0];
 	const report: Report = { schema, prices, node, git: { sha, prefix: '' }, cases };
+	if (env) report.env = env;
+	if (load_errors.length > 0) report.load_errors = load_errors;
 	if (engine) report.engine = engine;
 	if (growth) report.growth = growth;
 	return report;
@@ -143,45 +172,49 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 
 /** A report with no cases, like `like` (the base of the PR that adds the bench files). */
 export function empty_report(sha: string, like: Report): Report {
-	return {
+	const report: Report = {
 		schema: REPORT_SCHEMA,
 		prices: like.prices,
 		node: like.node,
 		git: { sha, prefix: '' },
 		cases: []
 	};
+	if (like.env) report.env = like.env;
+	return report;
 }
 
 /**
  * Count, check and grow `files` on `tree`; reports and the log go under `out_dir`. `measure`: the
  * plain-build layers `abax run` adds (`time,bytes,leaks`, `all`), or null for none.
  */
-export function run_tree(
+export async function run_tree(
 	tree: Tree,
 	files: string[],
 	out_dir: string,
 	log: (line: string) => void,
 	measure: string | null = null,
 	commands: readonly Command[] = ['run', 'health', 'growth']
-): TreeRun {
+): Promise<TreeRun> {
 	mkdirSync(out_dir, { recursive: true });
 	const log_file = join(out_dir, 'abax.log');
 	const parts: Report[] = [];
 	const load_errors: LoadError[] = [];
-	files.forEach((file, i) => {
+	for (const [i, file] of files.entries()) {
 		const out = join(out_dir, `${i}.json`);
 		rmSync(out, { force: true });
 		for (const command of commands) {
 			log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
-			const error = abax(tree, command, file, out, log_file, measure);
+			const error = await abax(tree, command, file, out, log_file, measure);
 			if (error !== null) {
 				load_errors.push({ file, command, error });
 				if (command === 'run') break;
 			}
 		}
+		// What a process that died wrote is kept (its counts are whole: a report is written once
+		// every case ran); the error above says the file's layers are not all there.
 		const report = read_report(out);
 		if (report) parts.push(report);
-	});
+	}
 	return { report: merge_reports(parts, tree.sha), load_errors };
 }
 
@@ -190,14 +223,14 @@ export function run_tree(
  * process, PR and base taking turns (`abax time`), judged by the no-overlap noise rule. The PR
  * tree's preload serves both sides (the stubs it maps to are test fixtures, not measured code).
  */
-export function run_time(
+export async function run_time(
 	head: Tree,
 	base: Tree,
 	files: string[],
 	out_dir: string,
 	log: (line: string) => void,
 	o: { repeats?: number; time_ms?: number; limit_min?: number } = {}
-): TimeRun | null {
+): Promise<TimeRun | null> {
 	if (files.length === 0) return null;
 	mkdirSync(out_dir, { recursive: true });
 	const out = join(out_dir, 'time.json');
@@ -209,7 +242,8 @@ export function run_time(
 		...(o.repeats !== undefined ? ['--repeats', String(o.repeats)] : []),
 		...(o.time_ms !== undefined ? ['--time-ms', String(o.time_ms)] : [])
 	];
-	const r = spawn_abax(
+	const limit_min = o.limit_min ?? LIMIT_MIN.time;
+	const r = await spawn_abax(
 		head,
 		[
 			'time',
@@ -225,12 +259,10 @@ export function run_time(
 			...extra
 		],
 		join(out_dir, 'abax.log'),
-		o.limit_min ?? LIMIT_MIN.time
+		limit_min
 	);
-	if (!existsSync(out)) {
-		const error = tail_of(r);
-		return { comparison: null, markdown: '', error };
-	}
+	const error = command_error(r, existsSync(out), 'abax time', limit_min);
+	if (error !== null) return { comparison: null, markdown: '', error };
 	const comparison = JSON.parse(readFileSync(out, 'utf8')) as TimeComparison;
 	return { comparison, markdown: renderTime(comparison), error: null };
 }

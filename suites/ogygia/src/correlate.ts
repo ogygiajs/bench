@@ -225,8 +225,8 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			prepare_tree(repo, work, commit, ABAX_DIR, log),
 			packages
 		);
-		const b = run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
-		const h = run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
+		const b = await run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
+		const h = await run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
 		// What every bench file shares does not pick the timed ones here: the bench files and the
 		// harness are laid over both trees, and a lockfile change times nothing in particular.
 		const changed = changed_files(repo, parent, commit).filter((f) => !is_shared(f));
@@ -234,7 +234,7 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 		const both = [...loaded(b.report)].filter((f) => loaded(h.report).has(f));
 		const selection = select_changed(import_graphs(head.dir, both), changed);
 		const timed = selection.selected;
-		const t = run_time(head, base, timed, join(dir, 'time'), log, {
+		const t = await run_time(head, base, timed, join(dir, 'time'), log, {
 			repeats: Number(values.repeats ?? 8),
 			time_ms: Number(values['time-ms'] ?? 150),
 			limit_min: 90

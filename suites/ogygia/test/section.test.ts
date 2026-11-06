@@ -133,6 +133,19 @@ test('reports of several bench files merge into one per tree', () => {
 	assert.equal(merge_reports([], 'x'), null);
 });
 
+test('the merged report keeps the environment and every file that did not load', () => {
+	const env = { node: 'v26', v8: '14', platform: 'linux', arch: 'x64', weights: null };
+	const a = { ...report('s', [case_of('one', 1)]), env, load_errors: [{ file: 'a', error: 'x' }] };
+	const b = { ...report('s', []), env, load_errors: [{ file: 'b', error: 'y' }] };
+	const merged = merge_reports([a, b], 'f'.repeat(40))!;
+	assert.deepEqual(merged.env, env);
+	assert.deepEqual(
+		merged.load_errors?.map((e) => e.file),
+		['a', 'b']
+	);
+	assert.equal(merge_reports([report('s', [])], 'x')!.load_errors, undefined);
+});
+
 test('a full run lists every case with its counts', () => {
 	const md = render_full_summary(
 		result({

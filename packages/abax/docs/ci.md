@@ -57,7 +57,10 @@ In this repository:
 6. **Counting.** Each selected bench file runs in its own processes on the head tree, then on the
    base tree: `abax run`, `abax health`, and `abax growth --scaled on`. One bad file costs only its
    own cases. Each command has a time limit: 15 minutes for `run` and `health`, 5 for `growth`.
-   The per-file reports merge into one report per tree.
+   Each runs in a process group of its own, so the limit kills the children Abax starts too
+   (health and measure children), and none outlives its command. An exit other than 0 (clean) or
+   1 (a case failed), a signal or the limit is listed as an error for that file, even when the
+   report has its part. The per-file reports merge into one report per tree.
 7. **The diff.** `diffReports` and `diffSections` with `git diff -M --unified=0` between the merge
    base and the head.
 8. **Time.** `abax time` loads both trees in one process and times the selected bench files in

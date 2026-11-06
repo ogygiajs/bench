@@ -122,14 +122,14 @@ async function main(): Promise<void> {
 	};
 
 	if (selection.selected.length > 0) {
-		const head_run = run_tree(head, selection.selected, join(out, 'head'), log, measure);
+		const head_run = await run_tree(head, selection.selected, join(out, 'head'), log, measure);
 		result.head = head_run.report;
 		result.load_errors.head = head_run.load_errors;
 		if (mb) {
 			const base_tree = prepare_tree(repo, work, mb, ABAX_DIR, log);
 			const present = new Set(base_tree.benches);
 			const base_files = selection.selected.filter((f) => present.has(f));
-			const base_run = run_tree(base_tree, base_files, join(out, 'base'), log, measure);
+			const base_run = await run_tree(base_tree, base_files, join(out, 'base'), log, measure);
 			result.load_errors.base = base_run.load_errors;
 			result.base = base_run.report;
 			if (result.head) {
@@ -142,7 +142,7 @@ async function main(): Promise<void> {
 				};
 			}
 			if (values.time !== 'off') {
-				result.time = run_time(head, base_tree, base_files, join(out, 'time'), log);
+				result.time = await run_time(head, base_tree, base_files, join(out, 'time'), log);
 			}
 		}
 	}
