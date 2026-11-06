@@ -318,6 +318,10 @@ fitted cost in ns. It is not a measurement. Only the time layer measures.
 - Dependencies. Uncounted code costs nothing of its own, but the priced built-ins it calls are
   charged to the counted function that called into it. A new version of a dependency can move a
   count.
+- The Node version. Priced built-ins that Node's own JavaScript calls are charged to the counted
+  caller, and that internal code changes between versions.
+- The environment, when the code reads it: a function that slices absolute paths counts more in a
+  deeper directory.
 - The price file. A report records the price version it was counted with. When two reports differ,
   `abax diff` recounts both with the current prices from the units each report keeps, and compares
   those.
@@ -341,6 +345,13 @@ fitted cost in ns. It is not a measurement. Only the time layer measures.
   built-ins return (`split`, `slice`, `map`, `JSON.parse`) and the backing store `push` grows are
   not in it. In the quick start, `rank` is estimated at 16 B and V8 allocates 907.66 B.
 - **Real bytes are per function, not per line.**
+- **Counts match across machines only when Node and paths match.** ogygia `86e537b` counted on CI
+  (Node 26.13.0) and the same tree counted on an M4 Max (Node 26.4.0): 45 of 48 cases gave the
+  same steps, 875 of 879 functions. In the other 3, `override` in the flags package was charged
+  651 `slice` calls on one side and 1,151 on the other, all from code Abax does not count (line 0
+  in the report, most likely Node's own), and two profiler
+  path helpers counted more `startsWith`, `split` and `join` work for a longer checkout path. PR
+  and base always run on one machine, in one job, so this never shows in a comparison.
 - **Coverage is low today.** ogygia's gate on PR #180: 1,524 of 8,234 functions (18.5%) have a
   measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
   app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
