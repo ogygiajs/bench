@@ -214,11 +214,18 @@ The size model is V8 on 64 bits with pointer compression, Node's default:
 | One-byte string          | 12 + 1 per character, rounded up to 4                                         |
 | `Map` / `Set` (empty)    | 88 / 72                                                                       |
 
+A priced built-in that returns something new adds it too, charged to the line that called it:
+the array or string it returns, the strings `split` cuts, a match's captures, what `JSON.parse`
+and `structuredClone` build. A string cut out of a longer one (`slice`, `substring`, `trim`, the
+parts of `split`) of 13 characters or more is a 20-byte slice that points into its parent, as in
+V8. A result the call already had (`sort` returns its own array) adds nothing. These show in the
+report under each built-in, with their own bytes and allocations.
+
 This is what the code asks for. The engine may give less: escape analysis removes objects that
-never leave an optimized function. It may also give more: arrays and strings that built-ins return
-(`split`, `slice`, `map`, `JSON.parse`) and the backing store that `push` grows are not in the
-estimate. The [real bytes layer](layers.md#real-bytes) measures what V8 allocates, per function,
-and the report shows both.
+never leave an optimized function. It may also give more: the backing store that `push` grows and
+what unpriced built-ins return are not in the estimate. The
+[real bytes layer](layers.md#real-bytes) measures what V8 allocates, per function, and the report
+shows both.
 
 ## Private functions
 

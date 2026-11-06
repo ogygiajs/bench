@@ -21,13 +21,14 @@ In [ogygiajs/ogygia](https://github.com/ogygiajs/ogygia):
 
 In this repository:
 
-| Path                          | What                                                                                  |
-| ----------------------------- | ------------------------------------------------------------------------------------- |
-| `packages/abax`               | The engine.                                                                           |
-| `packages/compare`            | The no-overlap noise rule and the one PR comment with sections.                       |
-| `suites/ogygia`               | Checks out ogygia commits, picks bench files, runs Abax, writes the section and JSON. |
-| `.github/workflows/abax.yml`  | The job.                                                                              |
-| `.github/workflows/check.yml` | Tests, lint, format, and `abax verify` on every PR and push to main of this repo.     |
+| Path                          | What                                                                                                                 |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `packages/abax`               | The engine.                                                                                                          |
+| `packages/compare`            | The no-overlap noise rule and the one PR comment with sections.                                                      |
+| `suites/ogygia`               | Checks out ogygia commits, picks bench files, runs Abax, writes the section and JSON.                                |
+| `.github/workflows/abax.yml`  | The job.                                                                                                             |
+| `.github/workflows/check.yml` | Tests, lint, format, `abax verify` and 60 fuzzed programs on fixed seeds, on every PR and push to main of this repo. |
+| `.github/workflows/fuzz.yml`  | The fuzzer every night at 02:23 UTC on new seeds; repros kept as an artifact.                                        |
 
 ## A PR, step by step
 
@@ -50,14 +51,20 @@ In this repository:
    and workspace links resolve as they will at run time), into `.svelte` script blocks, stopping at
    `node_modules`. A bench file runs when its graph reaches a changed file. A change to
    `pnpm-lock.yaml`, `pnpm-workspace.yaml` or anything under `internal/abax/` runs them all.
-6. **Counting.** Each selected bench file runs in its own processes on the head tree, then on the
-   base tree: `abax run`, `abax health`, and `abax growth --scaled on`. One bad file costs only its
-   own cases. Each command has a time limit: 15 minutes for `run` and `health`, 5 for `growth`.
-   The per-file reports merge into one report per tree.
+6. **Counting.** Each selected bench file runs in its own processes, on the head tree and the base
+   tree at once: `abax run`, `abax health`, and `abax growth --scaled on`. The bench files of a
+   tree run side by side, each tree on half the cores. Counts, engine health and growth come out
+   the same under any load, so nothing waits for a quiet machine here. On a PR, engine health runs
+   each case once; main and nightly runs check that V8 does the same thing twice. One bad file
+   costs only its own cases. Each command has a time limit: 15 minutes for `run` and `health`, 5
+   for `growth`. The per-file reports merge into one report per tree. Before this, the files ran
+   one after another: on a 4-core runner, a PR with 11 bench files spent per tree about 2 minutes
+   on engine health, 2.4 on growth and 25 seconds on counting, then 5.4 minutes on timing.
 7. **The diff.** `diffReports` and `diffSections` with `git diff -M --unified=0` between the merge
    base and the head.
 8. **Time.** `abax time` loads both trees in one process and times the selected bench files in
-   turns, 5 each (20-minute limit).
+   turns, 5 each, on fresh copies of both trees each turn; a case that looks changed gets 5 more
+   (20-minute limit). This is the one step that needs the machine to itself, so it runs alone.
 9. **Store and post.** `result.json` goes to the `results` branch, and `section.md` becomes the
    `abax` section of the PR's comment.
 
