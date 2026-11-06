@@ -71,22 +71,23 @@ initializer. Module-level code is a function too, named `<top>`.
 A block's price is fixed when the module is transformed: the sum of the operations in it, each at
 the price in `prices.json`.
 
-| Operation                   | Steps | Operation                        | Steps |
-| --------------------------- | ----: | -------------------------------- | ----: |
-| property read               |     1 | call                             |     4 |
-| property write              |     2 | `new`                            |     6 |
-| arithmetic, comparison      |     1 | template literal                 |     2 |
-| logical, branch, unary      |     1 | string concatenation             |     2 |
-| assignment, `++`/`--`       |     1 | start a `for..of` (the iterator) |     8 |
-| allocation                  |     4 | each `for..of` step              |     4 |
-| each allocated field (word) |     1 | each `for..in` step              |     6 |
-| `await`                     |    20 | `yield`                          |    10 |
-| `throw`                     |    30 |                                  |       |
+| Operation                  | Steps | Operation                        | Steps |
+| -------------------------- | ----: | -------------------------------- | ----: |
+| property read              |     1 | call                             |     4 |
+| property write             |     2 | `new`                            |     6 |
+| arithmetic, comparison     |     1 | template literal                 |     2 |
+| logical, branch, unary     |     1 | string concatenation             |     2 |
+| assignment, `++`/`--`      |     1 | start a `for..of` (the iterator) |     8 |
+| allocation                 |     4 | each `for..of` step              |     4 |
+| each 4-byte word allocated |     1 | each `for..in` step              |     6 |
+| `await`                    |    20 | `yield`                          |    10 |
+| `throw`                    |    30 |                                  |       |
 
 In `score`, the first block is an assignment, a property read (`row.tags`) and the start of a
 `for..of`: 1 + 1 + 8 = 10. The loop body is a property read, an addition, an assignment and an
 iterator step: 1 + 1 + 1 + 4 = 7. For 20 rows of 3 tags, `score` costs 20 × 10 + 60 × 7 = 620
-steps, which is what the report says.
+steps, which is what the report says. In `rank`, `const out: number[] = []` is an allocation (4),
+four words of an empty array (16 B, so 4) and an assignment (1): 9 steps on line 15.
 
 Some costs depend on sizes only known at run time. The runtime adds them when the code runs:
 

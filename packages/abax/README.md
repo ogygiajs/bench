@@ -15,9 +15,10 @@ Timings are noisy. On the same laptop, in one process, with nothing changed betw
 `match_path` case of ogygia's router took between 1.13 ms and 1.21 ms at the median over five
 turns: a 7% spread. A change that costs 1% cannot be seen through that.
 
-CI runners are worse. ogygia PR #180 changed CI files and no code that a bench reaches. Abax
-counted every function the same on both sides. The time table in the same comment still called
-one case slower and three faster, by the same no-overlap rule the app benchmark uses.
+CI runners are worse. ogygia PR #180 changed CI files and no code that a bench reaches. On both of
+its last two pushes, Abax counted every function the same on both sides. The time table in the
+same comment, judged by the same no-overlap rule the app benchmark uses, called one case slower and
+three faster on the first push, and two other cases slower and one other faster on the second.
 
 And when a timing does move, it says which benchmark moved, not which line.
 

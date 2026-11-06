@@ -147,7 +147,7 @@ cat suites/ogygia/out/section.md
 Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones and trees, default
 `.work`, reused across runs), `--measure time,bytes,leaks|all|none`, `--time off`. On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
-already installed. FULL_RUN_TIME
+already installed.
 
 ## The gate on ogygia
 
