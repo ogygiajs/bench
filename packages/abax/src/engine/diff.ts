@@ -1,6 +1,6 @@
 import { IDENTITY, LineMap } from '../diff/git.ts';
 import type { FileDiff } from '../diff/git.ts';
-import { IC_RANK } from './types.ts';
+import { IC_RANK, state_words } from './types.ts';
 import type { EngineCase, EngineFunction, EngineReport, EngineSite } from './types.ts';
 
 /*
@@ -149,13 +149,15 @@ function diff_case(
 			list
 				.map((d) => `${d.reason} at line ${d.line}${d.count > 1 ? `, ${d.count}x` : ''}`)
 				.join('; ');
-		if (f.optimized && !g.optimized) {
+		// cold: it now runs too few times to get optimized; that is not V8 refusing it
+		if (f.optimized && !g.optimized && g.not_optimized !== 'cold') {
+			const how = g.not_optimized === 'refused' ? 'V8 refused to optimize it' : `now ${g.tier}`;
 			add(
 				out.findings,
 				'not optimized',
 				g,
 				g.line,
-				`${where(g.module, g.line)} ${code(g.path)} is no longer optimized (now ${g.tier}${fresh.length > 0 ? `; reason: ${why(fresh)}` : ''})`
+				`${where(g.module, g.line)} ${code(g.path)} is no longer optimized (${how}${fresh.length > 0 ? `; reason: ${why(fresh)}` : ''})`
 			);
 		} else if (fresh.length > 0) {
 			add(
@@ -199,7 +201,7 @@ function diff_case(
 					'inline cache',
 					g,
 					y.line,
-					`${where(y.module, y.line)} ${what} went ${x.state} -> ${y.state}`
+					`${where(y.module, y.line)} ${what} went ${state_words(x)} -> ${state_words(y)}`
 				);
 			} else if (IC_RANK[y.state] < IC_RANK[x.state]) {
 				add(
@@ -207,7 +209,7 @@ function diff_case(
 					'inline cache',
 					g,
 					y.line,
-					`${where(y.module, y.line)} ${what} went ${x.state} -> ${y.state}`
+					`${where(y.module, y.line)} ${what} went ${state_words(x)} -> ${state_words(y)}`
 				);
 			}
 		};
@@ -232,7 +234,7 @@ function diff_case(
 					'inline cache',
 					g,
 					s.line,
-					`${where(s.module, s.line)} new ${s.kind} ${code(s.key)} is ${s.state}`
+					`${where(s.module, s.line)} new ${s.kind} ${code(s.key)} is ${state_words(s)}`
 				);
 			}
 		}
@@ -259,7 +261,7 @@ function diff_case(
 					'inline cache',
 					g,
 					s.line,
-					`${where(s.module, s.line)} new ${s.kind} ${code(s.key)} is ${s.state}`
+					`${where(s.module, s.line)} new ${s.kind} ${code(s.key)} is ${state_words(s)}`
 				);
 			}
 		}
