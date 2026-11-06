@@ -75,6 +75,14 @@ export function op_price_vector(prices: Prices): Float64Array {
 	return v;
 }
 
+/**
+ * n log2 n (n itself up to 1), to the nearest 1/64: a binary fraction, so a price times it and a
+ * sum of those are exact in any order (a recount from units equals the runtime's count to the bit).
+ */
+export function n_log_n(n: number): number {
+	return n > 1 ? Math.round(n * Math.log2(n) * 64) / 64 : n;
+}
+
 export function builtin_cost(p: BuiltinPrice, n: number): number {
 	switch (p.model) {
 		case 'const':
@@ -82,7 +90,7 @@ export function builtin_cost(p: BuiltinPrice, n: number): number {
 		case 'n':
 			return p.base + p.k * n;
 		case 'n_log_n':
-			return p.base + (n > 1 ? p.k * n * Math.log2(n) : p.k * n);
+			return p.base + p.k * n_log_n(n);
 		case 'n2':
 			return p.base + p.k * n * n;
 	}

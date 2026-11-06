@@ -1,5 +1,5 @@
 import type { ModuleMeta } from '../meta.ts';
-import { load_prices, builtin_names } from '../prices.ts';
+import { load_prices, builtin_names, n_log_n } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import { array_bytes, object_bytes, string_bytes } from '../layout.ts';
 import { DisposeScope } from './dispose.ts';
@@ -90,7 +90,7 @@ function add_units(t: Table, key: number, n: number): void {
 	const k = key * 4;
 	t[k] = (t[k] ?? 0) + 1;
 	t[k + 1] = (t[k + 1] ?? 0) + n;
-	t[k + 2] = (t[k + 2] ?? 0) + (n > 1 ? n * Math.log2(n) : n);
+	t[k + 2] = (t[k + 2] ?? 0) + n_log_n(n);
 	t[k + 3] = (t[k + 3] ?? 0) + n * n;
 }
 

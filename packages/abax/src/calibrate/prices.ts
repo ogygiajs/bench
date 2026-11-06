@@ -170,10 +170,17 @@ export async function time_builtins(
 	return out;
 }
 
-function significant(x: number, digits = 3): number {
-	if (x === 0) return 0;
-	const p = 10 ** (digits - Math.ceil(Math.log10(Math.abs(x))));
-	return Math.round(x * p) / p;
+/**
+ * A price as the file keeps it: a whole number from 64 up, a multiple of 1/4 from 8 up, else a
+ * multiple of 1/64. All are exact in binary floating point, so a count times a price, and a sum of
+ * those, comes out the same in whatever order it is added: a recount from units equals the count
+ * the runtime kept, to the bit. (Decimal fractions like 0.18 are not exact, and their sums move in
+ * the last digit.) The rounding is at most 1.6% of a price from 1 up.
+ */
+export function quantize_price(x: number): number {
+	if (!(x > 0)) return 0;
+	const step = x >= 64 ? 1 : x >= 8 ? 4 : 64;
+	return Math.round(x * step) / step;
 }
 
 /** Built-in prices in steps from fitted curves (ns) and the time of one step. */
@@ -185,8 +192,8 @@ export function prices_from_fits(
 	for (const [key, f] of Object.entries(fits)) {
 		out[key] = {
 			model: f.model,
-			base: significant(f.base_ns / step_ns),
-			k: f.model === 'const' ? 0 : significant(f.k_ns / step_ns)
+			base: quantize_price(f.base_ns / step_ns),
+			k: f.model === 'const' ? 0 : quantize_price(f.k_ns / step_ns)
 		};
 	}
 	return out;

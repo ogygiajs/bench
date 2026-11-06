@@ -130,7 +130,7 @@ test('diff: different price files recount both sides; an unchanged case shows no
 	assert.equal(d.prices_match, true);
 	assert.deepEqual(d.recounted, { version: v2.prices.version, hash: v2.hash });
 	assert.deepEqual(d.findings, []);
-	assert.ok(render_markdown(d).includes('recounted with prices v2'));
+	assert.ok(render_markdown(d).includes(`recounted with prices v${v2.prices.version}`));
 	// a report without units cannot be recounted: flagged as not comparable
 	const old = structuredClone(base);
 	for (const f of old.cases[0].functions) delete f.units;
