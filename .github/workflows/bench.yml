@@ -208,6 +208,7 @@ jobs:
           BENCH_KIND: ${{ steps.plan.outputs.kind }}
           BENCH_SHA: ${{ steps.plan.outputs.sha }}
           BENCH_BASE_SHA: ${{ steps.plan.outputs.base_sha }}
+          BENCH_PR: ${{ steps.plan.outputs.pr }}
         run: |
           node benchmark.ts $([ "$SCOPE" = fast ] && echo --fast) \
             --config frameworks.config.json --out results/scratch/run.md --json
@@ -223,17 +224,20 @@ jobs:
           if git ls-remote --exit-code --heads "$url" results >/dev/null; then
             git clone --quiet --branch results "$url" _results
           else
-            # First run: start the orphan branch with a note on what it holds.
+            # First run: start the orphan branch.
             git init --quiet -b results _results
             git -C _results remote add origin "$url"
-            printf '%s\n' \
-              '# results' '' \
-              'Written by the `bench` workflow; nothing here is edited by hand.' '' \
-              '- `main/latest.json`: the newest baseline run (a push to ogygia main, or the weekly `ogygia@latest` run)' \
-              '- `main/<sha>.json`: every run for an ogygia main commit (`main/v<version>.json` for the weekly run)' \
-              '- `pr/<number>.json`: the newest run for that ogygia PR' \
-              > _results/README.md
           fi
+          # A note on what the branch holds, rewritten every run so it follows the layout.
+          printf '%s\n' \
+            '# results' '' \
+            'Written by the `bench` workflow; nothing here is edited by hand.' '' \
+            '- `main/latest.json`: the newest baseline run (a push to ogygia main, or the weekly `ogygia@latest` run)' \
+            '- `main/<sha>.json`: every run for an ogygia main commit (`main/v<version>.json` for the weekly run)' \
+            '- `pr/<number>.json`: the newest run for that ogygia PR' \
+            '- `commit/<sha>.json`: the newest run of that ogygia commit (full sha), from a PR run or a main run alike;' \
+            '  `meta.sha` is the commit, `meta.pr` the PR of a PR run, `meta.base` the base commit measured beside it' \
+            > _results/README.md
           git -C _results config user.name 'github-actions[bot]'
           git -C _results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
@@ -270,16 +274,23 @@ jobs:
             cp results/scratch/run.json _results/main/latest.json
             msg="main $name"
           fi
+          # The same file per measured commit, for walking main's history and a PR's commits. The
+          # weekly run installs a release and has no sha, so it has no commit file.
+          if [ -n "$SHA" ]; then
+            mkdir -p _results/commit
+            cp results/scratch/run.json "_results/commit/$SHA.json"
+          fi
           cd _results
           git add -A
           git diff --cached --quiet && exit 0
           git commit --quiet -m "$msg"
-          # Other runs (other PRs, a main push) push here too; their files never overlap, so a
-          # rebase onto theirs is always clean.
+          # Other runs (other PRs, a main push) push here too. Their files overlap only when two
+          # runs measured the same commit; then this, the newer run, keeps its file (in a rebase,
+          # "theirs" is the commit being replayed: this run's).
           for i in 1 2 3 4 5; do
             git push --quiet origin HEAD:results && exit 0
             sleep $((i * 3))
-            git pull --quiet --rebase origin results || true
+            git pull --quiet --rebase -X theirs origin results || true
           done
           echo "::error::could not push to the results branch"
           exit 1

@@ -26,8 +26,8 @@
 // to be running. Each pass's values are kept too (`samples`), for compare.ts.
 // --ab (or BENCH_AB=1) measures the PR's ogygia (`ogygia`) against its base build (`ogygia-base`,
 // from build-all.ts --base-spec) and nothing else; see harness/ab.ts.
-// --kind / --sha / --base-sha (or BENCH_KIND / BENCH_SHA / BENCH_BASE_SHA) only label the JSON's
-// `meta` block.
+// --kind / --sha / --base-sha / --pr (or BENCH_KIND / BENCH_SHA / BENCH_BASE_SHA / BENCH_PR) only
+// label the JSON's `meta` block.
 // --scenarios all|none|docs,dashboard,… (or BENCH_SCENARIOS, default all) then runs the scenarios
 // (harness/run.ts) with --scenario-passes N passes (or BENCH_SCENARIO_PASSES, default --passes);
 // --skip and --fast apply to their apps too. --no-blog skips the blog's Lighthouse run above.
@@ -83,6 +83,7 @@ function parseArgs(argv) {
 		passes: Number(process.env.BENCH_PASSES || 1),
 		kind: process.env.BENCH_KIND || 'manual',
 		sha: process.env.BENCH_SHA || null,
+		pr: process.env.BENCH_PR ? Number(process.env.BENCH_PR) : null,
 		scenarios: process.env.BENCH_SCENARIOS || 'all',
 		scenarioPasses: process.env.BENCH_SCENARIO_PASSES ? Number(process.env.BENCH_SCENARIO_PASSES) : null
 	};
@@ -96,6 +97,7 @@ function parseArgs(argv) {
 		else if (a === '--passes') args.passes = Number(argv[++i]);
 		else if (a === '--kind') args.kind = argv[++i];
 		else if (a === '--sha') args.sha = argv[++i];
+		else if (a === '--pr') args.pr = Number(argv[++i]);
 		else if (a === '--out') args.out = argv[++i];
 		else if (a === '--json') {
 			const next = argv[i + 1];
@@ -552,6 +554,8 @@ function runMeta(args, frameworks) {
 		ogygia: pr.ogygia ?? null,
 		spec: pr.spec ?? null,
 		sha: args.sha,
+		// The ogygia PR a `pr` run measured.
+		...(args.pr ? { pr: args.pr } : {}),
 		mode: args.kind,
 		scope: args.fast ? 'fast' : 'full',
 		frameworks: frameworks.map((f) => f.id),
