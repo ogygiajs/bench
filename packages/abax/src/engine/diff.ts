@@ -14,7 +14,10 @@ import type { EngineCase, EngineFunction, EngineReport, EngineSite } from './typ
  *                    an inline cache that got more shapes (monomorphic -> polymorphic -> megamorphic);
  *                    new code that deopts or is megamorphic.
  * Better: the same, the other way round (listed, never a finding).
- * Deopts on code that had not run yet when it was optimized (see is_cold) are never findings.
+ * Deopts on code that had not run yet when it was optimized (see is_cold) and deopts the garbage
+ * collector decides (see is_gc) are never findings.
+ * A function or site either side marks unstable (its runs did not agree, see stability.ts) is left
+ * out of the comparison and only counted in `skipped`: it is never a finding, never "better".
  */
 
 export type EngineFindingKind = 'not optimized' | 'deopt' | 'inline cache';
@@ -32,7 +35,13 @@ export interface EngineFinding {
 export interface EngineDiff {
 	findings: EngineFinding[];
 	better: EngineFinding[];
+	/** Cases with at least one function or site skipped as unstable. */
 	unstable: string[];
+	/**
+	 * Functions and inline-cache sites left out of the comparison because V8 did not do the same
+	 * thing on every run of one side or the other: never a finding, never "better".
+	 */
+	skipped: { functions: number; sites: number };
 	failed: string[];
 }
 
@@ -73,6 +82,36 @@ export function is_cold(reason: string): boolean {
 	return reason.startsWith('Insufficient type feedback');
 }
 
+/**
+ * A deopt the garbage collector decides: optimized code that embedded an object that died (a
+ * closure's context, a map), or a pretenuring decision the collector changed. When it happens
+ * depends on when collections run, which any allocation anywhere moves, so it is kept in the
+ * report but never a finding.
+ */
+export function is_gc(reason: string): boolean {
+	return (
+		reason === 'embedded weak objects cleared' ||
+		reason === 'dependent allocation site tenuring changed'
+	);
+}
+
+/** A deopt that can be a finding (or a "better"). */
+function counts(reason: string): boolean {
+	return !is_cold(reason) && !is_gc(reason);
+}
+
+/**
+ * Entries a case cannot vouch for. A case marked unstable without any marked entry (a report from
+ * before per-entry marks) vouches for none of them.
+ */
+function untrusted(c: EngineCase): (e: { unstable?: string }) => boolean {
+	const whole =
+		!c.stable &&
+		c.functions.every((f) => f.unstable === undefined) &&
+		c.sites.every((s) => s.unstable === undefined);
+	return whole ? () => true : (e) => e.unstable !== undefined;
+}
+
 function diff_case(
 	b: EngineCase,
 	p: EngineCase,
@@ -80,6 +119,10 @@ function diff_case(
 	line_maps: Map<string, LineMap>,
 	out: EngineDiff
 ): void {
+	const base_bad = untrusted(b);
+	const pr_bad = untrusted(p);
+	let skipped_functions = 0;
+	let skipped_sites = 0;
 	const pr_fns = new Map(p.functions.map((f) => [f.id, f]));
 	const sites_of = (c: EngineCase): Map<string, EngineSite[]> => {
 		const m = new Map<string, EngineSite[]>();
@@ -139,10 +182,14 @@ function diff_case(
 	};
 
 	for (const [f, g] of pairs) {
+		if (base_bad(f) || pr_bad(g)) {
+			skipped_functions++;
+			continue;
+		}
 		const fr = reasons(f);
 		const gr = reasons(g);
-		const fresh = g.deopts.filter((d) => !is_cold(d.reason) && !fr.has(d.reason));
-		const gone = f.deopts.filter((d) => !is_cold(d.reason) && !gr.has(d.reason));
+		const fresh = g.deopts.filter((d) => counts(d.reason) && !fr.has(d.reason));
+		const gone = f.deopts.filter((d) => counts(d.reason) && !gr.has(d.reason));
 		const why = (list: typeof fresh): string =>
 			list
 				.map((d) => `${d.reason} at line ${d.line}${d.count > 1 ? `, ${d.count}x` : ''}`)
@@ -190,6 +237,10 @@ function diff_case(
 		const left_base = new Set(bs);
 		const fresh_sites: EngineSite[] = [];
 		const compare = (x: EngineSite, y: EngineSite): void => {
+			if (base_bad(x) || pr_bad(y)) {
+				skipped_sites++;
+				return;
+			}
 			const what = `${y.kind} ${code(y.key)}`;
 			if (IC_RANK[y.state] > IC_RANK[x.state]) {
 				add(
@@ -220,6 +271,10 @@ function diff_case(
 		}
 		// sites whose key changed (a renamed property): paired by kind, in order
 		for (const s of fresh_sites) {
+			if (pr_bad(s)) {
+				skipped_sites++;
+				continue;
+			}
 			const x = [...left_base].find((c) => c.kind === s.kind);
 			if (x) {
 				left_base.delete(x);
@@ -239,7 +294,11 @@ function diff_case(
 	// new code
 	for (const g of p.functions) {
 		if (matched.has(g.id)) continue;
-		const hot = g.deopts.filter((x) => !is_cold(x.reason));
+		if (pr_bad(g)) {
+			skipped_functions++;
+			continue;
+		}
+		const hot = g.deopts.filter((x) => counts(x.reason));
 		if (hot.length > 0) {
 			const d = hot[0];
 			add(
@@ -251,6 +310,10 @@ function diff_case(
 			);
 		}
 		for (const s of pr_sites.get(g.id) ?? []) {
+			if (pr_bad(s)) {
+				skipped_sites++;
+				continue;
+			}
 			if (IC_RANK[s.state] >= IC_RANK.megamorphic) {
 				add(
 					out.findings,
@@ -262,6 +325,12 @@ function diff_case(
 			}
 		}
 	}
+
+	if (skipped_functions + skipped_sites > 0) {
+		out.unstable.push(p.name);
+		out.skipped.functions += skipped_functions;
+		out.skipped.sites += skipped_sites;
+	}
 }
 
 export function diff_engine(
@@ -269,7 +338,13 @@ export function diff_engine(
 	pr: EngineReport,
 	opts: EngineDiffOptions = {}
 ): EngineDiff {
-	const out: EngineDiff = { findings: [], better: [], unstable: [], failed: [] };
+	const out: EngineDiff = {
+		findings: [],
+		better: [],
+		unstable: [],
+		skipped: { functions: 0, sites: 0 },
+		failed: []
+	};
 	const module_map = new Map<string, string>();
 	const line_maps = new Map<string, LineMap>();
 	for (const f of opts.files ?? []) {
@@ -283,10 +358,26 @@ export function diff_engine(
 			out.failed.push(b.name);
 			continue;
 		}
-		if (!b.stable || !p.stable) out.unstable.push(b.name);
 		diff_case(b, p, module_map, line_maps, out);
 	}
 	return out;
+}
+
+function plural(n: number, one: string, many: string): string {
+	return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "3 functions and 1 inline cache skipped: V8 not repeatable (`case`)", or null. */
+export function skipped_line(d: EngineDiff): string | null {
+	const { functions, sites } = d.skipped;
+	if (functions + sites === 0) return null;
+	const what = [
+		functions > 0 ? plural(functions, 'function', 'functions') : '',
+		sites > 0 ? plural(sites, 'inline cache', 'inline caches') : ''
+	]
+		.filter((s) => s.length > 0)
+		.join(' and ');
+	return `${what} skipped: V8 not repeatable (${d.unstable.map(code).join(', ')})`;
 }
 
 /** The "Engine" part of the Abax section. */
@@ -312,12 +403,8 @@ export function render_engine_markdown(d: EngineDiff): string {
 		for (const f of d.better) lines.push(`- ${f.text}`);
 		lines.push('', '</details>', '');
 	}
-	if (d.unstable.length > 0) {
-		lines.push(
-			`**Unstable** (V8 did not do the same thing twice): ${d.unstable.map(code).join(', ')}`,
-			''
-		);
-	}
+	const skipped = skipped_line(d);
+	if (skipped) lines.push(skipped, '');
 	if (d.failed.length > 0) lines.push(`**Failed**: ${d.failed.map(code).join(', ')}`, '');
 	return lines.join('\n');
 }

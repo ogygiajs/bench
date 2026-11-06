@@ -6,6 +6,7 @@ import { parseSync } from 'oxc-parser';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
 import { LoaderCore } from '../loader/core.ts';
+import { watch_parent } from '../proc.ts';
 import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
 import {
@@ -276,4 +277,13 @@ async function main(): Promise<void> {
 	writeFileSync(config.out, JSON.stringify(result));
 }
 
-await main();
+// Gone with the parent, and done when main is: an open handle in a measured module (a live
+// interval at the top level) cannot keep the child alive.
+watch_parent();
+try {
+	await main();
+} catch (e) {
+	process.stderr.write(`${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`);
+	process.exit(1);
+}
+process.exit(0);
