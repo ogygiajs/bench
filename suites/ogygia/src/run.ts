@@ -6,9 +6,16 @@
  *
  * And the time layer across two trees: `abax time` loads both in one process and times them in
  * turns, judged by the bench repo's same-job noise rule.
+ *
+ * Where a PR run's time went (11 bench files, 15 min on a 4-core runner): per tree about 2 min of
+ * engine health (every case twice, in V8-logging children), 2.4 min of growth (one bench file 96 s)
+ * and 25 s of counting, all one file after another; then 5.4 min of timing. Installs took seconds.
+ * The files now run side by side (counts, health and growth are exact under any load; only the
+ * time layer needs the machine to itself), and a PR's health runs each case once.
  */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REPORT_SCHEMA, renderTime } from '@bench/abax';
@@ -90,22 +97,60 @@ function spawn_abax(tree: Tree, args: string[], log_file: string, limit_min: num
 	return r;
 }
 
+/** spawn_abax without blocking: the commands of several bench files run side by side. */
+function spawn_abax_async(
+	tree: Tree,
+	args: string[],
+	log_file: string,
+	limit_min: number
+): Promise<{ stdout: string; stderr: string; status: number | null }> {
+	return new Promise((done) => {
+		const child = spawn(process.execPath, [ABAX_CLI, ...args], {
+			cwd: tree.dir,
+			env: { ...process.env, NODE_OPTIONS: node_options(tree) },
+			stdio: ['ignore', 'pipe', 'pipe']
+		});
+		let stdout = '';
+		let stderr = '';
+		child.stdout.on('data', (d: Buffer) => (stdout += d.toString()));
+		child.stderr.on('data', (d: Buffer) => (stderr += d.toString()));
+		let timed_out = false;
+		const timer = setTimeout(() => {
+			timed_out = true;
+			child.kill('SIGKILL');
+		}, limit_min * 60_000);
+		child.on('close', (status) => {
+			clearTimeout(timer);
+			appendFileSync(log_file, `$ abax ${args.join(' ')}\n${stdout}${stderr}\n`);
+			if (!timed_out) return done({ stdout, stderr, status });
+			done({
+				stdout: '',
+				stderr: `abax ${args[0]} did not finish within ${limit_min} min`,
+				status
+			});
+		});
+	});
+}
+
 /** One Abax command on one bench file; the error text when its part never reached the report. */
-function abax(
+async function abax(
 	tree: Tree,
 	command: Command,
 	file: string,
 	out: string,
 	log_file: string,
-	measure: string | null
-): string | null {
+	measure: string | null,
+	check: boolean
+): Promise<string | null> {
 	const extra =
 		command === 'growth'
 			? ['--scaled', 'on']
 			: command === 'run' && measure
 				? ['--measure', measure]
-				: [];
-	const r = spawn_abax(
+				: command === 'health' && !check
+					? ['--check', 'off']
+					: [];
+	const r = await spawn_abax_async(
 		tree,
 		[command, file, '--root', tree.dir, '--out', out, '--sha', tree.sha, ...extra],
 		log_file,
@@ -115,6 +160,15 @@ function abax(
 	const report = read_report(out);
 	if (report && report[WRITES[command]] !== undefined) return null;
 	return tail_of(r);
+}
+
+/** Run `tasks`, at most `jobs` at once. */
+export async function pool(tasks: Array<() => Promise<void>>, jobs: number): Promise<void> {
+	let next = 0;
+	const lane = async (): Promise<void> => {
+		while (next < tasks.length) await tasks[next++]();
+	};
+	await Promise.all(Array.from({ length: Math.max(1, Math.min(jobs, tasks.length)) }, lane));
 }
 
 /** One report from the per-file reports: their cases, engine cases and growth cases together. */
@@ -152,37 +206,54 @@ export function empty_report(sha: string, like: Report): Report {
 	};
 }
 
+export interface TreeOptions {
+	/**
+	 * Bench files run side by side (default: the cores). Counts, engine health and growth are exact
+	 * whatever else runs; when `measure` has the time layer, the files run one at a time.
+	 */
+	jobs?: number;
+	/** Engine health runs every case twice to check V8 did the same thing (default true). */
+	check?: boolean;
+}
+
 /**
- * Count, check and grow `files` on `tree`; reports and the log go under `out_dir`. `measure`: the
+ * Count, check and grow `files` on `tree`; reports and logs go under `out_dir`. `measure`: the
  * plain-build layers `abax run` adds (`time,bytes,leaks`, `all`), or null for none.
  */
-export function run_tree(
+export async function run_tree(
 	tree: Tree,
 	files: string[],
 	out_dir: string,
 	log: (line: string) => void,
 	measure: string | null = null,
-	commands: readonly Command[] = ['run', 'health', 'growth']
-): TreeRun {
+	commands: readonly Command[] = ['run', 'health', 'growth'],
+	o: TreeOptions = {}
+): Promise<TreeRun> {
 	mkdirSync(out_dir, { recursive: true });
-	const log_file = join(out_dir, 'abax.log');
-	const parts: Report[] = [];
-	const load_errors: LoadError[] = [];
-	files.forEach((file, i) => {
-		const out = join(out_dir, `${i}.json`);
-		rmSync(out, { force: true });
-		for (const command of commands) {
-			log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
-			const error = abax(tree, command, file, out, log_file, measure);
-			if (error !== null) {
-				load_errors.push({ file, command, error });
-				if (command === 'run') break;
+	const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
+	const jobs = timed ? 1 : (o.jobs ?? availableParallelism());
+	const parts: Array<Report | null> = files.map(() => null);
+	const errors: LoadError[][] = files.map(() => []);
+	await pool(
+		files.map((file, i) => async () => {
+			const out = join(out_dir, `${i}.json`);
+			// a log per bench file: they run side by side
+			const log_file = join(out_dir, `abax-${i}.log`);
+			rmSync(out, { force: true });
+			for (const command of commands) {
+				log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
+				const error = await abax(tree, command, file, out, log_file, measure, o.check ?? true);
+				if (error !== null) {
+					errors[i].push({ file, command, error });
+					if (command === 'run') break;
+				}
 			}
-		}
-		const report = read_report(out);
-		if (report) parts.push(report);
-	});
-	return { report: merge_reports(parts, tree.sha), load_errors };
+			parts[i] = read_report(out);
+		}),
+		jobs
+	);
+	const done = parts.filter((p): p is Report => p !== null);
+	return { report: merge_reports(done, tree.sha), load_errors: errors.flat() };
 }
 
 /**

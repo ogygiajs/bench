@@ -230,8 +230,8 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			prepare_tree(repo, work, commit, ABAX_DIR, log),
 			packages
 		);
-		const b = run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
-		const h = run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
+		const b = await run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);
+		const h = await run_tree(head, head.benches, join(dir, 'pr'), log, null, ['run']);
 		const changed = changed_files(repo, parent, commit).filter(
 			(f) => f !== 'pnpm-lock.yaml' && f !== 'pnpm-workspace.yaml'
 		);
