@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LineMap, parse_diff } from '../src/diff/git.ts';
+import { LineMap, check_rev, parse_diff } from '../src/diff/git.ts';
 import { diff_reports, shape_similarity } from '../src/diff/index.ts';
+import { render_markdown } from '../src/diff/markdown.ts';
 import type { CaseReport, FunctionReport, Report } from '../src/report.ts';
 
 const DIFF = `diff --git a/src/a.ts b/src/a.ts
@@ -121,6 +122,83 @@ test('without git, lines are compared as they are; unstable cases are reported',
 		[
 			['new function', 'brand_new', 30, 7],
 			['removed function', 'gone', 20, -4]
+		]
+	);
+});
+
+test('a case that failed on one side is listed as failed, not as a 100% change', () => {
+	const base = report([fn('a.ts', 'f', 10)]);
+	const pr = report([]);
+	pr.cases[0] = { ...pr.cases[0], error: 'boom', stable: false };
+	const d = diff_reports(base, pr);
+	assert.deepEqual(d.failed, ['case']);
+	assert.deepEqual(d.unstable, []);
+	assert.deepEqual(d.changes, []);
+	assert.ok(render_markdown(d).includes('No function changed'));
+});
+
+test('cases pair by bench file and name; a moved file still pairs by a unique name', () => {
+	const two = (a: number, b: number): Report => {
+		const r = report([fn('a.ts', 'f', a)]);
+		r.cases.push({ ...r.cases[0], file: 'y.bench.ts', functions: [fn('b.ts', 'g', b)] });
+		return r;
+	};
+	assert.deepEqual(diff_reports(two(10, 20), two(10, 20)).findings, []);
+	const d = diff_reports(two(10, 20), two(10, 25));
+	assert.deepEqual(
+		d.findings.map((f) => [f.function, f.delta.steps]),
+		[['g', 5]]
+	);
+	const moved = report([fn('a.ts', 'f', 10)]);
+	moved.cases[0] = { ...moved.cases[0], file: 'moved/x.bench.ts' };
+	const m = diff_reports(report([fn('a.ts', 'f', 10)]), moved);
+	assert.deepEqual(m.missing, { base: [], pr: [] });
+	assert.deepEqual(m.findings, []);
+});
+
+test('two reports from different environments are flagged; engine health is left out', () => {
+	const base = report([fn('a.ts', 'f', 10)]);
+	const pr = report([fn('a.ts', 'f', 10)]);
+	const env = { v8: '14.1', platform: 'linux', arch: 'x64', weights: null };
+	base.env = { node: 'v26', ...env };
+	pr.node = 'v27';
+	pr.env = { node: 'v27', ...env, v8: '14.5' };
+	const d = diff_reports(base, pr);
+	assert.deepEqual(d.env, ['Node v26 vs v27']);
+	assert.match(render_markdown(d), /different environments \(Node v26 vs v27\)/);
+});
+
+test('table cells escape pipes and newlines', () => {
+	const base = report([fn('a.ts', 'f', 10)]);
+	const pr = report([fn('a.ts', 'f', 12)]);
+	base.cases[0].name = pr.cases[0].name = 'pipe | name\nnext';
+	const md = render_markdown(diff_reports(base, pr));
+	const row = md.split('\n').find((l) => l.includes('pipe'))!;
+	assert.ok(row.includes('pipe \\| name next'), row);
+	assert.equal(row.split(/(?<!\\)\|/).length - 2, 7, row);
+});
+
+test('git: a revision from a report is never an option; quoted and spaced paths parse', () => {
+	assert.throws(() => check_rev('--output=/tmp/x'), /not a git revision/);
+	assert.throws(() => check_rev('a b'), /not a git revision/);
+	assert.equal(check_rev('main~2'), 'main~2');
+	const files = parse_diff(
+		[
+			'diff --git "a/src/caf\\303\\251.ts" "b/src/caf\\303\\251.ts"',
+			'--- "a/src/caf\\303\\251.ts"',
+			'+++ "b/src/caf\\303\\251.ts"',
+			'@@ -1 +1 @@',
+			'diff --git a/src/my dir/x y.ts b/src/my dir/x y.ts',
+			'--- a/src/my dir/x y.ts\t',
+			'+++ b/src/my dir/x y.ts\t',
+			'@@ -2 +2,2 @@'
+		].join('\n')
+	);
+	assert.deepEqual(
+		files.map((f) => [f.old_path, f.new_path]),
+		[
+			['src/café.ts', 'src/café.ts'],
+			['src/my dir/x y.ts', 'src/my dir/x y.ts']
 		]
 	);
 });

@@ -101,6 +101,37 @@ test('a recount moves each count by exactly its units, and recounting back resto
 	assert.equal(back.totals.steps, r.totals.steps);
 });
 
+test('two calls of one built-in on one line are recounted apart, not both charged the line', async () => {
+	const m = await load_module(`export function twice(xs: number[], s: string) {
+	return [xs.map((x) => x + 1).map((x) => x * 2), xs.slice(1), s.slice(1)];
+}
+`);
+	const r = await measure(
+		() => m.twice([1, 2, 3, 4, 5, 6, 7, 8] as never, 'abcdef' as never),
+		true
+	);
+	const v2 = variant((p) => {
+		p.builtins['Array.prototype.map'] = { ...p.builtins['Array.prototype.map'], base: 40 };
+	});
+	const before = fn_of(r, 'twice').builtins;
+	const after = recount(report_of(r), v2).cases[0].functions.find((f) => f.path === 'twice')!;
+	const sum = (bs: typeof before) => bs.reduce((s, b) => s + b.steps, 0);
+	const maps = after.builtins.filter((b) => b.name === 'map');
+	assert.equal(maps.length, 2);
+	const old_map = load_prices().prices.builtins['Array.prototype.map'].base;
+	for (const b of maps) {
+		const was = before.find((x) => x.name === 'map' && x.line === b.line && x.calls === b.calls)!;
+		assert.equal(b.steps, was.steps + (40 - old_map), 'each map moves by its own base only');
+	}
+	const slices = after.builtins.filter((b) => b.name === 'slice');
+	assert.deepEqual(
+		slices.map((b) => b.steps),
+		before.filter((b) => b.name === 'slice').map((b) => b.steps),
+		'Array and String slice on one line keep their own steps'
+	);
+	assert.ok(Math.abs(sum(after.builtins) - (sum(before) + 2 * (40 - old_map))) < 1e-6);
+});
+
 test('object spread counts own enumerable symbol keys', async () => {
 	const m = await load_module(`const S = Symbol('s');
 const H = Symbol('hidden');

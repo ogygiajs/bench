@@ -1,5 +1,6 @@
 import { builtin_call_name, builtin_cost } from '../prices.ts';
 import type { BuiltinPrice } from '../prices.ts';
+import { ANY_RECEIVER } from './index.ts';
 import type { Runtime } from './index.ts';
 import {
 	KNOWN_CONSTRUCTORS,
@@ -16,9 +17,9 @@ import {
  * n is the size that drives the built-in's work (array length, string length, output length...).
  *
  * The charge goes to the call site the transform announced right before the call (`R.site_last`),
- * when that site names the same built-in; otherwise to the function on top of the shadow stack.
- * Built-ins called by other built-ins (with no instrumented code in between) are not charged again,
- * and calls from uninstrumented code (depth 0) are never charged.
+ * when that site names the same built-in and the call runs on the receiver the site announced
+ * (`R.rcv`). Anything else is free: built-ins that uncounted code calls (a dependency, Node's own
+ * JavaScript), whatever counted code it was called from, and built-ins called by other built-ins.
  */
 
 /** `from`: what the built-in's START (below) read before the call, for those that have one. */
@@ -269,6 +270,33 @@ export function builtin_size(
 	return (SIZES[key] ?? this_len)(self, args, result, from);
 }
 
+type Frames = Array<{ getFileName(): string | null | undefined }>;
+const capture_stack = (Error as { captureStackTrace?: (o: object, f: Function) => void })
+	.captureStackTrace;
+const frames_of = (_e: Error, frames: Frames): Frames => frames;
+
+/**
+ * The script that called `fn` (the URL of an ES module), from V8's structured stack. Only for the
+ * call sites whose receiver the transform cannot capture (`site_any`): it costs a stack capture.
+ */
+function caller_url(fn: Function): string | null {
+	if (!capture_stack) return null;
+	const E = Error as unknown as { prepareStackTrace?: unknown; stackTraceLimit: number };
+	const prepare = E.prepareStackTrace;
+	const limit = E.stackTraceLimit;
+	E.prepareStackTrace = frames_of;
+	E.stackTraceLimit = 1;
+	try {
+		const holder: { stack?: Frames } = {};
+		capture_stack(holder, fn);
+		const frames = holder.stack;
+		return frames && frames.length > 0 ? (frames[0].getFileName() ?? null) : null;
+	} finally {
+		E.prepareStackTrace = prepare;
+		E.stackTraceLimit = limit;
+	}
+}
+
 interface Installed {
 	owner: Record<string, unknown>;
 	prop: string;
@@ -300,16 +328,22 @@ function make_wrapper(
 		const d = rt.depth;
 		const site = rt.site;
 		rt.site = -1;
-		if (d === 0 || rt.bdepth === d) return reflect_apply(orig, this, args);
+		// Charged only when counted code called this built-in at the site it announced, on the
+		// receiver it announced: never for calls uncounted code makes (see Runtime.rcv).
+		if (site < 0 || d === 0 || rt.bdepth === d || rt.bsite_name[site] !== name_id)
+			return reflect_apply(orig, this, args);
+		const rx = rt.rx;
 		const prev = rt.bdepth;
 		rt.bdepth = d;
 		try {
+			if (rx === ANY_RECEIVER ? caller_url(wrapper) !== rt.rx_url : this !== rx && rx !== wrapper)
+				return reflect_apply(orig, this, args);
 			const from = start === null ? 0 : start(this, args);
 			const result = reflect_apply(orig, this, args);
 			// Sizing and charging run with the guard still up: nothing they touch is charged again.
 			const n = size(this, args, result, from);
 			const bytes = result_bytes(key, this, args, result);
-			rt.charge(site, name_id, builtin_cost(price, n), key_id, n, bytes);
+			rt.charge(site, builtin_cost(price, n), key_id, n, bytes);
 			return result;
 		} finally {
 			rt.bdepth = prev;

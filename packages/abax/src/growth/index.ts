@@ -1,4 +1,6 @@
 import type { BenchCase } from '../bench.ts';
+import { pair_cases } from '../cases.ts';
+import { code } from '../md.ts';
 import { GROWTH_RANK, fit_growth } from './fit.ts';
 import type { GrowthClass } from './fit.ts';
 import { Measurer, load_cases } from './measure.ts';
@@ -89,7 +91,7 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 	const log = opts.log ?? (() => {});
 	const loaded = await load_cases(opts);
 	const list = opts.scaled ? loaded.filter((c) => c.scale !== undefined) : loaded;
-	const m = new Measurer();
+	const m = new Measurer(opts.root);
 	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
 	for (const c of list) {
 		const g = await grow_case(c, m, sizes);
@@ -120,15 +122,12 @@ export interface GrowthDiff {
 
 export function diff_growth(base: GrowthReport, pr: GrowthReport): GrowthDiff {
 	const out: GrowthDiff = { findings: [], better: [], same: [], failed: [] };
-	const by_name = new Map(pr.cases.map((c) => [c.name, c]));
-	for (const b of base.cases) {
-		const p = by_name.get(b.name);
-		if (!p) continue;
+	for (const [b, p] of pair_cases(base.cases, pr.cases).pairs) {
 		if (b.error || p.error || !b.class || !p.class) {
 			out.failed.push(b.name);
 			continue;
 		}
-		const text = `${'`'}${b.name}${'`'} grows ${b.class} -> ${p.class}`;
+		const text = `${code(b.name)} grows ${b.class} -> ${p.class}`;
 		if (GROWTH_RANK[p.class] > GROWTH_RANK[b.class]) {
 			out.findings.push({ case: b.name, base: b.class, pr: p.class, text });
 		} else if (GROWTH_RANK[p.class] < GROWTH_RANK[b.class]) {

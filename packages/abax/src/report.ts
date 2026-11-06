@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
 import { BUILTIN_UNIT_SHIFT, EDGE_KEY_SHIFT } from './runtime/index.ts';
 import type { Runtime, Snapshot } from './runtime/index.ts';
 import { OP_KINDS, op_price_vector } from './prices.ts';
@@ -46,10 +48,12 @@ export interface SiteReport {
 
 export interface BuiltinReport {
 	name: string;
-	/** 0 when the call shape gave no site (charged to the function, not a line). */
+	/** The call's line (0 in reports from before every charge had a site). */
 	line: number;
 	calls: number;
 	steps: number;
+	/** This site's size units (a recount prices them again: two sites on one line stay apart). */
+	units?: Units;
 	/** Estimated bytes of the results the calls made (layout.ts), and how many calls made one. */
 	bytes?: number;
 	allocations?: number;
@@ -113,15 +117,78 @@ export interface Report {
 	/** `recounted_from`: counted with other prices and recounted from its units (recount.ts). */
 	prices: { version: number; hash: string; recounted_from?: { version: number; hash: string } };
 	node: string;
+	/** Where it was counted: what a comparison between two reports must agree on (env_mismatch). */
+	env?: Environment;
 	/** `prefix`: the run root relative to the git top level (module ids are relative to the root). */
 	git: { sha: string | null; prefix: string };
 	cases: CaseReport[];
+	/** Bench files that did not load (a syntax error, a throw at the top): none of their cases ran. */
+	load_errors?: LoadError[];
 	/** `abax health`: what V8 did with the uninstrumented code (spec 5). */
 	engine?: EngineReport;
 	/** `abax growth`: steps over scaled inputs and their curve class (spec 9). */
 	growth?: GrowthReport;
 	/** `abax search`: the slowest input of each case's size found (spec 9). */
 	search?: SearchReport;
+}
+
+export interface LoadError {
+	file: string;
+	error: string;
+}
+
+export interface Environment {
+	node: string;
+	v8: string;
+	platform: string;
+	arch: string;
+	/** The steps -> ns weights the estimates came from (null: none). */
+	weights: { version: number; hash: string } | null;
+}
+
+const WEIGHTS = new URL('../weights.json', import.meta.url);
+
+/** The environment of this process. */
+export function environment(): Environment {
+	let weights: Environment['weights'] = null;
+	if (existsSync(WEIGHTS)) {
+		const w = JSON.parse(readFileSync(WEIGHTS, 'utf8')) as { version: number; ns: unknown };
+		const hash = createHash('sha256').update(JSON.stringify(w.ns)).digest('hex').slice(0, 16);
+		weights = { version: w.version, hash };
+	}
+	return {
+		node: process.version,
+		v8: process.versions.v8,
+		platform: process.platform,
+		arch: process.arch,
+		weights
+	};
+}
+
+/**
+ * How two reports' environments differ, in words (empty when they agree, or when either report
+ * predates the stamp). Prices are not listed: a price change is recounted (recount.ts).
+ */
+export function env_mismatch(a: Report, b: Report): string[] {
+	const out: string[] = [];
+	const ea = a.env;
+	const eb = b.env;
+	if (a.node !== b.node) out.push(`Node ${a.node} vs ${b.node}`);
+	if (!ea || !eb) return out;
+	if (ea.v8 !== eb.v8 && a.node === b.node) out.push(`V8 ${ea.v8} vs ${eb.v8}`);
+	if (ea.platform !== eb.platform || ea.arch !== eb.arch)
+		out.push(`${ea.platform}-${ea.arch} vs ${eb.platform}-${eb.arch}`);
+	const wa = ea.weights ? `v${ea.weights.version} (${ea.weights.hash.slice(0, 8)})` : 'none';
+	const wb = eb.weights ? `v${eb.weights.version} (${eb.weights.hash.slice(0, 8)})` : 'none';
+	if (wa !== wb) out.push(`weights ${wa} vs ${wb}`);
+	return out;
+}
+
+/** An error as one line for a report or a log (the first line of its message). */
+export function one_line(e: unknown): string {
+	const msg = e instanceof Error ? e.message : String(e);
+	const first = msg.split('\n').find((l) => l.trim() !== '') ?? msg;
+	return first.trim().slice(0, 500);
 }
 
 export const ROOT_ID = '<root>';
@@ -181,25 +248,7 @@ export function build_case_report(
 	let total_bytes = 0;
 	let total_calls = 0;
 
-	// built-in charges with no site, per fid
-	const unsited = new Map<number, BuiltinReport[]>();
-	for (const key of Object.keys(snap.unsited)) {
-		const k = Number(key);
-		const fid = Math.floor(k / 256);
-		const name = rt.names[k % 256] ?? '?';
-		const list = unsited.get(fid) ?? [];
-		list.push({
-			name,
-			line: 0,
-			calls: snap.unsited_calls[key] ?? 0,
-			steps: round(snap.unsited[key]),
-			bytes: round(snap.unsited_bytes?.[key] ?? 0),
-			allocations: snap.unsited_allocs?.[key] ?? 0
-		});
-		unsited.set(fid, list);
-	}
 	const site_units = builtin_units(rt, snap.bunits);
-	const fn_units = builtin_units(rt, snap.uunits);
 
 	for (let mi = 0; mi < rt.modules.length && mi < snap.modules.length; mi++) {
 		const mod = rt.modules[mi];
@@ -302,23 +351,13 @@ export function build_case_report(
 				calls: snap.bsite_calls[mod.b + k],
 				steps: round(steps),
 				bytes: round(bytes),
-				allocations
+				allocations,
+				...(u ? { units: rounded(u) } : {})
 			});
 		}
 		for (const f of per_fn) {
-			const extra = unsited.get(f.fid);
-			if (extra) {
-				for (const e of extra) {
-					f.self += e.steps;
-					f.allocations += e.allocations ?? 0;
-					f.bytes += e.bytes ?? 0;
-				}
-				f.builtins.push(...extra);
-			}
-			const u = fn_units.get(f.fid);
-			if (u) add_units(f.units, u);
 			const calls = snap.calls[f.fid] ?? 0;
-			if (!f.ran && calls === 0 && !extra) continue;
+			if (!f.ran && calls === 0) continue;
 			total_allocs += f.allocations;
 			total_bytes += f.bytes;
 			total_calls += calls;

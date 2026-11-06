@@ -14,17 +14,69 @@ export interface FileDiff {
 	hunks: Hunk[];
 }
 
+/**
+ * A revision as git must read it: a name or a sha, never an option. Revisions come from report
+ * files, and `--output=<file>` in one would make git write that file.
+ */
+export function check_rev(rev: string): string {
+	if (rev === '' || rev.startsWith('-') || !/^[\w./~^@{}-]+$/.test(rev))
+		throw new Error(`abax: not a git revision: ${JSON.stringify(rev)}`);
+	return rev;
+}
+
 /** `git diff -M --unified=0 base head` between two commits, with rename detection. */
 export function git_diff(repo: string, base: string, head: string): FileDiff[] {
 	const out = execFileSync(
 		'git',
-		['diff', '--no-color', '--no-ext-diff', '-M', '--unified=0', base, head],
-		{ cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28 }
+		[
+			// Paths as they are (no octal escapes for non-ASCII), with the usual a/ b/ prefixes
+			// whatever the user's config says.
+			'-c',
+			'core.quotePath=false',
+			'diff',
+			'--no-color',
+			'--no-ext-diff',
+			'--src-prefix=a/',
+			'--dst-prefix=b/',
+			'-M',
+			'--unified=0',
+			'--end-of-options',
+			check_rev(base),
+			check_rev(head),
+			'--'
+		],
+		{ cwd: repo, encoding: 'utf8', maxBuffer: 1 << 28, stdio: ['ignore', 'pipe', 'pipe'] }
 	);
 	return parse_diff(out);
 }
 
-function strip_prefix(p: string): string | null {
+const ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13 };
+
+/** A path git wrote in C quotes (`"a/my \"x\".ts"`, octal bytes for the rest), unquoted. */
+function unquote(p: string): string {
+	if (!p.startsWith('"') || !p.endsWith('"') || p.length < 2) return p;
+	const bytes: number[] = [];
+	const s = p.slice(1, -1);
+	for (let i = 0; i < s.length; i++) {
+		const ch = s[i];
+		if (ch !== '\\') {
+			for (const b of Buffer.from(ch, 'utf8')) bytes.push(b);
+			continue;
+		}
+		const next = s[++i];
+		if (next >= '0' && next <= '7') {
+			bytes.push(parseInt(s.slice(i, i + 3), 8));
+			i += 2;
+		} else {
+			bytes.push(ESCAPES[next] ?? next.charCodeAt(0));
+		}
+	}
+	return Buffer.from(bytes).toString('utf8');
+}
+
+function strip_prefix(raw: string): string | null {
+	// git ends a `---`/`+++` path that has a space in it with a tab
+	const p = unquote(raw.endsWith('\t') ? raw.slice(0, -1) : raw);
 	if (p === '/dev/null') return null;
 	if (p.startsWith('a/') || p.startsWith('b/')) return p.slice(2);
 	return p;
@@ -52,9 +104,9 @@ export function parse_diff(text: string): FileDiff[] {
 		} else if (!cur) {
 			continue;
 		} else if (line.startsWith('rename from ')) {
-			cur.old_path = line.slice(12);
+			cur.old_path = unquote(line.slice(12));
 		} else if (line.startsWith('rename to ')) {
-			cur.new_path = line.slice(10);
+			cur.new_path = unquote(line.slice(10));
 		} else if (line.startsWith('--- ')) {
 			cur.old_path = strip_prefix(line.slice(4));
 		} else if (line.startsWith('+++ ')) {

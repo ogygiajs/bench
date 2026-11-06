@@ -1,8 +1,15 @@
-import { execFile } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { run_process } from '../proc.ts';
+import type { ProcessError } from '../proc.ts';
+
+/**
+ * A layer child's time limit: under the 15 minutes the ogygia suite gives one command on one
+ * file, so a stuck child is reported as this layer's failure instead of costing the whole file.
+ */
+const CHILD_LIMIT_MS = 12 * 60_000;
 
 /*
  * The plain-build layers run in a child process each: the counting loader is registered process
@@ -34,21 +41,17 @@ export async function run_child<T>(
 	const out = join(dir, 'out.json');
 	writeFileSync(job_file, JSON.stringify({ ...job, out }));
 	try {
-		await new Promise<void>((resolve, reject) => {
-			execFile(
+		try {
+			await run_process(
 				process.execPath,
 				['--no-warnings', ...(FLAGS[job.kind] ?? []), CHILD, job_file],
-				{
-					cwd: opts.cwd ?? process.cwd(),
-					timeout: opts.timeout_ms ?? 30 * 60_000,
-					maxBuffer: 64 * 1024 * 1024
-				},
-				(err, _stdout, stderr) => {
-					if (err) reject(new Error(`abax: ${job.kind} child failed: ${stderr || err.message}`));
-					else resolve();
-				}
+				{ cwd: opts.cwd ?? process.cwd(), timeout_ms: opts.timeout_ms ?? CHILD_LIMIT_MS }
 			);
-		});
+		} catch (e) {
+			const err = e as ProcessError;
+			const tail = (err.stderr ?? '').trim().split('\n').slice(-6).join('\n');
+			throw new Error(`abax: the ${job.kind} child ${err.message}${tail ? `: ${tail}` : ''}`);
+		}
 		return JSON.parse(readFileSync(out, 'utf8')) as T;
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

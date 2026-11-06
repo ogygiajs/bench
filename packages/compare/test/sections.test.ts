@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+	COMMENT_LIMIT,
 	HEADING,
 	MARKER,
+	fitSections,
 	parseComment,
 	renderComment,
 	sectionOf,
+	truncateSection,
 	upsertSection
 } from '../src/sections.ts';
 
@@ -146,4 +149,61 @@ test('an empty or missing body has no sections', () => {
 	assert.deepEqual(parseComment(''), []);
 	assert.deepEqual(parseComment(MARKER), []);
 	assert.deepEqual(parseComment(`${MARKER}\n${HEADING}\n`), []);
+});
+
+test('a comment that fits is left alone', () => {
+	const sections = [
+		{ name: 'abax', content: ABAX },
+		{ name: 'apps', content: APPS }
+	];
+	assert.deepEqual(fitSections(sections, { limit: 1000 }), sections);
+});
+
+test('the one long section is cut to the room the others leave, and says so', () => {
+	const long = Array.from({ length: 200 }, (_, i) => `line ${i}`).join('\n');
+	const fitted = fitSections(
+		[
+			{ name: 'abax', content: long },
+			{ name: 'apps', content: APPS }
+		],
+		{ limit: 600, note: (n) => `cut ${n}` }
+	);
+	assert.equal(fitted[1].content, APPS);
+	assert.ok(fitted[0].content.startsWith('line 0\nline 1\n'));
+	assert.ok(fitted[0].content.endsWith('\n\ncut abax'));
+	assert.ok(renderComment(fitted).length <= 600);
+});
+
+test('two long sections share the room', () => {
+	const long = (w: string) => Array.from({ length: 300 }, () => w).join('\n');
+	const fitted = fitSections(
+		[
+			{ name: 'abax', content: long('aaaa') },
+			{ name: 'apps', content: long('bbbb') }
+		],
+		{ limit: 1000, note: (n) => `cut ${n}` }
+	);
+	const body = renderComment(fitted);
+	assert.ok(body.length <= 1000);
+	assert.ok(fitted.every((s) => s.content.endsWith(`cut ${s.name}`) && s.content.length > 300));
+});
+
+test('a cut closes the code fence and the <details> it left open', () => {
+	const text = ['<details><summary>x</summary>', '', '```', ...Array(100).fill('code line')].join(
+		'\n'
+	);
+	const cut = truncateSection(text, 200, 'NOTE');
+	assert.ok(cut.length <= 200);
+	assert.match(cut, /code line\n```\n\n<\/details>\n\nNOTE$/);
+	assert.equal(truncateSection('short', 200, 'NOTE'), 'short');
+});
+
+test('upsertSection never writes a body past GitHub’s limit', () => {
+	const big = 'x'.repeat(40_000) + '\n' + 'y'.repeat(40_000);
+	const body = upsertSection(upsertSection(null, 'apps', big), 'abax', big);
+	assert.ok(body.length <= COMMENT_LIMIT);
+	assert.deepEqual(
+		parseComment(body).map((s) => s.name),
+		['abax', 'apps']
+	);
 });

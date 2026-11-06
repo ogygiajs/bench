@@ -8,9 +8,10 @@ import {
 	is_svelte_module,
 	is_ts,
 	module_id,
-	strip_types,
-	transform
+	transform,
+	ts_to_js
 } from '../transform/index.ts';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { load_prices } from '../prices.ts';
 
 export interface LoaderConfig {
@@ -95,13 +96,40 @@ export class LoaderCore {
 		return src;
 	}
 
-	/** True when the load hook must read the file itself (the default loader rejects .svelte). */
+	/**
+	 * True when the load hook must read the file itself: the default loader rejects .svelte, and
+	 * strips TypeScript only (it throws on an `enum` before a hook sees the source).
+	 */
 	needs_own_read(url: string): boolean {
-		return url.startsWith('file:') && fileURLToPath(url).endsWith('.svelte');
+		return (
+			url.startsWith('file:') &&
+			(fileURLToPath(url).endsWith('.svelte') || this.is_plain_typescript(url))
+		);
 	}
 
 	read(url: string): string {
 		return readFileSync(fileURLToPath(url), 'utf8');
+	}
+
+	/**
+	 * A TypeScript ES module this loader reads itself although it is not counted (a bench file):
+	 * Node's own loader strips types only, and an `enum` in a bench file must not stop the run.
+	 * Packages in node_modules are left to Node (it does not strip types there at all).
+	 */
+	is_plain_typescript(url: string): boolean {
+		if (!url.startsWith('file:')) return false;
+		const path = fileURLToPath(url);
+		return (
+			(path.endsWith('.ts') || path.endsWith('.mts')) &&
+			!path.endsWith('.d.ts') &&
+			package_name(path) === null
+		);
+	}
+
+	/** That module as JS: types stripped, or compiled when stripping cannot run it. */
+	plain_typescript(url: string): string {
+		const out = ts_to_js(this.read(url), fileURLToPath(url));
+		return out.map === null ? out.code : out.code + inline_map(out.map as object);
 	}
 
 	/** Instrument loaded source. Returns null when the module stays as it is (CommonJS, JSON...). */
@@ -122,13 +150,15 @@ export class LoaderCore {
 
 	#instrument(filename: string, source: string, format: string | null | undefined): string | null {
 		let code = source;
-		let input_map = null;
+		let input_map: SourceMapInput | null = null;
 		if (is_svelte_module(filename)) {
 			const out = compile_svelte(source, filename, this.config.svelte ?? 'server');
 			code = out.code;
 			input_map = out.map;
 		} else if (format === 'module-typescript' || (format == null && is_ts(filename))) {
-			code = strip_types(source);
+			const out = ts_to_js(source, filename);
+			code = out.code;
+			input_map = out.map;
 		} else if (format !== 'module') {
 			return null;
 		}

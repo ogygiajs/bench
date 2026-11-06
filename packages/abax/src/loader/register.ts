@@ -21,7 +21,10 @@ export function register_abax(config: LoaderConfig): LoaderCore {
 			if (core.is_virtual(url)) {
 				return { format: 'module', source: core.virtual_source(url), shortCircuit: true };
 			}
-			if (!core.should_instrument(url)) return next(url, context);
+			if (!core.should_instrument(url)) {
+				if (!core.is_plain_typescript(url)) return next(url, context);
+				return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
+			}
 			if (core.needs_own_read(url)) {
 				const code = core.instrument(url, core.read(url), null);
 				return { format: 'module', source: code ?? '', shortCircuit: true };

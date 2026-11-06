@@ -56,34 +56,65 @@ function add(inv: Inventory, id: string, fns: InventoryFunction[]): void {
 	}
 }
 
+function is_dir(p: string): boolean {
+	try {
+		return statSync(p).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
 /**
- * Every function of the named packages installed in `app_dir`. `.svelte` files are compiled with
- * the app's own Svelte compiler.
+ * The packages matching `patterns` (`ogygia`, `@ogygia/*`) installed in any of the apps: the
+ * union, so a package only one scenario app installs is still listed.
+ */
+export function installed_packages(
+	app_dirs: readonly string[],
+	patterns: readonly string[]
+): string[] {
+	const out = new Set<string>();
+	for (const app of app_dirs) {
+		const nm = join(app, 'node_modules');
+		for (const p of patterns) {
+			if (p.endsWith('/*')) {
+				const scope = p.slice(0, -2);
+				const dir = join(nm, ...scope.split('/'));
+				if (!is_dir(dir)) continue;
+				for (const e of readdirSync(dir).sort()) if (is_dir(join(dir, e))) out.add(`${scope}/${e}`);
+			} else if (is_dir(package_dir(app, p))) {
+				out.add(p);
+			}
+		}
+	}
+	return [...out].sort();
+}
+
+/**
+ * Every function of the named packages, from the first of `app_dirs` that installs each one.
+ * `.svelte` files are compiled with that app's own Svelte compiler.
  */
 export function package_inventory(
-	app_dir: string,
+	app_dirs: string | readonly string[],
 	packages: readonly string[],
 	log: (line: string) => void = () => {}
 ): Inventory {
+	const apps = typeof app_dirs === 'string' ? [app_dirs] : app_dirs;
 	const inv: Inventory = {};
 	const prices = load_prices();
-	let svelte: SvelteCompiler | null = null;
-	const compiler = (): SvelteCompiler => {
-		if (!svelte) {
-			const req = createRequire(join(app_dir, 'package.json'));
-			svelte = req('svelte/compiler') as SvelteCompiler;
-		}
-		return svelte;
-	};
+	const compilers = new Map<string, SvelteCompiler>();
 	for (const name of packages) {
+		const app_dir = apps.find((a) => is_dir(package_dir(a, name)));
+		if (app_dir === undefined) continue;
 		const dir = package_dir(app_dir, name);
-		let real: string;
-		try {
-			real = statSync(dir).isDirectory() ? dir : '';
-		} catch {
-			continue;
-		}
-		if (!real) continue;
+		const compiler = (): SvelteCompiler => {
+			let c = compilers.get(app_dir);
+			if (!c) {
+				const req = createRequire(join(app_dir, 'package.json'));
+				c = req('svelte/compiler') as SvelteCompiler;
+				compilers.set(app_dir, c);
+			}
+			return c;
+		};
 		for (const file of files_of(dir)) {
 			const id = module_id(file, app_dir + sep);
 			const source = readFileSync(file, 'utf8');

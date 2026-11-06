@@ -1,4 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { UsageError } from '../usage.ts';
 import { resolve } from 'node:path';
 import type { DiffResult } from '../diff/index.ts';
 import type { Report } from '../report.ts';
@@ -7,7 +8,7 @@ import { render_app_diff } from './diff.ts';
 import { build_weights, load_app_weights, write_app_weights } from '../weight/weights.ts';
 import { rank_changes, render_weighted } from '../weight/rank.ts';
 import { build_coverage, render_coverage } from '../coverage/report.ts';
-import { package_inventory } from '../coverage/inventory.ts';
+import { installed_packages, package_inventory } from '../coverage/inventory.ts';
 
 /*
  * The app commands of the CLI (cli.ts hands them over):
@@ -27,8 +28,14 @@ abax diff ... [--weights app-weights.json]   (ranks changes by real-app weight; 
 const DEFAULT_PACKAGES = ['ogygia', '@ogygia/*'];
 
 function read_app(path: string): AppReport {
-	const r = JSON.parse(readFileSync(path, 'utf8')) as AppReport;
-	if (!r.app) throw new Error(`abax: ${path} is not an app report (no "app" block)`);
+	let r: AppReport;
+	try {
+		r = JSON.parse(readFileSync(path, 'utf8')) as AppReport;
+	} catch {
+		throw new UsageError(`${path} is not JSON`);
+	}
+	if (r === null || typeof r !== 'object' || !r.app)
+		throw new UsageError(`${path} is not an app report (no "app" block)`);
 	return r;
 }
 
@@ -53,18 +60,24 @@ export function app_command(
 	}
 	if (cmd === 'coverage') {
 		const app = flags.get('app');
-		if (positional.length === 0 || !app) {
-			console.error(APP_USAGE);
-			return 2;
+		if (!app) throw new UsageError('--app <app dir,app dir...> is required');
+		for (const a of app.split(',').filter(Boolean)) {
+			if (!existsSync(a)) throw new UsageError(`--app: no directory ${a}`);
 		}
 		const packages = flags.get('packages')?.split(',') ?? DEFAULT_PACKAGES;
 		const reports = positional.map(read_app);
-		const names = new Set<string>();
+		// Every scenario app's installs (`--app a,b,c`), not only what one app has: a package
+		// only the blog app installs is still listed.
+		const apps = app
+			.split(',')
+			.filter(Boolean)
+			.map((a) => resolve(a));
+		const names = new Set<string>(installed_packages(apps, packages));
 		for (const r of reports) for (const p of Object.keys(r.app.ogygia)) names.add(p);
 		const concrete = [...names].filter((n) =>
 			packages.some((p) => p === n || (p.endsWith('/*') && n.startsWith(p.slice(0, -1))))
 		);
-		const inventory = package_inventory(resolve(app), concrete, (l) => console.error(l));
+		const inventory = package_inventory(apps, concrete, (l) => console.error(l));
 		const cov = build_coverage(reports, packages, inventory);
 		writeFileSync(flags.get('out') ?? 'coverage.json', JSON.stringify(cov, null, '\t') + '\n');
 		const md = render_coverage(cov);

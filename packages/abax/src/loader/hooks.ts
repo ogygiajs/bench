@@ -52,7 +52,10 @@ export async function load(url: string, context: object, next: NextLoad): Promis
 	const c = get_core();
 	if (c.is_virtual(url))
 		return { format: 'module', source: c.virtual_source(url), shortCircuit: true };
-	if (!c.should_instrument(url)) return next(url, context);
+	if (!c.should_instrument(url)) {
+		if (!c.is_plain_typescript(url)) return next(url, context);
+		return { format: 'module', source: c.plain_typescript(url), shortCircuit: true };
+	}
 	if (c.needs_own_read(url)) {
 		return {
 			format: 'module',

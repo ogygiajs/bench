@@ -240,8 +240,9 @@ fixed script of its session.
 node abax/run.ts                                   # every scenario -> results/scratch/abax/app-report.json
 node abax/run.ts --scenarios dashboard --side base # one scenario, on the base twin
 node ../../packages/abax/src/cli.ts weights results/scratch/abax/app-report.json   # app-weights.json
-node ../../packages/abax/src/cli.ts coverage results/scratch/abax/app-report.json \
-  --app scenarios/dashboard/apps/ogygia --md coverage.md   # which functions the scenarios reached
+node ../../packages/abax/src/cli.ts coverage results/scratch/abax/app-report.json --md coverage.md \
+  --app scenarios/ai-chat/apps/ogygia,scenarios/blog/apps/ogygia,scenarios/dashboard/apps/ogygia,scenarios/docs/apps/ogygia,scenarios/shop/apps/ogygia
+  # which functions the scenarios reached, over every package any scenario app installs
 node abax/ab.ts --spec <pr> --base-spec <base>     # PR vs base on every scenario, exact
 node abax/answer-key.ts                            # planted changes Abax must find
 ```

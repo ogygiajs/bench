@@ -9,6 +9,8 @@ import type { Report } from '../src/report.ts';
 import { run_child } from '../src/measure/spawn.ts';
 import type { CaseResult } from '../src/measure/child.ts';
 import type { TimeComparison, TimeStats } from '../src/measure/time.ts';
+import { judge_time } from '../src/measure/time.ts';
+import { render_time } from '../src/measure/markdown.ts';
 import type { BytesResult } from '../src/measure/alloc.ts';
 import type { LeakResult } from '../src/measure/leak.ts';
 import { temp_dir, write_files } from './helpers.ts';
@@ -76,7 +78,51 @@ test('time layer: tinybench latency, throughput and CPU per call on the plain bu
 	assert.ok(slow.p50_ns > fast.p50_ns * 5, `slow ${slow.p50_ns} vs fast ${fast.p50_ns}`);
 	assert.ok(slow.p99_ns >= slow.p50_ns);
 	assert.ok(fast.throughput > slow.throughput);
-	assert.ok(slow.cpu_ns > 0 && slow.samples > 0);
+	assert.ok(slow.cpu_ns !== null && slow.cpu_ns > 0 && slow.samples > 0);
+});
+
+test('CPU per call: batched past the clock tick, or no number at all; never 0', async () => {
+	const dir = temp_dir('abax-cpu-');
+	write_files(dir, {
+		'lib.ts': LIB,
+		'lib.bench.ts': bench_file(`bench('tiny', () => 1);
+bench('tiny with a costly setup', (x) => x.n + 1, {
+	setup: () => {
+		let n = 0;
+		for (let i = 0; i < 20000; i++) n += i;
+		return { n };
+	}
+});
+`)
+	});
+	const r = await run_child<Array<CaseResult<TimeStats>>>({
+		kind: 'time',
+		roots: [dir],
+		files: [['lib.bench.ts']],
+		options: { time_ms: 60, warmup_ms: 20 }
+	});
+	const [tiny, costly] = r.map((c) => c.result!);
+	assert.ok(tiny.cpu_ns !== null && tiny.cpu_ns > 0, `tiny: ${tiny.cpu_ns}`);
+	assert.ok(costly.cpu_ns === null || costly.cpu_ns > 0, `costly: ${costly.cpu_ns}`);
+	const row = (cpu: number | null): TimeStats => ({ ...tiny, cpu_ns: cpu });
+	const md = render_time({
+		schema: 'abax-time/1',
+		repeats: 2,
+		node: process.version,
+		cases: [
+			{
+				name: 'tiny with a costly setup',
+				order: ['base', 'pr'],
+				base: [row(null), row(380)],
+				pr: [row(370), row(390)],
+				verdicts: judge_time([row(null), row(380)], [row(370), row(390)])
+			}
+		],
+		missing: { base: [], pr: [] },
+		errors: []
+	});
+	assert.ok(md.includes('below resolution'), md);
+	assert.ok(!/0–380/.test(md), md);
 });
 
 test('time PR vs base: turns alternate, judged by the no-overlap rule', async () => {

@@ -11,7 +11,8 @@ import type { Snapshot } from './runtime/index.ts';
 import { Builtins } from './runtime/builtins.ts';
 import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
-import { REPORT_SCHEMA, build_case_report } from './report.ts';
+import { REPORT_SCHEMA, build_case_report, environment, one_line } from './report.ts';
+import type { LoadError } from './report.ts';
 import { load_prices } from './prices.ts';
 import { apply_estimates } from './calibrate/estimate.ts';
 import { fresh_copy, next_generation, positions } from './fresh.ts';
@@ -48,6 +49,29 @@ function git(root: string, args: string[]): string | null {
 	}
 }
 
+const real_set_timeout = setTimeout;
+const real_clear_timeout = clearTimeout;
+
+/**
+ * How long setup, teardown or a fresh import may take (outside the measuring window, on the real
+ * clock). The measured call has its own check: a call that waits on nothing the fake loop
+ * controls is reported as never finishing.
+ */
+export const OUTSIDE_LIMIT_MS = 5 * 60_000;
+
+/** `p`, or an error naming `what` when it has not settled within OUTSIDE_LIMIT_MS. */
+function within<T>(p: Promise<T>, what: string): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const limit = new Promise<never>((_, reject) => {
+		timer = real_set_timeout(
+			() => reject(new Error(`abax: ${what} did not finish within ${OUTSIDE_LIMIT_MS / 1000} s`)),
+			OUTSIDE_LIMIT_MS
+		);
+		timer.unref?.();
+	});
+	return Promise.race([p, limit]).finally(() => real_clear_timeout(timer));
+}
+
 interface RunResult {
 	snap: Snapshot;
 	timers: number;
@@ -72,8 +96,8 @@ export async function run_case(
 }> {
 	const rt = builtins.runtime;
 	const once = async (mode: IoMode): Promise<RunResult> => {
-		const c = fresh ? await fresh() : case_;
-		const ctx = c.setup ? await c.setup() : undefined;
+		const c = fresh ? await within(fresh(), 'loading a fresh copy of the bench file') : case_;
+		const ctx = c.setup ? await within(Promise.resolve(c.setup()), 'setup') : undefined;
 		rt.reset();
 		det.open(mode);
 		builtins.install();
@@ -98,7 +122,7 @@ export async function run_case(
 			det.close();
 		}
 		const snap = rt.snapshot();
-		if (c.teardown) await c.teardown(ctx);
+		if (c.teardown) await within(Promise.resolve(c.teardown(ctx)), 'teardown');
 		det.drain_finalizers();
 		if (failure) throw failure;
 		return { snap, timers: settled.timers, runaway: settled.runaway };
@@ -120,16 +144,27 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	}
 	const rt = get_runtime();
 	const builtins = new Builtins(rt);
-	const det = new Determinism();
+	const det = new Determinism({ root });
 
 	const start = cases().length;
 	// Each call imports its own copy of the bench files (and what they import): a second call in
-	// the same process finds its cases again and starts from fresh module state.
+	// the same process finds its cases again and starts from fresh module state. A file that does
+	// not load is reported and costs only its own cases.
 	const gen = `?${GENERATION}${next_generation()}`;
+	const load_errors: LoadError[] = [];
 	for (const f of opts.files) {
 		const abs = resolve(f);
-		set_current_file(relative(root, abs).split(sep).join('/'));
-		await import(pathToFileURL(abs).href + gen);
+		const file = relative(root, abs).split(sep).join('/');
+		set_current_file(file);
+		const before = cases().length;
+		try {
+			await import(pathToFileURL(abs).href + gen);
+			if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
+		} catch (e) {
+			const error = one_line(e);
+			load_errors.push({ file, error });
+			log(`FAILED   ${file}: ${error}`);
+		}
 	}
 	let list = cases().slice(start);
 	const position = positions(list);
@@ -153,7 +188,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			);
 			log(`${stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${Math.round(a.snap.steps)} steps`);
 		} catch (e) {
-			const msg = e instanceof Error ? e.message : String(e);
+			const msg = one_line(e);
 			results.push({
 				name: c.name,
 				file: c.file,
@@ -174,12 +209,14 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		schema: REPORT_SCHEMA,
 		prices: { version: rt.prices.version, hash: load_prices().hash },
 		node: process.version,
+		env: environment(),
 		git: {
 			sha: opts.sha ?? git(root, ['rev-parse', 'HEAD']),
 			prefix: toplevel ? relative(toplevel, root).split(sep).join('/') : ''
 		},
 		cases: results
 	};
+	if (load_errors.length > 0) report.load_errors = load_errors;
 	apply_estimates(report);
 	if (opts.out) writeFileSync(opts.out, JSON.stringify(report, null, '\t') + '\n');
 	return report;

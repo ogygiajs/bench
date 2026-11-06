@@ -30,6 +30,7 @@ export interface BenchCase<T = unknown> extends BenchOptions<T> {
 
 const SYM = Symbol.for('abax.bench.cases');
 const CURRENT = Symbol.for('abax.bench.file');
+const NAMES = Symbol.for('abax.bench.names');
 
 type Global = Record<symbol, unknown>;
 
@@ -44,9 +45,11 @@ export function cases(): BenchCase[] {
 	return list;
 }
 
-/** Set by the runner while it imports a bench file. */
+/** Set by the runner while it imports a bench file (each import of a file names its cases anew). */
 export function set_current_file(file: string): void {
-	(globalThis as unknown as Global)[CURRENT] = file;
+	const g = globalThis as unknown as Global;
+	g[CURRENT] = file;
+	g[NAMES] = new Set<string>();
 }
 
 export function bench<T = undefined>(
@@ -55,5 +58,14 @@ export function bench<T = undefined>(
 	options: BenchOptions<T> = {}
 ): void {
 	const file = ((globalThis as unknown as Global)[CURRENT] as string | undefined) ?? '';
+	if (typeof name !== 'string' || name === '') throw new TypeError('abax: bench() needs a name');
+	if (typeof fn !== 'function') throw new TypeError(`abax: bench('${name}') needs a function`);
+	// Reports pair cases by file and name: two cases of one file must not share a name.
+	const g = globalThis as unknown as Global;
+	let names = g[NAMES] as Set<string> | undefined;
+	if (!names) g[NAMES] = names = new Set();
+	if (names.has(name))
+		throw new Error(`abax: two cases in ${file || 'this file'} are named '${name}'`);
+	names.add(name);
 	cases().push({ ...options, name, fn, file } as BenchCase);
 }

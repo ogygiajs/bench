@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { serialize } from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compile_svelte, is_svelte_module, is_ts, strip_types } from '../transform/index.ts';
+import { compile_svelte, is_svelte_module, is_ts, ts_to_js } from '../transform/index.ts';
 import { record_transform } from './record-transform.ts';
 import { load_records, replay } from './recorder.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
@@ -107,7 +107,7 @@ export async function replay_records(
 			const code = is_svelte_module(file)
 				? compile_svelte(source, file, 'server').code
 				: is_ts(file)
-					? strip_types(source)
+					? ts_to_js(source, file).code
 					: source;
 			const r = record_transform(code, { filename: file, id: t.id, targets: t.paths });
 			return { format: 'module', source: r.code, shortCircuit: true };

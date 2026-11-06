@@ -5,18 +5,18 @@ cannot see, or turns the count into an answer to a different question. Engine he
 bytes and leaks run on the **plain build**: the code as it ships, nothing counted. The plain build
 still compiles `.svelte` files and appends the `__abax` export, so the same bench files run on it.
 
-| Layer             | Command                                | Build    | On PRs             | On main and nightly |
-| ----------------- | -------------------------------------- | -------- | ------------------ | ------------------- |
-| Steps             | `abax run`                             | counting | yes                | yes                 |
-| Engine health     | `abax health`                          | plain    | yes                | yes                 |
-| Growth            | `abax growth`                          | counting | cases with `scale` | cases with `scale`  |
-| Time              | `abax time`, `abax run --measure time` | plain    | yes                | yes                 |
-| Real bytes        | `abax run --measure bytes`             | plain    | no                 | yes                 |
-| Leaks             | `abax run --measure leaks`             | plain    | no                 | yes                 |
-| Worst-case search | `abax search`                          | counting | no                 | no                  |
-| Real-app weight   | `abax weights`, `abax diff --weights`  | counting | no                 | no                  |
-| Coverage          | `abax coverage`                        | counting | no                 | no                  |
-| Gate              | `abax unmeasured`                      | counting | in ogygia's CI     | no                  |
+| Layer             | Command                                | Build    | On PRs                                     | On main and nightly  |
+| ----------------- | -------------------------------------- | -------- | ------------------------------------------ | -------------------- |
+| Steps             | `abax run`                             | counting | yes                                        | yes                  |
+| Engine health     | `abax health`                          | plain    | yes                                        | yes                  |
+| Growth            | `abax growth`                          | counting | cases with `scale`                         | cases with `scale`   |
+| Time              | `abax time`, `abax run --measure time` | plain    | yes                                        | yes                  |
+| Real bytes        | `abax run --measure bytes`             | plain    | no                                         | yes                  |
+| Leaks             | `abax run --measure leaks`             | plain    | no                                         | yes                  |
+| Worst-case search | `abax search`                          | counting | changed cases with a `setup`, 4 min budget | no                   |
+| Real-app weight   | `abax weights`, `abax diff --weights`  | counting | ranks the changes                          | produces the weights |
+| Coverage          | `abax coverage`                        | counting | no                                         | no                   |
+| Gate              | `abax unmeasured`                      | counting | in ogygia's CI                             | no                   |
 
 The examples on this page come from runs on an M4 Max with Node 26.4.0 at Abax `7b3d7a5`: the
 quick-start project in the [README](../README.md), the planted cases of `abax verify`, the planted
@@ -28,7 +28,13 @@ What V8 did with the code. `abax health` runs each case in a child process witho
 `--allow-natives-syntax`, V8's code, inline-cache, deopt and function-event logs, and flags that
 make V8 tier up at the same points every time: `--single-threaded`,
 `--no-concurrent-recompilation`, `--predictable`, `--no-flush-bytecode`, fixed random and hash
-seeds.
+seeds. And flags that keep the garbage collector off the clock: a 1 GB initial old space
+(`--initial-old-space-size=1024`), so a normal run has no full collection; a young generation of
+one fixed size (16 MB), so young collections follow allocation alone; no incremental marking and
+no compaction, so a full collection that does happen is atomic and moves nothing. A collection
+decides which closure contexts and maps die and how strings look, and those decide inline-cache
+states and some deopts. On V8's own schedule it moves from run to run: before these flags,
+ogygia's `store macros` case deopted `walk` ("embedded weak objects cleared") in 2 of 12 runs.
 
 For each case:
 
@@ -40,9 +46,15 @@ For each case:
    interpreted, baseline, maglev, turbofan, deoptimized.
 
 Every inline cache (a property read or write, a keyed access, a global lookup) gets the worst
-state it reached: monomorphic, polymorphic or megamorphic. Deopts come with V8's reason. With
-`--check on` (the default) every case runs twice and must decode the same; if not, it is
-reported unstable.
+state it reached: monomorphic, polymorphic or megamorphic. Deopts come with V8's reason.
+
+With `--check on` (the default) every case runs twice. If the two runs differ, it runs two more
+times, and each function or inline cache that differed is marked `unstable` in the report, with
+what differed (`tier maglev / turbofan`, `state monomorphic / polymorphic`). The rest of the case
+is kept. The diff leaves unstable entries out on both sides and says how many in one line:
+`2 functions skipped: V8 not repeatable`. Deopts the collector decides ("embedded weak objects
+cleared", "dependent allocation site tenuring changed") are kept in the report but are never
+findings. A health child has a 10 minute limit; one that runs past it is that case's error.
 
 A keyed access (`obj[key]`) keeps one property name in its cache. A second name makes it
 megamorphic, even when every object has the same shape. Such a site is reported as
@@ -92,12 +104,12 @@ function and line.
 
 How long the plain build takes, measured with tinybench. Per case:
 
-| Metric | What                                                                             |
-| ------ | -------------------------------------------------------------------------------- |
-| p50    | Median time of one call. Setup and teardown run outside the timing.              |
-| p99    | 99th percentile.                                                                 |
-| ops/s  | Calls per second, from tinybench's mean.                                         |
-| CPU/op | Process CPU (user + system) per call, minus the CPU of setup and teardown alone. |
+| Metric | What                                                                                                          |
+| ------ | ------------------------------------------------------------------------------------------------------------- |
+| p50    | Median time of one call. Setup and teardown run outside the timing.                                           |
+| p99    | 99th percentile.                                                                                              |
+| ops/s  | Calls per second, from tinybench's mean.                                                                      |
+| CPU/op | Process CPU (user + system) per call, read over batches of calls whose setups ran before the reading started. |
 
 `abax time` compares two trees. Both are loaded in one process and take turns case by case, and
 the side that goes first flips every turn, so warm-up, GC debt and heat land on both sides. The
@@ -124,11 +136,16 @@ Cells show the range over the turns, base then PR, with `⚠️` (worse), `bette
 ```md
 | Case | p50 | p99 | ops/s | CPU/op |
 | --- | --- | --- | --- | --- |
-| `rank: twenty rows` | ≈ 83–84 ns → 84 ns | ≈ 125–167 ns → 125–167 ns | ≈ 10,425,649/s–11,139,814/s → 10,093,572/s–10,297,023/s | ≈ 251–492 ns → 0–380 ns |
+| `rank: twenty rows` | ≈ 83–84 ns → 84 ns | ≈ 125–167 ns → 125–167 ns | ≈ 10,425,649/s–11,139,814/s → 10,093,572/s–10,297,023/s | ≈ 88–91 ns → 89–92 ns |
 ```
 
-That is the quick-start's planted loop: +520 steps, no change in time. CPU/op comes from
-`process.cpuUsage`, whose resolution is coarse next to a call this short, so it can read 0.
+That is the quick-start's planted loop: +520 steps, no change in time.
+
+CPU/op comes from `process.cpuUsage`, which reads the CPU clock in ticks far longer than a short
+call. So the calls are read in batches of about 10 ms, each batch's setups done before its reading
+starts, for a third of the timed phase. When the calls of all batches together used less than
+20 ms of CPU (a cheap call behind a costly setup), the reading is the clock's tick, not the code:
+the cell says `· below resolution` and the metric is not judged.
 
 `abax run --measure time` times one tree and puts p50 next to the steps in the report.
 
@@ -183,8 +200,9 @@ function, `score` was estimated at 960 B (60 objects of 16 B) and V8 allocated 5
 totals look close only because `rank`'s real bytes (1000.9 B, the growing `out` array) are not
 in the estimate: `push` grows the array in place, and the estimate does not follow that.
 
-When every changed line of a function is an elided allocation, the function is left out of the
-step table as well, though its steps went up (here by 600). The diff JSON still has it.
+Elision qualifies the bytes, not the steps. A function whose steps changed is always in the step
+table; when its added allocations are elided, its bytes cell says so (`+960 B (elided)`), and the
+"Where" rows for those lines do too.
 
 Real bytes above the estimate (backing stores that grow, what unpriced built-ins return) are
 reported, never flagged.
@@ -300,7 +318,11 @@ the change per call times the calls per unit. Whether a change is shown is decid
 From `abax verify`: a hot function that gained 4 steps per call is shown (14 calls per request), a
 cold one that gained 5 steps is suppressed, a cold one that gained 774 steps is shown.
 
-The ogygia PR comment does not rank by weight yet; this is a CLI step today.
+On ogygia, main pushes and the nightly run count every app scenario and store the weights on the
+results branch (`abax/main/app-weights.json`). A PR run reads the latest of them and ranks its
+changed functions by real-app weight in a short table above the step table. When the weights are
+missing or come from another environment, the comment says so in one line and does not rank.
+[ci.md](ci.md) has the details.
 
 ## Coverage of the app scenarios
 
@@ -318,8 +340,9 @@ The modules no scenario loaded are led by insights (`page-insights.js`, 337 func
 beacon, and the compiler and Vite plugin, which run at build time. No scenario uses
 `@ogygia/content` yet.
 
-The function list comes from the packages installed in the `--app` directory. A package that app
-does not install is left out of the table: here only the blog app installs `@ogygia/content`.
+The function list comes from every package installed in any of the `--app` directories
+(`--app a,b,c`), so give it every scenario app: a package only the blog app installs, like
+`@ogygia/content`, is still listed, as not loaded when no scenario ran it.
 
 ## The measurement-source gate
 
@@ -347,8 +370,13 @@ turned on for a codebase that is far from covered. An exemption names a function
 { "exempt": [{ "id": "src/rank.ts > total", "reason": "a one-line sum over rank" }] }
 ```
 
-An exemption covers that function only. A closure inside it (`src/rank.ts > total > reduce:0`)
-is a function of its own and needs its own entry or its own source.
+An exemption covers that function and every function nested in it: the closure inside it
+(`src/rank.ts > total > reduce:0`) is exempt with it. `"nested": false` exempts the function
+alone.
+
+A file the PR moved keeps its functions' history when the gate gets the git range
+(`--repo dir --base sha --head sha`): its unmeasured functions stay old, not new. A new file the
+transform cannot read fails the gate, since its functions are unknown.
 
 On ogygia PR #180 (CI run 42288359583): 1,524 of 8,234 functions (18.5%) had a measurement
 source, 555 through a bench and 969 through recorded test inputs. Of the rest, 2,822 never ran,

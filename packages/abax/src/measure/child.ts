@@ -8,6 +8,7 @@ import type { BytesOptions } from './alloc.ts';
 import { find_leaks } from './leak.ts';
 import type { LeakOptions } from './leak.ts';
 import { time_builtins } from '../calibrate/prices.ts';
+import { watch_parent } from '../proc.ts';
 
 /*
  * Entry of a measure child (see spawn.ts): `node [flags] child.ts job.json`. Loads the bench files
@@ -91,4 +92,7 @@ async function main(): Promise<void> {
 	writeFileSync(job.out, JSON.stringify(result));
 }
 
+watch_parent();
 await main();
+// A timer or socket a bench module left open must not keep the child (and the run) alive.
+process.exit(0);

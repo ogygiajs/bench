@@ -6,6 +6,7 @@ import { parseSync } from 'oxc-parser';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
 import { LoaderCore } from '../loader/core.ts';
+import { watch_parent } from '../proc.ts';
 import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
 import {
@@ -13,7 +14,7 @@ import {
 	is_svelte_module,
 	is_ts,
 	module_id,
-	strip_types
+	ts_to_js
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
 import { calibrate, decode, natives } from './natives.ts';
@@ -91,7 +92,9 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 			code = out.code;
 			map = out.map;
 		} else if (format === 'module-typescript' || (format == null && is_ts(path))) {
-			code = strip_types(source);
+			const out = ts_to_js(source, path);
+			code = out.code;
+			map = out.map;
 		} else if (format === 'module') {
 			code = source;
 		} else {
@@ -103,7 +106,10 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 	};
 	registerHooks({
 		load(url, context, next) {
-			if (!core.should_instrument(url)) return next(url, context);
+			if (!core.should_instrument(url)) {
+				if (!core.is_plain_typescript(url)) return next(url, context);
+				return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
+			}
 			if (core.needs_own_read(url)) {
 				return {
 					format: 'module',
@@ -271,4 +277,13 @@ async function main(): Promise<void> {
 	writeFileSync(config.out, JSON.stringify(result));
 }
 
-await main();
+// Gone with the parent, and done when main is: an open handle in a measured module (a live
+// interval at the top level) cannot keep the child alive.
+watch_parent();
+try {
+	await main();
+} catch (e) {
+	process.stderr.write(`${e instanceof Error ? (e.stack ?? e.message) : String(e)}\n`);
+	process.exit(1);
+}
+process.exit(0);

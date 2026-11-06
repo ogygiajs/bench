@@ -4,6 +4,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { CaseReport } from '../report.ts';
+import { track } from '../proc.ts';
 import type { UnstableFunction } from './stability.ts';
 import type { LoadedModules } from './types.ts';
 
@@ -82,12 +83,14 @@ export class CountedServer {
 		env?: Record<string, string>;
 		cwd?: string;
 	}): Promise<CountedServer> {
-		const child = fork(CHILD, [], {
-			cwd: o.cwd,
-			execArgv: ['--no-warnings'],
-			env: { ...process.env, NODE_ENV: 'production' },
-			stdio: ['ignore', 'pipe', 'pipe', 'ipc']
-		});
+		const child = track(
+			fork(CHILD, [], {
+				cwd: o.cwd,
+				execArgv: ['--no-warnings'],
+				env: { ...process.env, NODE_ENV: 'production' },
+				stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+			})
+		);
 		const s = new CountedServer(child);
 		await s.#ask({
 			type: 'init',
@@ -139,7 +142,8 @@ export class CountedServer {
 	}
 
 	async stop(): Promise<void> {
-		if (this.#child.exitCode !== null) return;
+		// A child killed by a signal has no exit code, only a signal code: it is gone all the same.
+		if (this.#child.exitCode !== null || this.#child.signalCode !== null) return;
 		await new Promise<void>((r) => {
 			this.#child.once('exit', () => r());
 			this.#child.kill('SIGTERM');

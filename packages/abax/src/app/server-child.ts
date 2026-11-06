@@ -15,6 +15,10 @@ import { unstable_functions } from './stability.ts';
 import { add_loaded } from './types.ts';
 import type { LoadedModules } from './types.ts';
 import type { AppRequest, ChildMessage, CountedServerCase, ParentMessage } from './server.ts';
+import { watch_parent } from '../proc.ts';
+
+// The parent gone (its IPC channel closed): the listening server must not keep this alive.
+watch_parent();
 
 /*
  * The counted SvelteKit server, in a process of its own (server.ts starts it).
@@ -37,7 +41,8 @@ type KitServer = {
 
 const rt = get_runtime();
 const builtins = new Builtins(rt);
-const det = new Determinism();
+// The app's directory is where its server runs: shown as VIRTUAL_ROOT inside the window.
+const det = new Determinism({ root: process.cwd() });
 let kit: KitServer | null = null;
 let static_dirs: string[] = [];
 let http: HttpServer | null = null;

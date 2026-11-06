@@ -2,10 +2,7 @@ import { markOf, range } from '@bench/compare';
 import type { DiffResult } from '../diff/index.ts';
 import type { TimeComparison, TimeMetric } from './time.ts';
 import { fmt_ns } from './time.ts';
-
-function code(s: string): string {
-	return '`' + s.split('`').join("'") + '`';
-}
+import { code } from '../md.ts';
 
 /** Leaks, elided allocations and time-led cases, under the step table. */
 export function render_measure(d: DiffResult): string[] {
@@ -70,6 +67,9 @@ export function render_time(t: TimeComparison): string {
 	for (const c of t.cases) {
 		const cells = metrics.map((m) => {
 			const v = c.verdicts[m];
+			// Too little CPU for process.cpuUsage to read on some turn: no number at all.
+			if (m === 'cpu_ns' && [...c.base, ...c.pr].some((s) => s.cpu_ns === null))
+				return '· below resolution';
 			const f = (n: number) => fmt_metric(m, n);
 			const samples = (xs: number[] | undefined) => (xs && xs.length > 0 ? range(xs, f) : '');
 			return `${markOf(v)} ${samples(v.baseSamples)} → ${samples(v.prSamples)}`;
