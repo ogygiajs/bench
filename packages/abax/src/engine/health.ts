@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
+import { LEAST_UPPER_BOUND, TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { instrument } from '../transform/instrument.ts';
 import { load_prices } from '../prices.ts';
@@ -192,8 +192,11 @@ function meta_at(t: FnTable, offset: number): number {
 /** Generated 1-based line/col -> original 1-based line/col. */
 function original(t: FnTable, line: number, col: number): [number, number] {
 	if (!t.map) return [line, col];
-	const o = originalPositionFor(t.map, { line, column: Math.max(0, col - 1) });
-	return o.line == null ? [line, col] : [o.line, (o.column ?? 0) + 1];
+	const column = Math.max(0, col - 1);
+	let o = originalPositionFor(t.map, { line, column });
+	if (o.line == null) o = originalPositionFor(t.map, { line, column, bias: LEAST_UPPER_BOUND });
+	// compiler-made code (Svelte's helpers) maps nowhere: 0, and the caller picks a fallback
+	return o.line == null ? [0, 0] : [o.line, (o.column ?? 0) + 1];
 }
 
 interface FnAcc {
@@ -305,7 +308,14 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 	const fn_id = (a: FnAcc): string => `${modules[a.module].id} > ${a.meta.path}`;
 	const fn_line = (a: FnAcc): number => {
 		const t = tables[a.module];
-		return original(t, a.meta.line, a.meta.col + 1)[0];
+		const at = original(t, a.meta.line, a.meta.col + 1)[0];
+		if (at !== 0) return at;
+		// a compiler-made function start: the first line of its body that maps to the source
+		for (let l = a.meta.line + 1; l <= a.meta.end_line; l++) {
+			const o = original(t, l, 1)[0];
+			if (o !== 0) return o;
+		}
+		return 0;
 	};
 
 	// sites: worst state per inline cache of an on-path function
@@ -327,7 +337,8 @@ export function analyze(child: Child, name: string, file: string): EngineCase {
 		const k = `${ic.module}:${ic.fn}:${ic.type}:${ic.line}:${ic.col}`;
 		let s = sites.get(k);
 		if (!s) {
-			const [line, col] = original(tables[ic.module], ic.line, ic.col);
+			let [line, col] = original(tables[ic.module], ic.line, ic.col);
+			if (line === 0) [line, col] = [fn_line(a), 0];
 			s = {
 				fn: a,
 				type: ic.type,

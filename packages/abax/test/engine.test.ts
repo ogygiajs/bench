@@ -1,6 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { copyFileSync, symlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { engine_health } from '../src/engine/health.ts';
 import { parse_v8_log, unescape_field } from '../src/engine/log.ts';
+import { temp_dir, write_files } from './helpers.ts';
 import { decode } from '../src/engine/natives.ts';
 import { diff_engine, render_engine_markdown } from '../src/engine/diff.ts';
 import { ENGINE_SCHEMA } from '../src/engine/types.ts';
@@ -157,4 +162,47 @@ test('engine diff: an identical report has nothing to say', () => {
 	assert.deepEqual(d.findings, []);
 	assert.deepEqual(d.better, []);
 	assert.ok(render_engine_markdown(d).includes('No function lost optimization'));
+});
+
+test('engine health reads .svelte components and .svelte.ts classes on their own lines', async () => {
+	const abax = fileURLToPath(new URL('../', import.meta.url));
+	const dir = temp_dir('abax-health-svelte-');
+	symlinkSync(join(abax, 'node_modules'), join(dir, 'node_modules'));
+	copyFileSync(join(abax, 'test/fixtures/svelte/List.svelte'), join(dir, 'List.svelte'));
+	write_files(dir, {
+		'counter.svelte.ts': [
+			'export class Counter {',
+			'	count = $state(0);',
+			'	add(n: number): number {',
+			'		this.count += n;',
+			'		return this.count;',
+			'	}',
+			'}',
+			''
+		].join('\n'),
+		'x.bench.ts': [
+			`import { bench } from ${JSON.stringify(join(abax, 'src/bench.ts'))};`,
+			"import { render } from 'svelte/server';",
+			"import List from './List.svelte';",
+			"import { Counter } from './counter.svelte.ts';",
+			"bench('list', ({ items }) => render(List, { props: { items } }).body, {",
+			"	setup: () => ({ items: Array.from({ length: 50 }, (_, i) => ({ name: 'n' + i, done: i % 3 === 0 })) })",
+			'});',
+			"bench('counter', () => { const c = new Counter(); for (let i = 0; i < 100; i++) c.add(i); return c.count; });",
+			''
+		].join('\n')
+	});
+	const r = await engine_health({ files: [join(dir, 'x.bench.ts')], root: dir });
+	const [list, counter] = r.cases;
+	assert.equal(list.error, null);
+	assert.equal(list.stable, true);
+	const label = list.functions.find((f) => f.path === 'List > label')!;
+	assert.equal(label.line, 3);
+	assert.ok(label.optimized);
+	const done = list.sites.find((s) => s.key === 'done')!;
+	assert.deepEqual([done.line, done.state], [4, 'monomorphic']);
+	for (const s of list.sites) assert.ok(s.line >= 1 && s.line <= 13, `${s.id} at ${s.line}`);
+	assert.equal(counter.stable, true);
+	const add = counter.functions.find((f) => f.path === 'Counter > add')!;
+	assert.deepEqual([add.line, add.optimized], [3, true]);
 });
