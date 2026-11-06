@@ -17,33 +17,36 @@ turns: a 7% spread. A change that costs 1% cannot be seen through that.
 
 CI runners are worse. ogygia PR #180 changed CI files and no code that a bench reaches. On both of
 its last two pushes, Abax counted every function the same on both sides. The time table in the
-same comment, judged by the same no-overlap rule the app benchmark uses, called one case slower and
-three faster on the first push, and two other cases slower and one other faster on the second.
+same comment called one case slower and three faster on the first push, and two other cases slower
+and one other faster on the second. It judges by the rule the app benchmark uses: a case changed
+only when every PR timing is on the same side of every base timing (no overlap), and by more than
+a floor.
 
 And when a timing does move, it says which benchmark moved, not which line.
 
 ## The idea
 
 Count instead of time. A bench-only build rewrites every function so it counts itself: each basic
-block adds its count and its price (calls, property reads, comparisons, allocations) to a counter.
+block (a stretch of code with no branch in or out, so it always runs whole) adds its count and its
+price (calls, property reads, comparisons, allocations) to a counter.
 Built-ins like `sort`, `split` or `JSON.parse` are priced by the size of their input. The clock,
 randomness, timers and IO are made deterministic inside the measuring window. The result is
 **steps**: an exact number per function and per line, the same on every run of the same code
 with the same input.
 
-Counting cannot see everything the engine does, so Abax adds layers that run the real, uncounted
-code next to the count:
+Counting cannot see everything the engine does, so Abax adds layers that run the plain build (the
+code as it ships, nothing counted) next to the count:
 
-| Layer             | What it answers                                                                  |
-| ----------------- | -------------------------------------------------------------------------------- |
-| Steps             | How much work each function and line does. Exact.                                |
-| Engine health     | Did V8 stop optimizing a function, start deopting, or see more shapes at a site? |
-| Time              | How long it takes on the plain build, PR and base taking turns in one process.   |
-| Real bytes        | What V8 really allocates per function, next to the count's estimate.             |
-| Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?   |
-| Growth            | Is the case constant, linear, n log n or quadratic in its input size?            |
-| Worst-case search | Which input of the same size costs the most steps?                               |
-| Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.   |
+| Layer             | What it answers                                                                 |
+| ----------------- | ------------------------------------------------------------------------------- |
+| Steps             | How much work each function and line does. Exact.                               |
+| Engine health     | Did V8 stop optimizing a function, drop its optimized code, or see more shapes? |
+| Time              | How long it takes on the plain build, PR and base taking turns in one process.  |
+| Real bytes        | What V8 really allocates per function, next to the count's estimate.            |
+| Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?  |
+| Growth            | Is the case constant, linear, n log n or quadratic in its input size?           |
+| Worst-case search | Which input of the same size costs the most steps?                              |
+| Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.  |
 
 [docs/layers.md](docs/layers.md) explains each one.
 
@@ -86,10 +89,14 @@ git clone https://github.com/ogygiajs/bench.git
 cd bench && pnpm install
 ```
 
-In your project, link the package (pnpm):
+In your project, next to `bench`, link the package in `package.json` and install:
 
 ```json
 { "devDependencies": { "@bench/abax": "link:../bench/packages/abax" } }
+```
+
+```bash
+pnpm install
 ```
 
 A function to measure, `src/rank.ts`:
@@ -130,9 +137,11 @@ bench('rank: twenty rows', ({ rows }) => rank(rows), {
 });
 ```
 
-Count it:
+Commit it (a report records the commit it was counted at), and count it:
 
 ```bash
+git init && echo node_modules > .gitignore
+git add . && git commit -m base
 pnpm exec abax run bench/rank.bench.ts --out base.json
 ```
 
@@ -140,8 +149,7 @@ pnpm exec abax run bench/rank.bench.ts --out base.json
 ok       rank: twenty rows  897 steps
 ```
 
-The project is a git repository and the code above is committed: a report records the commit it
-was counted at. Now change the code, here a second loop inside `score`:
+Now change the code, here a second loop inside `score`, after the first one:
 
 ```ts
 for (let i = 0; i < row.tags.length; i++) {
@@ -152,6 +160,7 @@ for (let i = 0; i < row.tags.length; i++) {
 Commit, and count again:
 
 ```bash
+git commit -am pr
 pnpm exec abax run bench/rank.bench.ts --out pr.json
 pnpm exec abax diff base.json pr.json --repo .
 ```
@@ -168,10 +177,10 @@ pnpm exec abax diff base.json pr.json --repo .
 
 <details><summary>Where</summary>
 
-| | Line | Δ steps | Δ allocs | Δ bytes |
-| --- | --- | ---: | ---: | ---: |
-| new code | `src/rank.ts:11` | +400 | 0 | 0 |
-| new code | `src/rank.ts:12` | +120 | 0 | 0 |
+| Case | | Line | Δ steps | Δ allocs | Δ bytes |
+| --- | --- | --- | ---: | ---: | ---: |
+| rank: twenty rows | new code | `src/rank.ts:11` | +400 | 0 | 0 |
+| rank: twenty rows | new code | `src/rank.ts:12` | +120 | 0 | 0 |
 
 </details>
 ```
@@ -220,6 +229,9 @@ pnpm exec abax dts src/rank.ts --out bench/__abax.d.ts
 ```
 
 ```ts
+// Generated by abax: types of the `__abax` export (private bindings) of each module.
+export {};
+
 declare module '../src/rank.ts' {
 	namespace __abax_private {
 		export function score(row: Row): number;
@@ -314,7 +326,6 @@ fitted cost in ns. It is not a measurement. Only the time layer measures.
 - File reads and `fetch` are recorded in the warm-up run and replayed. Anything else that touches
   the network or writes a file throws.
 - Every run gets fresh module state, so a cache filled by one run does not make the next one fast.
-
 - `process.cwd()` is `/abax/root` (the run root), so code that slices or compares the working
   directory counts the same in every checkout. Files under it still read.
 

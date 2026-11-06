@@ -139,7 +139,9 @@ Cells show the range over the turns, base then PR, with `⚠️` (worse), `bette
 | `rank: twenty rows` | ≈ 83–84 ns → 84 ns | ≈ 125–167 ns → 125–167 ns | ≈ 10,425,649/s–11,139,814/s → 10,093,572/s–10,297,023/s | ≈ 88–91 ns → 89–92 ns |
 ```
 
-That is the quick-start's planted loop: +520 steps, no change in time.
+That is the quick-start's planted loop: +520 steps, no change in time. When no case moved beyond
+noise, as here, the comment says so in one line (`No case got slower or faster beyond noise (1
+case, 5 turns each).`) and folds the table away under it.
 
 CPU/op comes from `process.cpuUsage`, which reads the CPU clock in ticks far longer than a short
 call. So the calls are read in batches of about 10 ms, each batch's setups done before its reading
@@ -278,7 +280,7 @@ inside the loop or call that keeps going, not after it. Such a case is reported 
 input that does not finish), and the search stops there.
 
 ```
-ok       rank: twenty rows  worst 897 vs typical 897 steps (1x, 100 inputs, stopped by evals)
+ok       rank: twenty rows  worst 897 vs typical 897 steps (1x, 300 inputs, stopped by evals)
 ```
 
 A PR case is flagged when its worst input costs at least 4 times its typical one and at least
@@ -295,15 +297,25 @@ A change of 40 steps per call matters if the function runs 10,000 times per requ
 it runs once at startup. `suites/apps/abax` runs the app benchmark's scenarios on a counted build
 of ogygia and Svelte: the server counted per request inside the deterministic window, and the
 pages counted per load and per interaction in Chromium under virtual time, with frames, timers and
-observers on a fixed clock. Every phase runs twice and must count the same.
+observers on a fixed clock. The page's requests are answered one at a time, in the order it made
+them, and the page handles each response before the next one goes out; the harness grants time only
+when no request is left. Every phase runs twice and must count the same.
 
-One run on this machine: 5 scenarios, 42 phases, every phase the same on both runs. `abax weights`
-turns that into calls and steps per unit of real work for 1,063 functions:
+Without the wait between responses, the real clock decided which one the page handled first. On
+a CI runner, the shop's `home` step morphed the header's server islands either before or after the
+navigation took the focused link off the page, and ogygia's `clear_aria_hidden_over_focus`
+counted 104 steps on one run and 92 on the other. With 0 to 8 ms of random delay added to each
+response, the harness without the wait found an unstable phase in 3 of 3 shop runs, and the
+harness with it found none in 3.
+
+Three runs in a row on this machine: 5 scenarios, 42 phases, every phase the same on both runs of
+each, and the same counts in all three. `abax weights` turns that into calls and steps per unit of
+real work for 1,065 functions:
 
 ```
-dashboard server request: 11,501,659 steps per unit
-docs page load: 118,159 steps per unit
-shop interaction: 59,612 steps per unit
+dashboard server request: 10,672,202 steps per unit
+docs page load: 109,268 steps per unit
+shop interaction: 57,859 steps per unit
 ```
 
 `abax diff --weights app-weights.json` ranks the changed functions by what they cost per unit:
