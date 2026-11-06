@@ -36,9 +36,10 @@ In this repository:
    with the PR number, the head commit and the base commit. Drafts, forks and the release PR are
    skipped. Without `BENCH_TOKEN` it skips with a notice; a refused request only warns. Abax builds
    from source, so it does not wait for a published preview.
-2. **The job plans.** This repository's `abax.yml` checks the payload and installs Abax and the
-   suite (`pnpm install --filter '@bench/ogygia...'`) on Node 26. A newer push to the same PR
-   cancels the older run. The job times out after 45 minutes.
+2. **The run plans.** This repository's `abax.yml` checks the payload in a `plan` job, then the
+   `measure` job installs Abax and the suite (`pnpm install --filter '@bench/ogygia...'`) on
+   Node 26. A newer push to the same PR cancels the older run. The measure job times out after
+   45 minutes.
 3. **Checkouts.** `suites/ogygia` clones ogygia once, then makes a tree per commit
    (`trees/<sha12>`): checked out, `pnpm install --frozen-lockfile`, and the bench types written by
    the tree's own `internal/abax/src/types.ts`, with `ABAX_DIR` pointing at this checkout's
@@ -58,8 +59,25 @@ In this repository:
    base and the head.
 8. **Time.** `abax time` loads both trees in one process and times the selected bench files in
    turns, 5 each (20-minute limit).
-9. **Store and post.** `result.json` goes to the `results` branch, and `section.md` becomes the
-   `abax` section of the PR's comment.
+9. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+   job checks it (below), then `result.json` goes to the `results` branch and `section.md`
+   becomes the `abax` section of the PR's comment.
+
+### Who can write
+
+Steps 3 to 8 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
+that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
+token is left in `.git/config` for that code to find.
+
+The `publish` job holds the write token and `BENCH_TOKEN`. It checks out only this repository's
+`packages/compare` (no install) and runs nothing from the measure job or from ogygia. It reads the
+artifact as data with `packages/compare/src/validate-artifact.ts`: only `result.json` and
+`section.md`, each a regular file under its size limit, the JSON parsed, its kind, commit, base
+and PR equal to what the `plan` job decided, and no section markers in the markdown. Paths come
+from the plan, never from the artifact. When the measure job failed, or the artifact does not
+pass, the publish job still rewrites the PR's section with a line saying so.
+
+The app benchmark's `bench.yml` has the same three jobs.
 
 A case that only the PR has is listed under "New cases", one only the base has under "Removed
 cases". A bench file that does not load on one side is listed under "Did not run" with the error.
@@ -96,7 +114,7 @@ Each ogygia PR has one benchmark comment, found by the marker on its first line:
 `node packages/compare/src/upsert-comment.ts --repo <owner/name> --pr <n> --section abax --file section.md`
 finds the comment (or creates it), replaces only the named section, and keeps the others. `abax`
 comes before `apps`. A comment from before sections reads as one `apps` section and is migrated
-on the first upsert. If the Abax job fails, it still rewrites its section with a line saying the
+on the first upsert. If the Abax run fails, the publish job still rewrites its section with a line saying the
 run failed and a link, so a PR never shows counts for an older commit as if they were current.
 
 The `abax` section, in order:
@@ -129,7 +147,7 @@ files, under `abax/`:
 
 Each file is a `result.json` (`schema: "ogygia-abax/1"`): `meta` (kind, PR, commits, the Abax
 commit that counted, the Node version, the run URL, the layers measured), `selection`, the `head`
-and `base` reports, the `diff`, load errors and the time comparison. The job only adds files
+and `base` reports, the `diff`, load errors and the time comparison. The publish job only adds files
 under `abax/`, and retries its push with a rebase when another run pushed first.
 
 ## Running it locally
