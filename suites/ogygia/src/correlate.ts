@@ -38,7 +38,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { loadPrices, recount } from '@bench/abax';
 import type { Report, TimeComparison } from '@bench/abax';
-import { changed_files, clone, prepare_tree, rev_parse } from './checkout.ts';
+import { changed_files, clone, prepare_tree, remove_tree, rev_parse } from './checkout.ts';
 import type { Tree } from './checkout.ts';
 import { import_graphs } from './graph.ts';
 import { ABAX_DIR, run_time, run_tree } from './run.ts';
@@ -171,17 +171,13 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 	const bench_rev = rev_parse(repo, String(values.bench ?? to));
 	const packages = bench_packages(repo, bench_rev);
 	const src = packages.map((p) => `packages/${p}/src`);
-	const commits = git(repo, [
-		'rev-list',
-		'--first-parent',
-		'--reverse',
-		`${from}..${to}`,
-		'--',
-		...src
-	])
-		.split('\n')
-		.filter(Boolean)
-		.slice(-Number(values.max ?? 40));
+	const commits = last_commits(
+		git(repo, ['rev-list', '--first-parent', '--reverse', `${from}..${to}`, '--', ...src])
+			.split('\n')
+			.filter(Boolean),
+		parse_max(values.max)
+	);
+	const pairs = commits.map((commit) => ({ commit, parent: rev_parse(repo, `${commit}^1`) }));
 	const log = (l: string) => console.log(`[correlate] ${l}`);
 	log(
 		`${commits.length} commits touch ${src.join(', ')}; bench files of ${bench_rev.slice(0, 12)}`
@@ -209,13 +205,12 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			'\t'
 		) + '\n'
 	);
-	for (const commit of commits) {
+	for (const [i, { commit, parent }] of pairs.entries()) {
 		const dir = join(out, 'pairs', commit.slice(0, 12));
 		if (existsSync(join(dir, 'pair.json'))) {
 			log(`${commit.slice(0, 12)} done before`);
 			continue;
 		}
-		const parent = rev_parse(repo, `${commit}^1`);
 		const subject = git(repo, ['log', '-1', '--format=%s', commit]);
 		log(`${commit.slice(0, 12)} ${subject}`);
 		const base = overlay(
@@ -259,7 +254,32 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 			time_error: t?.error ?? null
 		};
 		writeFileSync(join(dir, 'pair.json'), JSON.stringify(meta, null, '\t') + '\n');
+		// Each tree is a full install: keep only what the next pair measures.
+		for (const sha of trees_to_drop(pairs[i], pairs[i + 1])) remove_tree(work, sha);
 	}
+}
+
+/** `--max`: how many of the newest commits to measure (default 40). */
+export function parse_max(v: string | boolean | undefined): number {
+	if (v === undefined) return 40;
+	const n = Number(v);
+	if (typeof v !== 'string' || !/^\d+$/.test(v) || !Number.isSafeInteger(n))
+		throw new Error(`--max takes a whole number of commits, not ${JSON.stringify(v)}`);
+	return n;
+}
+
+/** The newest `max` commits of an oldest-first list (none for 0: `slice(-0)` would be all). */
+export function last_commits(commits: readonly string[], max: number): string[] {
+	return max === 0 ? [] : commits.slice(-max);
+}
+
+/** The trees of a measured pair that the next pair does not use. */
+export function trees_to_drop(
+	pair: { commit: string; parent: string },
+	next: { commit: string; parent: string } | undefined
+): string[] {
+	const keep = new Set(next ? [next.commit, next.parent] : []);
+	return [...new Set([pair.parent, pair.commit])].filter((sha) => !keep.has(sha));
 }
 
 // ---- summarizing
