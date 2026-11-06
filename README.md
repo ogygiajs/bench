@@ -180,12 +180,17 @@ Results are kept on the orphan `results` branch:
 - `main/latest.json`: the newest main run
 - `main/<sha>.json`: every run for an ogygia main commit (`main/v<version>.json` for the weekly run)
 - `pr/<number>.json`: the newest run for that ogygia PR
+- `commit/<sha>.json`: the newest run of that ogygia commit (full sha), written by PR runs and main
+  runs alike, so a PR can be followed through its commits and main through its history. It is the
+  same JSON as the run's other file: `meta.sha` is the commit, `meta.pr` the PR of a PR run and
+  `meta.base` the base commit measured beside it. A rerun of a commit replaces its file; the weekly
+  release run has no sha and no commit file.
 
 The ogygia docs read
 `https://raw.githubusercontent.com/ogygiajs/bench/results/main/latest.json`. The JSON is what
 `benchmark.ts --json` writes: the blog's fields at the top level as before (`posts`,
 `frameworks[].rows`, `frameworks[].avg`, `frameworks[].samples`), a `meta` block (`ogygia`,
-`spec`, `sha`, `mode`, `passes`, `scenarioPasses`, `scenarios`, `runner`, `runAt`, and `base` for
+`spec`, `sha`, `pr` (a PR run), `mode`, `passes`, `scenarioPasses`, `scenarios`, `runner`, `runAt`, and `base` for
 an A/B run), and beside them
 `scenarios: { <name>: { title, routes, steps, frameworks: [{ id, approach, served, metrics, samples }] } }`.
 `samples` holds every pass's value of each key that more than one pass measured.
