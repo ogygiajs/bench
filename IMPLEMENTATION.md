@@ -272,14 +272,16 @@ and checked before measuring), `client` (the parts of it a browser can fetch, fo
 ### 9.3 Measuring
 
 Per scenario: boot every app, run the fidelity print on each (refuse the scenario's numbers on a
-mismatch), measure route weights once, then `passes` rounds over the apps of the browser session
-(`session()` then `long()` then the heap) and of Lighthouse; then, for server apps, render time,
-the load test, the stream timing and cacheability; add build time, output size and lines of code.
-Timings are medians over the passes. The JSON shape and every metric are in the README.
+mismatch), measure route weights once, then `passes` rounds over the apps (in reverse order every
+other round), each measuring one app in full: the browser session (`session()` then `long()` then
+the heap), Lighthouse, then for a server app render time, the load test and the stream timing;
+then cacheability; add build time, output size and lines of code. Timings are medians over the
+passes, and every pass is kept (`samples`). The JSON shape and every metric are in the README.
 
 **Acceptance:** `node build-all.ts --fast && node benchmark.ts --fast --json` produces, for every
 scenario, a fidelity PASS and a number for every metric the scenario defines, for both apps;
-`node compare.ts --pr <run.json> --base <older run.json>` renders the grouped comment.
+`node compare.ts --run <run.json>` renders the grouped comment for an A/B run (`build-all.ts
+--base-spec`, `benchmark.ts --ab`).
 
 ---
 

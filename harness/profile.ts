@@ -19,12 +19,13 @@ export const BROWSER = {
 /** Server load, for the apps that run their own server. */
 export const SERVER = {
 	connections: 10,
-	// Seconds of load per app; FAST runs use the shorter one.
-	duration: { full: 5, fast: 3 },
-	// Sequential requests for TTFB and render time (median).
+	// Seconds of load per app and pass; FAST runs use the shorter one. `warmup`: an unrecorded load
+	// before an app's first pass.
+	duration: { full: 5, fast: 3, warmup: 1 },
+	// Sequential requests per pass for TTFB and render time (median).
 	samples: 25,
-	// Sequential requests for a stream's time to first chunk (median).
-	streamSamples: 5
+	// Sequential requests per pass for a stream's time to first chunk (median).
+	streamSamples: 2
 };
 
 /** Event Timing only reports interactions of at least this many ms; shorter ones read as this. */

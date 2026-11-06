@@ -63,8 +63,9 @@ workspace, no lockfile). The only thing that changes between runs is which ogygi
 ## Metrics
 
 Each metric is defined once, in `harness/metrics.ts` (name, unit, which way is better), with its
-noise floor in `compare.ts`'s `NOISE` table. A result key is `<metric>` or `<metric>:<route|step>`.
-Timings are the median of N passes; sizes and lines of code are exact.
+floor (the smallest change that counts) in `compare.ts`'s `FLOOR` table. A result key is
+`<metric>` or `<metric>:<route|step>`. Timings are the median of N passes, and every pass's value
+is kept beside it (`samples`); sizes and lines of code are exact.
 
 | metric | what it is |
 | --- | --- |
@@ -128,8 +129,10 @@ node benchmark.ts --fast --passes 5 --scenario-passes 3 --out results/scratch/ru
 # one scenario, without the blog's Lighthouse run
 node benchmark.ts --no-blog --scenarios docs --out results/scratch/docs.md --json
 
-# the PR comment body, from two result files
-node compare.ts --pr results/scratch/run.json --base results/latest.json
+# A/B: two ogygia builds on this machine, taking turns, and the PR comment body for them
+node build-all.ts --fast --spec https://pkg.pr.new/ogygia@<pr sha7> --base-spec https://pkg.pr.new/ogygia@<base sha7>
+node benchmark.ts --fast --ab --passes 5 --scenario-passes 5 --out results/scratch/run.md --json
+node compare.ts --run results/scratch/run.json
 ```
 
 `OGYGIA_SPEC` (or `--spec`) is the one input. For a pkg.pr.new build, `build-all.ts` takes
@@ -155,38 +158,48 @@ One image with Node, Chromium, pnpm and bun. Results land in `results/` on the h
 ogygia's CI sends a `repository_dispatch` here after pkg.pr.new has published a commit. The
 [`bench` workflow](.github/workflows/bench.yml) then:
 
-- **`ogygia-pr`**: builds ogygia from `https://pkg.pr.new/ogygia@<sha7>`, runs the fast set
-  (ogygia + sveltekit) on the blog (five Lighthouse passes) and on every scenario (three passes),
-  and compares it with the main baseline. It posts one comment on the PR and edits that same
-  comment on later pushes. A newer push cancels a run that is still going. **Time budget: about
-  25 to 30 minutes** (job timeout 45).
-- **`ogygia-main`**: runs every app of every scenario and stores the result as the new baseline
-  (about 75 minutes, timeout 120).
+- **`ogygia-pr`**: an A/B run. It builds every ogygia app twice, from
+  `https://pkg.pr.new/ogygia@<sha7>` (the PR) and from the PR's base commit (`ogygia-base`, a copy
+  of the same app), and measures the two in the same job on the same runner, taking turns: every
+  pass measures both, PR then base, then base then PR, five passes on the blog's Lighthouse and on
+  every scenario. It posts one comment on the PR and edits that same comment on later pushes. A
+  newer push cancels a run that is still going. **Time budget: about 25 minutes** (job timeout 60).
+- **`ogygia-main`**: runs every app of every scenario (about 75 minutes, timeout 120). The docs
+  read this result; no PR is compared with it.
 - **Weekly**: the same full run against `ogygia@latest`.
-- **By hand** (`workflow_dispatch`): pick fast or full, any spec, the passes and which scenarios.
-  The result is an artifact only.
+- **By hand** (`workflow_dispatch`): pick fast or full, any spec, the passes and which scenarios;
+  give a base spec too for an A/B run. The result is an artifact only.
 
 The PR comment is grouped by scenario: one summary table (a row per scenario: load, JS, INP,
-navigation or streaming, server p99, lines of code, and how many metrics regressed), then every
-metric of each scenario in its own collapsed `<details>`.
+navigation or streaming, server page views per second, lines of code, and how many metrics
+regressed), then every metric of each scenario in its own collapsed `<details>`, with the PR's
+median, the base's, the change and the lowest and highest of each build's repeats; every metric
+that changed beyond noise also lists all its repeats, in pass order. A change within noise reads
+as ≈ and the summary gives it no percent.
 
 Results are kept on the orphan `results` branch:
 
-- `main/latest.json`: the newest baseline
+- `main/latest.json`: the newest main run
 - `main/<sha>.json`: every run for an ogygia main commit (`main/v<version>.json` for the weekly run)
 - `pr/<number>.json`: the newest run for that ogygia PR
 
 The ogygia docs read
 `https://raw.githubusercontent.com/ogygiajs/bench/results/main/latest.json`. The JSON is what
 `benchmark.ts --json` writes: the blog's fields at the top level as before (`posts`,
-`frameworks[].rows`, `frameworks[].avg`), a `meta` block (`ogygia`, `spec`, `sha`, `mode`,
-`passes`, `scenarioPasses`, `scenarios`, `runAt`), and beside them
-`scenarios: { <name>: { title, routes, steps, frameworks: [{ id, approach, served, metrics }] } }`.
+`frameworks[].rows`, `frameworks[].avg`, `frameworks[].samples`), a `meta` block (`ogygia`,
+`spec`, `sha`, `mode`, `passes`, `scenarioPasses`, `scenarios`, `runner`, `runAt`, and `base` for
+an A/B run), and beside them
+`scenarios: { <name>: { title, routes, steps, frameworks: [{ id, approach, served, metrics, samples }] } }`.
+`samples` holds every pass's value of each key that more than one pass measured.
 
-A change counts as a regression only when it is worse than the baseline by more than a noise floor.
-The floors are defined once, at the top of `compare.ts`. The comment also shows how much the plain
-SvelteKit apps moved between the two runs, since they never change: if they moved a lot, so did
-the runner.
+A PR is only ever compared with its base measured in the same run. A result from another run is
+another machine: the same SvelteKit app, unchanged, served 25 to 54 page views per second on the
+dashboard across this repository's runs, depending on the runner it got. Within the run, a timing
+counts as changed (worse or better) only when the two builds' repeats do not overlap (with five
+each, a 1-in-126 chance either way for two builds that perform the same), the medians differ by
+more than the larger spread (max − min) of the two builds' repeats, and the change is above the
+metric's floor. Sizes and lines of code are measured once and exact: a regression when worse by
+more than the floor. Both rules and the floors are in `compare.ts`.
 
 The PR comment needs a token in the `BENCH_TOKEN` secret that can write comments on ogygiajs/ogygia.
 Without it the run still happens and stores its result; it just skips the comment.

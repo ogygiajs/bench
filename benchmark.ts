@@ -21,9 +21,13 @@
 // implicit "skip when a target's build/server is missing" behaviour is unchanged.
 // --fast keeps only the targets marked `fast` in the config (ogygia + the sveltekit reference).
 // --passes N (or BENCH_PASSES) runs Lighthouse N times per framework × post and reports the median
-// of each metric. Passes go round-robin over every target, so a slow stretch on the machine lands
-// on all of them instead of on whichever framework happened to be running.
-// --kind / --sha (or BENCH_KIND / BENCH_SHA) only label the JSON's `meta` block.
+// of each metric. Passes go round-robin over every target, in the reverse order every other pass,
+// so a slow stretch on the machine lands on all of them instead of on whichever framework happened
+// to be running. Each pass's values are kept too (`samples`), for compare.ts.
+// --ab (or BENCH_AB=1) measures the PR's ogygia (`ogygia`) against its base build (`ogygia-base`,
+// from build-all.ts --base-spec) and nothing else; see harness/ab.ts.
+// --kind / --sha / --base-sha (or BENCH_KIND / BENCH_SHA / BENCH_BASE_SHA) only label the JSON's
+// `meta` block.
 // --scenarios all|none|docs,dashboard,… (or BENCH_SCENARIOS, default all) then runs the scenarios
 // (harness/run.ts) with --scenario-passes N passes (or BENCH_SCENARIO_PASSES, default --passes);
 // --skip and --fast apply to their apps too. --no-blog skips the blog's Lighthouse run above.
@@ -49,7 +53,9 @@ import { join, resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import lighthouse from 'lighthouse';
 import { launch } from 'chrome-launcher';
+import os from 'node:os';
 import { scriptTime } from './harness/lighthouse.ts';
+import { BASE_ID, baseDir, inAb, withBase } from './harness/ab.ts';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const KB = (n) => n / 1024;
@@ -72,6 +78,8 @@ function parseArgs(argv) {
 	const args = {
 		config: 'frameworks.config.json',
 		fast: process.env.BENCH_FAST === '1',
+		ab: process.env.BENCH_AB === '1',
+		baseSha: process.env.BENCH_BASE_SHA || null,
 		passes: Number(process.env.BENCH_PASSES || 1),
 		kind: process.env.BENCH_KIND || 'manual',
 		sha: process.env.BENCH_SHA || null,
@@ -97,6 +105,8 @@ function parseArgs(argv) {
 		else if (a === '--skip') args.skip = argv[++i].split(',');
 		else if (a === '--gzip') args.gzip = true;
 		else if (a === '--skip-fidelity') args.skipFidelity = true;
+		else if (a === '--ab') args.ab = true;
+		else if (a === '--base-sha') args.baseSha = argv[++i];
 	}
 	if (!Number.isInteger(args.passes) || args.passes < 1)
 		throw new Error(`--passes must be a positive integer`);
@@ -375,7 +385,7 @@ async function measureAll(frameworks, posts, chromePort, opts) {
 	try {
 		for (let pass = 1; pass <= opts.passes; pass++) {
 			if (opts.passes > 1) console.error(`▸ pass ${pass}/${opts.passes}`);
-			for (const t of targets) {
+			for (const t of pass % 2 ? targets : [...targets].reverse()) {
 				for (const post of posts) {
 					process.stderr.write(`  ${fwId(t.fw)} ${post.id} … `);
 					const lh = await runLighthouse(t.base + post.path, chromePort, opts.acceptEncoding);
@@ -414,7 +424,18 @@ async function measureAll(frameworks, posts, chromePort, opts) {
 					scripts: runs[0].scripts
 				});
 			}
-			results.push(summarise(t, rows));
+			// Each pass's value of each `avg` metric (the mean over the posts), for compare.ts.
+			const samples = {};
+			if (opts.passes > 1)
+				for (const k of LH_METRICS) {
+					const xs = [];
+					for (let i = 0; i < opts.passes; i++) {
+						const vs = posts.map((p) => t.runs.get(p.id)[i]?.[k]).filter((x) => x != null);
+						if (vs.length === posts.length) xs.push(Number(avg(vs).toFixed(k === 'cls' ? 3 : 0)));
+					}
+					if (xs.length > 1) samples[k] = xs;
+				}
+			results.push({ ...summarise(t, rows), samples });
 		}
 		return results;
 	} finally {
@@ -517,32 +538,45 @@ function runMeta(args, frameworks) {
 			return null;
 		}
 	};
-	const measured = frameworks.some((f) => f.id === 'ogygia');
 	// The blog's ogygia app, else the first scenario's (a `--no-blog` run); all install the same spec.
 	const apps = [app, ...Object.values(args.cfg?.scenarios ?? {}).flatMap((s) => s.apps.filter((a) => a.id === 'ogygia').map((a) => join(ROOT, a.dir)))];
-	const pick = (rel) => apps.map((dir) => read(join(dir, rel))).find(Boolean) ?? null;
-	const installed = measured ? pick('node_modules/ogygia/package.json') : null;
-	const chosen = measured ? pick('.ogygia-spec.json') : null;
+	const build = (id, dirs) => {
+		if (!frameworks.some((f) => f.id === id)) return {};
+		const pick = (rel) => dirs.map((dir) => read(join(dir, rel))).find(Boolean) ?? null;
+		return { ogygia: pick('node_modules/ogygia/package.json')?.version ?? null, spec: pick('.ogygia-spec.json')?.spec ?? null };
+	};
+	const pr = build('ogygia', apps);
+	const base = build(BASE_ID, apps.map(baseDir));
+	const cpus = os.cpus();
 	return {
-		ogygia: installed?.version ?? null,
-		spec: chosen?.spec ?? null,
+		ogygia: pr.ogygia ?? null,
+		spec: pr.spec ?? null,
 		sha: args.sha,
 		mode: args.kind,
 		scope: args.fast ? 'fast' : 'full',
 		frameworks: frameworks.map((f) => f.id),
 		passes: args.passes,
+		// An A/B run: the base build measured beside the PR's, in this same run.
+		...(base.ogygia || base.spec ? { base: { ...base, sha: args.baseSha } } : {}),
+		// Every timing depends on the machine; a result is only comparable with one from this runner.
+		runner: { cpu: cpus[0]?.model?.trim() ?? null, cores: cpus.length, memGb: Math.round(os.totalmem() / 2 ** 30) },
 		runAt: new Date().toISOString()
 	};
 }
 
+// The committed fidelity reports are a full run's; an A/B run's (the two ogygia builds only) goes
+// with the run's other scratch output.
+const fidelityFile = (args, name) => (args.ab ? `results/scratch/${name}` : `results/${name}`);
+
 async function main() {
 	const args = parseArgs(process.argv.slice(2));
-	const cfg = JSON.parse(readFileSync(resolve(ROOT, args.config), 'utf8'));
+	const config = JSON.parse(readFileSync(resolve(ROOT, args.config), 'utf8'));
+	const cfg = args.ab ? withBase(config) : config;
 	const posts = args.posts ? cfg.posts.filter((p) => args.posts.includes(p.id)) : cfg.posts;
 
 	const skip = new Set((args.skip ?? []).map((s) => s.toLowerCase()));
 	const frameworks = cfg.frameworks.filter(
-		(fw) => !skip.has(fwId(fw).toLowerCase()) && (!args.fast || fw.fast)
+		(fw) => !skip.has(fwId(fw).toLowerCase()) && (args.ab ? inAb(fw) : !args.fast || fw.fast)
 	);
 
 	const acceptEncoding = args.gzip ? 'gzip' : 'identity';
@@ -553,7 +587,7 @@ async function main() {
 	if (!args.noBlog) {
 		if (!args.skipFidelity) {
 			console.error('▸ fidelity preflight');
-			const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, 'results/fidelity.md'));
+			const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, fidelityFile(args, 'fidelity.md')));
 			if (!fidelityOk) {
 				console.error(
 					'\nFidelity failed — not publishing numbers. Fix apps or pass --skip-fidelity.'
@@ -590,9 +624,11 @@ async function main() {
 	const scenarios = await runScenarios(ROOT, cfg, {
 		names: args.scenarios,
 		fast: args.fast,
+		ab: args.ab,
 		passes: args.scenarioPasses,
 		skip,
-		skipFidelity: args.skipFidelity
+		skipFidelity: args.skipFidelity,
+		fidelityFile: fidelityFile(args, 'fidelity-scenarios.md')
 	});
 	const measuredIds = [
 		...new Set([...results, ...Object.values(scenarios).flatMap((s) => s.frameworks)].map((f) => f.id))
@@ -692,11 +728,14 @@ async function main() {
 					tbt: f.avg.tbt,
 					evalMs: f.avg.evalMs,
 					dom: f.avg.dom
-				}
+				},
+				// Each pass's `avg`, in pass order (with more than one pass).
+				...(Object.keys(f.samples ?? {}).length ? { samples: f.samples } : {})
 			})),
 			// One entry per scenario: `{ title, routes, steps, frameworks: [{ id, approach, served,
-			// metrics: { <key>: number } }] }`. Metric keys are `<metric>` or `<metric>:<route|step>`;
-			// compare.ts and README.md define each one.
+			// metrics: { <key>: number }, samples: { <key>: number[] } }] }`. Metric keys are
+			// `<metric>` or `<metric>:<route|step>`; `samples` holds each pass's value of every key
+			// more than one pass measured. compare.ts and README.md define each one.
 			scenarios
 		};
 		writeFileSync(jsonPath, JSON.stringify(clean, null, 2) + '\n');
