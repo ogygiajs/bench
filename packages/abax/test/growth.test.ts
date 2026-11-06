@@ -1,0 +1,118 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { fit_growth } from '../src/growth/fit.ts';
+import { clone, input_size, scale_input } from '../src/growth/scale.ts';
+import { Rng, mutate } from '../src/search/mutate.ts';
+
+const KS = [1, 10, 100];
+
+test('curve classes are fitted from exact counts', () => {
+	const cls = (f: (k: number) => number, ks = KS) => fit_growth(ks, ks.map(f)).class;
+	assert.equal(
+		cls(() => 500),
+		'constant'
+	);
+	assert.equal(
+		cls((k) => 40 + 9 * Math.log(k)),
+		'log'
+	);
+	assert.equal(
+		cls((k) => 1000 + 5 * k),
+		'linear',
+		'a large constant part does not hide a line'
+	);
+	assert.equal(
+		cls((k) => 7 * k * Math.log(k) + 3 * k + 20),
+		'n log n'
+	);
+	assert.equal(
+		cls((k) => 2 * k * k + 30 * k + 4),
+		'quadratic'
+	);
+	assert.equal(
+		cls((k) => k * k * k + k),
+		'worse'
+	);
+	assert.equal(
+		cls((k) => 3 * (5 + 2 * k)),
+		'linear',
+		'three times the work is still linear'
+	);
+	const sizes = [1, 2, 4, 8, 16, 32];
+	assert.equal(
+		cls((k) => 10 + k * k, sizes),
+		'quadratic'
+	);
+	assert.ok(Math.abs(fit_growth(KS, [3, 300, 30000]).exponent - 2) < 1e-9);
+});
+
+test('the generic scaler grows every collection once, linearly', () => {
+	const ctx = {
+		rows: [
+			{ id: 1, tags: ['a', 'b'] },
+			{ id: 2, tags: ['c'] }
+		],
+		query: 'ab',
+		n: 7,
+		index: new Map([
+			['x', 1],
+			['y', 2]
+		]),
+		ids: new Set([1, 2, 3]),
+		path: { name: 'a', next: { name: 'b', next: null } }
+	};
+	const s = scale_input(ctx, 3);
+	assert.equal(s.rows.length, 6);
+	assert.deepEqual(s.rows[2], { id: 1, tags: ['a', 'b'] }, 'inner arrays are copied, not grown');
+	assert.notEqual(s.rows[2], s.rows[0], 'repeated elements are distinct objects');
+	assert.equal(s.query, 'ababab');
+	assert.equal(s.n, 7);
+	assert.deepEqual([...s.index.keys()], ['x', 'y', 'x~1', 'y~1', 'x~2', 'y~2']);
+	assert.deepEqual([...s.ids], [1, 2, 3, 5, 6, 7, 9, 10, 11]);
+	let depth = 0;
+	for (let p: { next: unknown } | null = s.path; p; p = p.next as { next: unknown } | null) depth++;
+	assert.equal(depth, 6, 'a chain gets three times deeper');
+	assert.deepEqual(ctx.rows.length, 2, 'the input itself is untouched');
+	assert.equal(scale_input(ctx, 1).rows.length, 2);
+	assert.ok(input_size(scale_input(ctx, 10)) > 8 * input_size(ctx));
+});
+
+test('clone keeps shared and cyclic structure', () => {
+	const shared = { v: 1 };
+	const a: Record<string, unknown> = { x: shared, y: shared };
+	a.self = a;
+	const b = clone(a);
+	assert.notEqual(b, a);
+	assert.equal(b.x, b.y);
+	assert.equal(b.self, b);
+});
+
+test('mutations are seeded: the same seed makes the same inputs', () => {
+	const input = { text: 'hello world', xs: [3, 1, 2], n: 5 };
+	const walk = (seed: number): string[] => {
+		const r = new Rng(seed);
+		let cur: unknown = input;
+		const out: string[] = [];
+		for (let i = 0; i < 50; i++) {
+			const m = mutate(cur, r);
+			cur = m.input;
+			out.push(m.what + ' ' + JSON.stringify(cur));
+		}
+		return out;
+	};
+	assert.deepEqual(walk(7), walk(7));
+	assert.notDeepEqual(walk(7), walk(8));
+	assert.deepEqual(
+		input,
+		{ text: 'hello world', xs: [3, 1, 2], n: 5 },
+		'the input is never changed'
+	);
+});
+
+test('number mutations never grow a number', () => {
+	const r = new Rng(3);
+	for (let i = 0; i < 200; i++) {
+		const v = (mutate({ n: 50 }, r).input as { n: unknown }).n;
+		if (typeof v === 'number' && !Number.isNaN(v)) assert.ok(Math.abs(v) <= 50, String(v));
+	}
+});

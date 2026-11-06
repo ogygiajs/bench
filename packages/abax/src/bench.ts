@@ -14,6 +14,11 @@
 export interface BenchOptions<T> {
 	setup?: () => T | Promise<T>;
 	teardown?: (ctx: T) => unknown;
+	/**
+	 * Growth (`abax growth`): the setup's input made about `factor` times bigger. Only for inputs
+	 * the generic scaler cannot grow (a size given as a number, an input that must stay valid).
+	 */
+	scale?: (ctx: T, factor: number) => T;
 }
 
 export interface BenchCase<T = unknown> extends BenchOptions<T> {
@@ -50,5 +55,5 @@ export function bench<T = undefined>(
 	options: BenchOptions<T> = {}
 ): void {
 	const file = ((globalThis as unknown as Global)[CURRENT] as string | undefined) ?? '';
-	cases().push({ name, fn, setup: options.setup, teardown: options.teardown, file } as BenchCase);
+	cases().push({ ...options, name, fn, file } as BenchCase);
 }
