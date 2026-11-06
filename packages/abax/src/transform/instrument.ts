@@ -644,12 +644,15 @@ class Instrumenter {
 		const left = get(st, 'left')!;
 		const f = this.fn;
 		const is_await = flag(st, 'await') && f.framed && f.meta.async;
-		this.walk_expr(right);
-		if (of) this.op('iter_init', right.start);
+		// Outer edits are created before inner ones (see the edit-order note at the top): the
+		// resume after the loop must land outside braces the body may get.
 		if (is_await) {
+			this.close(st.end, () => `;${this.n.R}.resume_if(${this.n.r});`);
 			this.open(right.start, () => `${this.n.R}.for_await(${this.n.r},`);
 			this.close(right.end, () => ')');
 		}
+		this.walk_expr(right);
+		if (of) this.op('iter_init', right.start);
 		this.walk_branch(get(st, 'body')!, is_await ? this.resume_prefix() : undefined, () => {
 			// The iterator protocol step of each iteration is a hidden cost of the body block.
 			this.op(of ? 'iter_step' : 'forin_step', left.start);
@@ -659,7 +662,6 @@ class Instrumenter {
 				this.walk_pattern(left, 'assign');
 			}
 		});
-		if (is_await) this.close(st.end, () => `;${this.n.R}.resume_if(${this.n.r});`);
 	}
 
 	// ---------------------------------------------------------------- functions
@@ -1236,32 +1238,34 @@ class Instrumenter {
 	}
 
 	walk_await(node: Node): void {
+		const f = this.fn;
+		if (f.framed && f.meta.async) {
+			const { R, r } = this.n;
+			this.open(node.start, () => `${R}.resume(${r},`);
+			this.open(node.start + 5, () => ` ${R}.suspend(${r},`);
+			this.close(node.end, () => '))');
+		}
 		this.walk_expr(get(node, 'argument')!);
 		this.op('await', node.start);
-		const f = this.fn;
-		if (!f.framed || !f.meta.async) return;
-		const { R, r } = this.n;
-		this.open(node.start, () => `${R}.resume(${r},`);
-		this.open(node.start + 5, () => ` ${R}.suspend(${r},`);
-		this.close(node.end, () => '))');
 	}
 
 	walk_yield(node: Node): void {
 		const arg = get(node, 'argument');
+		const f = this.fn;
+		if (f.framed && f.meta.generator) {
+			const { R, r } = this.n;
+			this.open(node.start, () => `${R}.resume(${r},`);
+			if (arg) {
+				let at = node.start + 5;
+				if (flag(node, 'delegate')) at = this.code.indexOf('*', at) + 1;
+				this.open(at, () => ` ${R}.suspend(${r},`);
+				this.close(node.end, () => '))');
+			} else {
+				this.close(node.end, () => ` ${R}.suspend(${r},undefined))`);
+			}
+		}
 		if (arg) this.walk_expr(arg);
 		this.op('yield', node.start);
-		const f = this.fn;
-		if (!f.framed || !f.meta.generator) return;
-		const { R, r } = this.n;
-		this.open(node.start, () => `${R}.resume(${r},`);
-		if (arg) {
-			let at = node.start + 5;
-			if (flag(node, 'delegate')) at = this.code.indexOf('*', at) + 1;
-			this.open(at, () => ` ${R}.suspend(${r},`);
-			this.close(node.end, () => '))');
-		} else {
-			this.close(node.end, () => ` ${R}.suspend(${r},undefined))`);
-		}
 	}
 
 	// ---------------------------------------------------------------- finalize

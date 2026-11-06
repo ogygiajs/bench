@@ -19,6 +19,8 @@ import { op_price_vector } from './prices.ts';
 export const REPORT_SCHEMA = 'abax-report/1';
 
 export interface BlockReport {
+	/** Stable identity: `module > function path > block index`. */
+	id: string;
 	/** Block index inside the function. */
 	index: number;
 	line: number;
@@ -178,6 +180,7 @@ export function build_case_report(
 			const count = c[bi];
 			const f = per_fn[b.fn];
 			f.blocks.push({
+				id: `${ids[f.fid]} > block ${b.index}`,
 				index: b.index,
 				line: b.line,
 				count,

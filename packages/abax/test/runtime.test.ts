@@ -102,6 +102,49 @@ export function consume() {
 	assert.equal(fn_of(r, 'consume').inclusive_steps, r.totals.steps);
 });
 
+test('for await and async generators: frames balance, blocks count every iteration', async () => {
+	const m = await load_module(`function helper(i: number) { return i + 1; }
+async function* source(n: number) {
+	for (let i = 0; i < n; i++) {
+		await null;
+		yield helper(i);
+	}
+	yield;
+}
+export async function drain(n: number) {
+	let s = 0;
+	for await (const v of source(n)) {
+		if (v === undefined) break;
+		s += v;
+	}
+	for await (const v of [1, Promise.resolve(2)]) s += v;
+	try {
+		for await (const v of source(1)) throw new Error('stop at ' + v);
+	} catch {
+		s += helper(0);
+	}
+	return s;
+}
+`);
+	let out = 0;
+	const r = await measure(async () => {
+		out = (await m.drain(3 as never)) as number;
+	});
+	assert.equal(out, 1 + 2 + 3 + 1 + 2 + 1);
+	assert.equal(edge(r, '<root>', 'drain'), 1);
+	assert.equal(edge(r, 'drain', 'source'), 2);
+	assert.equal(edge(r, 'source', 'helper'), 4);
+	assert.equal(edge(r, 'drain', 'helper'), 1);
+	assert.equal(r.edges.length, 4, JSON.stringify(r.edges));
+	const drain = fn_of(r, 'drain');
+	assert.equal(drain.inclusive_steps, r.totals.steps);
+	assert.equal(sum_self(r), r.totals.steps);
+	const at = (line: number) => drain.blocks.filter((b) => b.line === line).map((b) => b.count);
+	assert.deepEqual(at(11), [4], 'four loop bodies (three values and the bare yield)');
+	assert.deepEqual(at(12), [1], 'the break branch runs once');
+	assert.deepEqual(at(13), [3]);
+});
+
 test('allocation sites: exact counts and V8-layout byte estimates', async () => {
 	const m = await load_module(`export function allocs(xs: number[]) {
 	const o = { a: 1, b: 2 };

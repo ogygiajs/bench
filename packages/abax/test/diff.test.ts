@@ -68,7 +68,9 @@ function fn(module: string, path: string, self: number, line = 1): FunctionRepor
 		allocations: 0,
 		bytes: 0,
 		shape: [self],
-		blocks: [{ index: 0, line, count: 1, price: self, steps: self }],
+		blocks: [
+			{ id: `${module} > ${path} > block 0`, index: 0, line, count: 1, price: self, steps: self }
+		],
 		sites: [],
 		builtins: [],
 		lines: [{ line: line + 1, steps: self, allocations: 0, bytes: 0 }]
