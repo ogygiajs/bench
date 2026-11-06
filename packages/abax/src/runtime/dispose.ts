@@ -37,15 +37,18 @@ export class DisposeScope {
 			if (awaited) this.#resources[this.#resources.length] = { value, method: null, awaited };
 			return value;
 		}
+		// The errors are worded as V8 words them, so a program that reads them sees no difference.
 		if (typeof value !== 'object' && typeof value !== 'function') {
-			throw new TypeError('using: the value is not an object');
+			throw new TypeError('An object is expected with `using` declarations');
 		}
 		const v = value as Record<symbol, unknown>;
 		let method = awaited ? v[Symbol.asyncDispose] : undefined;
-		if (method === undefined) method = v[Symbol.dispose];
-		if (typeof method !== 'function') {
-			throw new TypeError('using: the value has no [Symbol.dispose] or [Symbol.asyncDispose]');
+		if (method !== undefined && typeof method !== 'function') {
+			throw new TypeError('Symbol(Symbol.asyncDispose) is not a function');
 		}
+		if (method === undefined) method = v[Symbol.dispose];
+		if (typeof method !== 'function')
+			throw new TypeError('Symbol(Symbol.dispose) is not a function');
 		this.#resources[this.#resources.length] = {
 			value,
 			method: method as Resource['method'],

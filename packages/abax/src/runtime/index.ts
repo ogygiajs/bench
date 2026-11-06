@@ -413,7 +413,13 @@ export class Runtime {
 	spread_iter(d: Float64Array, i: number, x: Iterable<unknown>): Iterable<unknown> {
 		let out: unknown[];
 		if (is_array(x)) out = x as unknown[];
-		else out = [...x];
+		else {
+			// Not iterable: the spread itself throws, with the language's own message for where it
+			// is (a call's arguments and an array literal word it differently).
+			const it = x == null ? undefined : (x as { [Symbol.iterator]?: unknown })[Symbol.iterator];
+			if (typeof it !== 'function') return x;
+			out = [...x];
+		}
 		const n = out.length;
 		d[2 * i] += 4 * n;
 		d[2 * i + 1] += n;
