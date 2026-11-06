@@ -88,7 +88,7 @@ function is_client(ctx: EnvironmentContext, options: ResolveOptions | undefined)
 }
 
 /** The plugins to add to an app's Vite config for a counted build. */
-export function counted_plugins(o: CountedPluginOptions): object[] {
+export function counted_plugins(o: CountedPluginOptions) {
 	const root = resolve(o.root ?? process.cwd());
 	const overlay = new Map(Object.entries(o.overlay ?? {}));
 	const helper = {
