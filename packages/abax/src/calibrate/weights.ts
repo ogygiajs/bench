@@ -21,7 +21,7 @@ import { nnls, r_squared } from './nnls.ts';
  *   dynamic                    steps of dynamic sizes (characters, spread keys, rest elements)
  *   case                       1: the cost of one call of the case itself
  *
- * and its target the measured p50 ns. Non-negative least squares (no op may take negative time),
+ * and its target the measured mean ns per call. Non-negative least squares (no op may take negative time),
  * rows scaled by 1/ns so a 50 ns case weighs as much as a 50 µs one (a relative fit).
  *
  * Fit quality per case family: corpus cases named `<family> @<size>` are one family measured at
@@ -125,14 +125,16 @@ export async function measure_corpus(o: MeasureCorpusOptions): Promise<CorpusPoi
 		for (const c of res) {
 			if (!c.result) throw new Error(`abax: timing ${c.name} failed: ${c.error}`);
 			const key = `${c.file} > ${c.name}`;
-			times.set(key, [...(times.get(key) ?? []), c.result.p50_ns]);
+			// The mean, not p50: a call shorter than the timer's tick has a p50 of 0 or one tick,
+			// while the mean of many quantized samples is still right on average.
+			times.set(key, [...(times.get(key) ?? []), c.result.mean_ns]);
 		}
 	}
 	const points: CorpusPoint[] = [];
 	for (const c of report.cases) {
 		if (c.error) throw new Error(`abax: counting ${c.name} failed: ${c.error}`);
 		const t = (times.get(`${c.file} > ${c.name}`) ?? []).sort((a, b) => a - b);
-		if (t.length === 0) continue;
+		if (t.length === 0 || !(t[t.length >> 1] > 0)) continue;
 		points.push({
 			file: c.file,
 			name: c.name,

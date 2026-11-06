@@ -1,4 +1,5 @@
 import type { DiffResult, Finding, FunctionChange } from './index.ts';
+import { render_measure } from '../measure/markdown.ts';
 
 /** Marker of the Abax section in the shared PR comment (upserted by section). */
 export const SECTION_MARKER = '<!-- abax:section -->';
@@ -27,17 +28,20 @@ function finding_row(f: Finding): string {
 	return `| ${f.kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${signed(f.delta.bytes, ' B')} |`;
 }
 
-function change_row(c: FunctionChange): string {
+function change_row(c: FunctionChange, ns?: number): string {
 	const base = c.base ? c.base.self_steps : 0;
 	const pr = c.pr ? c.pr.self_steps : 0;
 	const name = c.renamed_from ? `${c.function} (was ${c.renamed_from})` : c.function;
-	return `| ${c.case} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)} | ${signed(c.delta.allocations)} | ${signed(c.delta.bytes, ' B')} | ${signed(c.delta.inclusive_steps)} |`;
+	const est = ns === undefined ? '' : ` ≈ ${signed(ns, ' ns')}`;
+	return `| ${c.case} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${est} | ${signed(c.delta.allocations)} | ${signed(c.delta.bytes, ' B')} | ${signed(c.delta.inclusive_steps)} |`;
 }
 
 /** The Abax section of the PR comment. */
 export function render_markdown(d: DiffResult): string {
 	const lines: string[] = [SECTION_MARKER, '### Abax: steps per function', ''];
-	const flagged = d.changes.filter((c) => c.findings.length > 0);
+	// Findings whose added allocations the engine elides are listed apart (render_measure).
+	const flagged = d.changes.filter((c) => c.findings.some((f) => !f.elided));
+	const ns_of = (c: FunctionChange) => d.measure?.ns[`${c.case} > ${c.module} > ${c.function}`];
 	if (!d.prices_match) {
 		lines.push('> Prices differ between the two runs: steps are not comparable.', '');
 	} else if (d.recounted) {
@@ -58,7 +62,7 @@ export function render_markdown(d: DiffResult): string {
 		const sorted = [...flagged].sort(
 			(a, b) => Math.abs(b.delta.self_steps) - Math.abs(a.delta.self_steps)
 		);
-		for (const c of sorted) lines.push(change_row(c));
+		for (const c of sorted) lines.push(change_row(c, ns_of(c)));
 		lines.push(
 			'',
 			'<details><summary>Where</summary>',
@@ -66,9 +70,10 @@ export function render_markdown(d: DiffResult): string {
 			'| | Line | Δ steps | Δ allocs | Δ bytes |',
 			'| --- | --- | ---: | ---: | ---: |'
 		);
-		for (const c of sorted) for (const f of c.findings) lines.push(finding_row(f));
+		for (const c of sorted) for (const f of c.findings) if (!f.elided) lines.push(finding_row(f));
 		lines.push('', '</details>', '');
 	}
+	lines.push(...render_measure(d));
 	if (d.unstable.length > 0) {
 		lines.push(
 			`**Unstable** (counts differ between two identical runs): ${d.unstable.map(code).join(', ')}`,

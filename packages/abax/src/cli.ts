@@ -11,6 +11,7 @@ import { engine_health } from './engine/health.ts';
 import { run_growth } from './growth/index.ts';
 import { run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
+import { MEASURE_USAGE, measure_command, measure_run, time_section } from './measure/cli.ts';
 
 const USAGE = `abax run <bench files...> [--root dir] [--out report.json] [--deps all|a,b] [--filter text] [--sha sha]
 abax diff <base.json> <pr.json> [--repo dir] [--base sha] [--head sha] [--out section.md] [--json out.json]
@@ -60,9 +61,12 @@ async function main(argv: string[]): Promise<number> {
 			sha: flags.get('sha') ?? null,
 			log: (l) => console.log(l)
 		});
+		await measure_run(report, positional, flags);
 		const bad = report.cases.filter((c) => c.error !== null);
 		return bad.length > 0 ? 1 : 0;
 	}
+	const measured = await measure_command(cmd, positional, flags);
+	if (measured !== null) return measured;
 	if (cmd === 'diff') {
 		if (positional.length !== 2) {
 			console.error(USAGE);
@@ -80,7 +84,8 @@ async function main(argv: string[]): Promise<number> {
 		const result = diff_reports(base, pr, { files });
 		const sections = diff_sections(base, pr, files);
 		const extra = render_sections(sections);
-		const md = render_markdown(result) + (extra ? '\n' + extra : '');
+		const time = time_section(flags);
+		const md = render_markdown(result) + (extra ? '\n' + extra : '') + (time ? '\n' + time : '');
 		const out = flags.get('out');
 		if (out) writeFileSync(out, md + '\n');
 		else console.log(md);
@@ -146,7 +151,7 @@ async function main(argv: string[]): Promise<number> {
 		});
 		return 0;
 	}
-	console.error(USAGE);
+	console.error(USAGE + '\n' + MEASURE_USAGE);
 	return 2;
 }
 

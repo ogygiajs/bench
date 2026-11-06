@@ -2,6 +2,8 @@ import { IDENTITY, LineMap } from './git.ts';
 import type { FileDiff } from './git.ts';
 import type { CaseReport, FunctionReport, LineReport, Report } from '../report.ts';
 import { align_prices } from '../recount.ts';
+import { measure_diff } from '../measure/diff.ts';
+import type { MeasureDiff } from '../measure/diff.ts';
 import type { Prices } from '../prices.ts';
 
 /*
@@ -36,6 +38,8 @@ export interface Finding {
 	base: Stats | null;
 	pr: Stats | null;
 	delta: Stats;
+	/** The allocations it adds are elided by the engine (real bytes did not grow): not a regression. */
+	elided?: boolean;
 }
 
 export interface FunctionChange {
@@ -68,6 +72,8 @@ export interface DiffResult {
 	prices_match: boolean;
 	/** The prices both sides were recounted with when they came with different ones. */
 	recounted?: { version: number; hash: string } | null;
+	/** Leaks, elided allocations, time-led cases, estimated ns (measure/diff.ts). */
+	measure?: MeasureDiff;
 }
 
 export interface DiffOptions {
@@ -446,5 +452,6 @@ export function diff_reports(
 	}
 	for (const pc of pr.cases) if (!base_names.has(pc.name)) result.missing.base.push(pc.name);
 	for (const c of result.changes) result.findings.push(...c.findings);
+	result.measure = measure_diff(result, base, pr);
 	return result;
 }
