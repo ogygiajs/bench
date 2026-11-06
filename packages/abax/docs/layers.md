@@ -28,7 +28,13 @@ What V8 did with the code. `abax health` runs each case in a child process witho
 `--allow-natives-syntax`, V8's code, inline-cache, deopt and function-event logs, and flags that
 make V8 tier up at the same points every time: `--single-threaded`,
 `--no-concurrent-recompilation`, `--predictable`, `--no-flush-bytecode`, fixed random and hash
-seeds.
+seeds. And flags that keep the garbage collector off the clock: a 1 GB initial old space
+(`--initial-old-space-size=1024`), so a normal run has no full collection; a young generation of
+one fixed size (16 MB), so young collections follow allocation alone; no incremental marking and
+no compaction, so a full collection that does happen is atomic and moves nothing. A collection
+decides which closure contexts and maps die and how strings look, and those decide inline-cache
+states and some deopts. On V8's own schedule it moves from run to run: before these flags,
+ogygia's `store macros` case deopted `walk` ("embedded weak objects cleared") in 2 of 12 runs.
 
 For each case:
 
@@ -40,9 +46,15 @@ For each case:
    interpreted, baseline, maglev, turbofan, deoptimized.
 
 Every inline cache (a property read or write, a keyed access, a global lookup) gets the worst
-state it reached: monomorphic, polymorphic or megamorphic. Deopts come with V8's reason. With
-`--check on` (the default) every case runs twice and must decode the same; if not, it is
-reported unstable.
+state it reached: monomorphic, polymorphic or megamorphic. Deopts come with V8's reason.
+
+With `--check on` (the default) every case runs twice. If the two runs differ, it runs two more
+times, and each function or inline cache that differed is marked `unstable` in the report, with
+what differed (`tier maglev / turbofan`, `state monomorphic / polymorphic`). The rest of the case
+is kept. The diff leaves unstable entries out on both sides and says how many in one line:
+`2 functions skipped: V8 not repeatable`. Deopts the collector decides ("embedded weak objects
+cleared", "dependent allocation site tenuring changed") are kept in the report but are never
+findings. A health child has a 10 minute limit; one that runs past it is that case's error.
 
 ```
 ok       rank: twenty rows  2/2 optimized, 1 poly/megamorphic site(s)

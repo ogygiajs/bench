@@ -362,6 +362,12 @@ only comparable on one V8.
 - **Paths a module builds from `import.meta.url` are real paths.** Only the working directory is
   virtual. A function that slices a path made from `import.meta.url` still counts more in a deeper
   checkout.
+- **Engine health repeats what V8 repeats.** On ogygia's 57 cases, three rounds of `abax health`
+  gave the same report every time. A function or inline cache that differs between runs is marked
+  unstable and never becomes a finding; the comment says how many were skipped. That is not proof
+  against a PR that only moves allocation: young collections then land at other points, and a
+  string method's inline cache can see another string shape. A case that allocates past 1 GB of
+  old space also gets a full collection, at a point its own allocation sets.
 - **Coverage is low today.** ogygia's gate on PR #180: 1,524 of 8,234 functions (18.5%) have a
   measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
   app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
