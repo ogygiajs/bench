@@ -8,6 +8,7 @@ import { runLighthouse, startChrome } from './lighthouse.ts';
 import { cacheability, loadTest, renderTime, streamTiming } from './server.ts';
 import { BROWSER, SERVER } from './profile.ts';
 import { linesOfCode } from './loc.ts';
+import { inAb } from './ab.ts';
 
 export const SCENARIOS = ['blog', 'docs', 'dashboard', 'ai-chat', 'shop'];
 
@@ -45,6 +46,37 @@ function mergePasses(runs) {
 	const out = {};
 	for (const k of keys) out[k] = median(runs.map((r) => r[k]));
 	return out;
+}
+
+const roundKey = (k, v) => round(v, k === 'cls' || k === 'heapMb' ? 3 : k.startsWith('inp') ? 0 : 1);
+
+/** Every pass's value of each key that more than one pass measured, in pass order. */
+function samplesOf(runs) {
+	const out = {};
+	for (const k of new Set(runs.flatMap((r) => Object.keys(r)))) {
+		const xs = runs.map((r) => r[k]).filter((x) => x != null && !Number.isNaN(x));
+		if (xs.length > 1) out[k] = xs.map((x) => roundKey(k, x));
+	}
+	return out;
+}
+
+/**
+ * One pass of a server app: sequential render time, the load test (replaying the recorded view),
+ * then the stream. The first pass first loads the fresh process unrecorded, so JIT warm-up is not
+ * charged to whichever app happened to run first.
+ */
+async function serverPass(t, scenario, slot, { warm, fast }) {
+	const cookies = scenario.cookies ?? [];
+	const m = await renderTime(t.base, scenario.routes[scenario.server.route], { cookies });
+	if (warm) await loadTest(t.base, slot.view, { cookies, duration: SERVER.duration.warmup });
+	const load = await loadTest(t.base, slot.view, {
+		cookies,
+		duration: fast ? SERVER.duration.fast : SERVER.duration.full
+	});
+	if (!load.ok) slot.errors.push(`load test: ${load.non2xx} non-2xx, ${load.errors} errors`);
+	Object.assign(m, { p50: load.p50, p99: load.p99, vps: load.vps, reqsPerView: load.reqsPerView });
+	if (scenario.server.stream) Object.assign(m, await streamTiming(t.base, scenario.server.stream));
+	return m;
 }
 
 /** One pass of the scenario's browser session; returns its metrics. */
@@ -115,7 +147,9 @@ async function fidelity(browser, scenario, targets, lines) {
 
 async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 	const scenario = (await import(resolve(root, 'scenarios', name, 'scenario.ts'))).default;
-	const apps = appsOf(cfg, name).filter((a) => !opts.skip.has(a.id) && (!opts.fast || a.fast));
+	const apps = appsOf(cfg, name).filter(
+		(a) => !opts.skip.has(a.id) && (opts.ab ? inAb(a) : !opts.fast || a.fast)
+	);
 	lines.push(`## ${name}`, '');
 	const targets = [];
 	for (const app of apps) {
@@ -148,7 +182,7 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 			return result;
 		}
 
-		const per = new Map(targets.map((t) => [t.app.id, { passes: [], lh: [], errors: [] }]));
+		const per = new Map(targets.map((t) => [t.app.id, { passes: [], errors: [] }]));
 
 		// Sizes are the same every run: measured once.
 		for (const t of targets) {
@@ -171,61 +205,66 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 			per.get(t.app.id).fixed = m;
 		}
 
+		// The requests one view of the server route makes, recorded once; every load test replays them.
+		if (scenario.server) {
+			const path = scenario.routes[scenario.server.route];
+			for (const t of targets.filter((x) => x.kind === 'server')) {
+				try {
+					const recorded = await viewRequests(browser, scenario, t, path);
+					per.get(t.app.id).view = recorded.length ? recorded : [{ method: 'GET', path }];
+				} catch (e) {
+					per.get(t.app.id).errors.push(`server: ${e.message}`);
+				}
+			}
+		}
+
+		// Every pass measures every app in full: its browser session, Lighthouse, then the server.
+		// The order flips each pass (A B, then B A, …), so a slow stretch of the machine, or what the
+		// app before left behind, lands on every app alike. Each pass is kept: its spread is the
+		// noise compare.ts judges a difference against.
 		for (let pass = 1; pass <= opts.passes; pass++) {
 			log(`▸ ${name}: pass ${pass}/${opts.passes}`);
-			for (const t of targets) {
+			for (const t of pass % 2 ? targets : [...targets].reverse()) {
 				const slot = per.get(t.app.id);
+				const m = {};
 				try {
-					const m = await sessionPass(browser, scenario, t);
-					slot.passes.push(m);
-					log(
-						`  ${t.app.id}: ${['inp', 'resp', 'navMs', 'heapMb', 'ttft']
-							.filter((k) => m[k] != null)
-							.map((k) => `${k} ${round(m[k], 1)}`)
-							.join(', ')}`
-					);
+					Object.assign(m, await sessionPass(browser, scenario, t));
 				} catch (e) {
 					slot.errors.push(`session pass ${pass}: ${e.message.split('\n')[0]}`);
 					log(`  ! ${t.app.id}: session failed: ${e.message.split('\n')[0]}`);
 				}
+				const lh = [];
 				for (const rid of scenario.lighthouse ?? []) {
 					try {
-						slot.lh.push(await runLighthouse(t.base + scenario.routes[rid], chrome.port, BROWSER.acceptEncoding));
+						lh.push(await runLighthouse(t.base + scenario.routes[rid], chrome.port, BROWSER.acceptEncoding));
 					} catch (e) {
 						slot.errors.push(`lighthouse ${rid}: ${e.message}`);
 					}
 				}
+				for (const k of new Set(lh.flatMap((r) => Object.keys(r)))) {
+					const xs = lh.map((r) => r[k]).filter((x) => x != null);
+					if (xs.length) m[k] = xs.reduce((s, x) => s + x, 0) / xs.length;
+				}
+				if (slot.view) {
+					try {
+						Object.assign(m, await serverPass(t, scenario, slot, { warm: pass === 1, fast: opts.fast }));
+					} catch (e) {
+						slot.errors.push(`server pass ${pass}: ${e.message}`);
+					}
+				}
+				slot.passes.push(m);
+				log(
+					`  ${t.app.id}: ${['inp', 'resp', 'navMs', 'ttft', 'lcp', 'ttfb', 'vps']
+						.filter((k) => m[k] != null)
+						.map((k) => `${k} ${round(m[k], 1)}`)
+						.join(', ')}`
+				);
 			}
 		}
 
 		for (const t of targets) {
 			const slot = per.get(t.app.id);
 			const metrics = { ...slot.fixed, ...mergePasses(slot.passes) };
-			if (slot.lh.length) Object.assign(metrics, mergePasses(slot.lh));
-
-			if (t.kind === 'server' && scenario.server) {
-				log(`  ${t.app.id}: server`);
-				try {
-					const path = scenario.routes[scenario.server.route];
-					const cookies = scenario.cookies ?? [];
-					Object.assign(metrics, await renderTime(t.base, path, { cookies }));
-					const recorded = await viewRequests(browser, scenario, t, path);
-					const view = recorded.length ? recorded : [{ method: 'GET', path }];
-					metrics.reqsPerView = view.length;
-					const load = await loadTest(t.base, view, {
-						cookies,
-						duration: opts.fast ? SERVER.duration.fast : SERVER.duration.full
-					});
-					if (!load.ok) slot.errors.push(`load test: ${load.non2xx} non-2xx, ${load.errors} errors`);
-					metrics.p50 = load.p50;
-					metrics.p99 = load.p99;
-					metrics.vps = load.vps;
-					metrics.reqsPerView = load.reqsPerView;
-					if (scenario.server.stream) Object.assign(metrics, await streamTiming(t.base, scenario.server.stream));
-				} catch (e) {
-					slot.errors.push(`server: ${e.message}`);
-				}
-			}
 			if (scenario.cacheability && t.kind === 'server') {
 				try {
 					const c = await cacheability(t.base, scenario.routes[scenario.cacheability.route], scenario.cacheability.visitors);
@@ -245,14 +284,17 @@ async function runOne(root, cfg, name, opts, browser, chrome, lines) {
 				metrics.outBytes = build.outBytes;
 			}
 			const composition = [scenario.composition ?? []].flat().map((f) => `scenarios/${name}/shared/${f}`);
-			Object.assign(metrics, linesOfCode(root, t.app.buildDir, composition) ?? {});
+			// (an A/B run's base app is an untracked copy: its lines are the source app's)
+			Object.assign(metrics, linesOfCode(root, t.app.source ?? t.app.buildDir, composition) ?? {});
 			const clean = {};
-			for (const [k, v] of Object.entries(metrics)) if (v != null) clean[k] = round(v, k === 'cls' || k === 'heapMb' ? 3 : k.startsWith('inp') ? 0 : 1);
+			for (const [k, v] of Object.entries(metrics)) if (v != null) clean[k] = roundKey(k, v);
+			const samples = samplesOf(slot.passes);
 			result.frameworks.push({
 				id: t.app.id,
 				approach: t.app.approach,
 				served: t.kind,
 				metrics: clean,
+				...(Object.keys(samples).length ? { samples } : {}),
 				...(slot.notes ? { notes: slot.notes } : {}),
 				...(slot.errors.length ? { errors: slot.errors } : {})
 			});

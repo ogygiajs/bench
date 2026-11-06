@@ -1,17 +1,21 @@
 name: bench
 
-# Measures one ogygia build and keeps the result on the orphan `results` branch.
+# Measures ogygia builds and keeps the result on the orphan `results` branch.
 #
-#   repository_dispatch `ogygia-pr`    ogygia's CI, after pkg.pr.new published a PR commit. FAST run
-#                                      (ogygia + the sveltekit reference), compared with main's
-#                                      baseline, summarised in ONE comment on the ogygia PR.
-#   repository_dispatch `ogygia-main`  a push to ogygia's main. FULL run; the new baseline.
-#   schedule (weekly)                  FULL run against ogygia@latest; also becomes the baseline.
-#   workflow_dispatch                  any mode and spec by hand; result kept as an artifact only.
+#   repository_dispatch `ogygia-pr`    ogygia's CI, after pkg.pr.new published a PR commit. A/B run:
+#                                      the PR's ogygia and its base commit's, built and measured
+#                                      in this one job, taking turns; summarised in ONE comment on
+#                                      the ogygia PR.
+#   repository_dispatch `ogygia-main`  a push to ogygia's main. FULL run (every framework).
+#   schedule (weekly)                  FULL run against ogygia@latest.
+#   workflow_dispatch                  any mode and spec by hand (A/B with a base spec); result
+#                                      kept as an artifact only.
 #
-# Every run measures the blog and every scenario (docs, dashboard, ai-chat, shop). FAST builds
-# and measures only the apps marked `fast` (ogygia + sveltekit) and stays within about 30
-# minutes; FULL runs every app of every scenario (about 75 minutes).
+# Every run measures the blog and every scenario (docs, dashboard, ai-chat, shop). A PR is never
+# compared with a stored result: GitHub-hosted runners differ by up to 2x in server throughput
+# for the same code, so only two builds measured on the same machine in the same job compare. The
+# A/B run builds and measures the two ogygia apps only (about 25 minutes); FAST runs ogygia +
+# sveltekit, FULL every app of every scenario (about 75 minutes).
 #
 # GitHub-hosted ubuntu-latest ships Google Chrome; Lighthouse's chrome-launcher and Playwright
 # both use it as is (no Docker image, no `playwright install`). Frameworks build on Node 22, plus
@@ -31,6 +35,10 @@ on:
         description: 'ogygia to install: an npm version or dist-tag, or a pkg.pr.new URL (https://pkg.pr.new/ogygia@<sha7>)'
         type: string
         default: latest
+      base_spec:
+        description: 'optional: a second ogygia (same forms as spec) measured against it in the same run (A/B; ogygia apps only)'
+        type: string
+        default: ''
       passes:
         description: 'Lighthouse passes per page and browser-session passes per scenario (the median is reported)'
         type: string
@@ -61,8 +69,9 @@ env:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    # FAST (a PR) fits in 30 minutes; FULL builds and measures every app of every scenario.
-    timeout-minutes: ${{ github.event.action == 'ogygia-pr' && 45 || 120 }}
+    # A PR (A/B, five repeats of both builds) takes about 25 minutes; FULL builds and measures every
+    # app of every scenario.
+    timeout-minutes: ${{ github.event.action == 'ogygia-pr' && 60 || 120 }}
     steps:
       - uses: actions/checkout@v4
 
@@ -76,15 +85,19 @@ jobs:
           PAYLOAD_BASE_SHA: ${{ github.event.client_payload.base_sha }}
           INPUT_MODE: ${{ inputs.mode }}
           INPUT_SPEC: ${{ inputs.spec }}
+          INPUT_BASE_SPEC: ${{ inputs.base_spec }}
           INPUT_PASSES: ${{ inputs.passes }}
           INPUT_SCENARIOS: ${{ inputs.scenarios }}
         run: |
           set -euo pipefail
-          pr=''; sha=''; base_sha=''; spec=''; scenarios=all
-          # passes = Lighthouse passes on the blog; scenario_passes = passes of every scenario.
+          pr=''; sha=''; base_sha=''; spec=''; base_spec=''; scenarios=all
+          # passes = Lighthouse passes on the blog; scenario_passes = passes of every scenario. An
+          # A/B run needs at least three repeats of each build for compare.ts to judge a timing;
+          # five make "every PR repeat worse than every base repeat" a 1-in-252 chance for two
+          # builds that perform the same.
           case "$EVENT/$ACTION" in
             repository_dispatch/ogygia-pr)
-              kind=pr; scope=fast; passes=5; scenario_passes=3
+              kind=pr; scope=fast; passes=5; scenario_passes=5
               pr="$PAYLOAD_PR"; sha="$PAYLOAD_SHA"; base_sha="${PAYLOAD_BASE_SHA:-}"
               [[ "$pr" =~ ^[0-9]+$ ]] || { echo "::error::bad pr in payload: $pr"; exit 1; }
               ;;
@@ -96,7 +109,7 @@ jobs:
               ;;
             *)
               kind=manual; scope="${INPUT_MODE:-fast}"; passes="${INPUT_PASSES:-3}"; spec="${INPUT_SPEC:-latest}"
-              scenario_passes="$passes"; scenarios="${INPUT_SCENARIOS:-all}"
+              scenario_passes="$passes"; scenarios="${INPUT_SCENARIOS:-all}"; base_spec="${INPUT_BASE_SPEC:-}"
               [[ "$passes" =~ ^[1-9][0-9]?$ ]] || { echo "::error::passes must be 1-99"; exit 1; }
               [[ "$scenarios" =~ ^[a-z,-]+$ ]] || { echo "::error::scenarios must be all, none or a comma list"; exit 1; }
               ;;
@@ -107,13 +120,15 @@ jobs:
             spec="https://pkg.pr.new/ogygia@${sha:0:7}"
           fi
           if [ -n "$base_sha" ] && ! [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then base_sha=''; fi
+          # The PR's base commit is published to pkg.pr.new like every other push.
+          if [ -n "$base_sha" ]; then base_spec="https://pkg.pr.new/ogygia@${base_sha:0:7}"; fi
           [ -n "$spec" ] || { echo "::error::no ogygia spec (a dispatch needs client_payload.sha)"; exit 1; }
           {
             echo "kind=$kind"; echo "scope=$scope"; echo "passes=$passes"; echo "spec=$spec"
-            echo "pr=$pr"; echo "sha=$sha"; echo "base_sha=$base_sha"
+            echo "pr=$pr"; echo "sha=$sha"; echo "base_sha=$base_sha"; echo "base_spec=$base_spec"
             echo "scenario_passes=$scenario_passes"; echo "scenarios=$scenarios"
           } >> "$GITHUB_OUTPUT"
-          echo "### $kind run, $scope, $passes blog passes, $scenario_passes scenario passes ($scenarios), ogygia \`$spec\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "### $kind run, $scope, $passes blog passes, $scenario_passes scenario passes ($scenarios), ogygia \`$spec\`${base_spec:+ against \`$base_spec\`}" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: pnpm/action-setup@v4
 
@@ -132,18 +147,29 @@ jobs:
           echo "Using Chrome at: $CHROME"
           echo "CHROME_PATH=$CHROME" >> "$GITHUB_ENV"
 
-      # The dispatch is sent once pkg.pr.new reported success, but its CDN can lag a little.
-      - name: Wait for the pkg.pr.new build
-        if: startsWith(steps.plan.outputs.spec, 'https://pkg.pr.new/')
+      # The dispatch is sent once pkg.pr.new reported success, but its CDN can lag a little. A base
+      # build that never shows up turns the A/B run into a run of the PR alone (the comment says so).
+      - name: Wait for the pkg.pr.new builds
+        id: builds
         env:
           SPEC: ${{ steps.plan.outputs.spec }}
+          BASE_SPEC: ${{ steps.plan.outputs.base_spec }}
         run: |
-          for i in $(seq 1 30); do
-            curl -sfIL -o /dev/null "$SPEC" && exit 0
-            sleep 10
-          done
-          echo "::error::$SPEC is not available"
-          exit 1
+          ready() {
+            case "$1" in https://pkg.pr.new/*) ;; *) return 0 ;; esac
+            for i in $(seq 1 30); do
+              curl -sfIL -o /dev/null "$1" && return 0
+              sleep 10
+            done
+            return 1
+          }
+          ready "$SPEC" || { echo "::error::$SPEC is not available"; exit 1; }
+          base="$BASE_SPEC"
+          if [ -n "$base" ] && ! ready "$base"; then
+            echo "::warning::$base is not available, so this run measures the PR alone"
+            base=''
+          fi
+          echo "base_spec=$base" >> "$GITHUB_OUTPUT"
 
       # Only the harness's own deps (Lighthouse, Playwright, autocannon); rolldown is the router
       # benchmark's and dev-only.
@@ -154,12 +180,14 @@ jobs:
       - name: Build frameworks
         env:
           OGYGIA_SPEC: ${{ steps.plan.outputs.spec }}
+          # An A/B run: every ogygia app a second time, with the base build (ogygia apps only).
+          OGYGIA_BASE_SPEC: ${{ steps.builds.outputs.base_spec }}
           SCOPE: ${{ steps.plan.outputs.scope }}
           BENCH_SCENARIOS: ${{ steps.plan.outputs.scenarios }}
         run: node build-all.ts $([ "$SCOPE" = fast ] && echo --fast || echo --full)
 
       - name: Start mochi
-        if: steps.plan.outputs.scope == 'full'
+        if: steps.plan.outputs.scope == 'full' && steps.builds.outputs.base_spec == ''
         working-directory: frameworks/mochi
         run: |
           PORT=3335 MOCHI_KEY=dGVzdC1rZXktMzItYnl0ZXMtYmFzZTY0dXJsISEh bun run start &
@@ -168,15 +196,18 @@ jobs:
           exit 1
 
       # The blog's Lighthouse run, then each scenario: its apps start themselves (a static build
-      # served by the harness, or the app's own server on a free port).
+      # served by the harness, or the app's own server on a free port). An A/B run measures the
+      # two ogygia builds, interleaved, with every pass kept for compare.ts.
       - name: Run benchmark
         env:
           SCOPE: ${{ steps.plan.outputs.scope }}
+          BENCH_AB: ${{ steps.builds.outputs.base_spec != '' && '1' || '' }}
           BENCH_PASSES: ${{ steps.plan.outputs.passes }}
           BENCH_SCENARIO_PASSES: ${{ steps.plan.outputs.scenario_passes }}
           BENCH_SCENARIOS: ${{ steps.plan.outputs.scenarios }}
           BENCH_KIND: ${{ steps.plan.outputs.kind }}
           BENCH_SHA: ${{ steps.plan.outputs.sha }}
+          BENCH_BASE_SHA: ${{ steps.plan.outputs.base_sha }}
         run: |
           node benchmark.ts $([ "$SCOPE" = fast ] && echo --fast) \
             --config frameworks.config.json --out results/scratch/run.md --json
@@ -206,16 +237,14 @@ jobs:
           git -C _results config user.name 'github-actions[bot]'
           git -C _results config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
-      - name: Compare with the main baseline
-        if: steps.plan.outputs.kind == 'pr'
+      # The PR against its base, both from this run (never a stored result: another run is
+      # another machine). A manual A/B run gets the same comment, in its summary.
+      - name: Compare the PR with its base
+        if: steps.plan.outputs.kind == 'pr' || steps.builds.outputs.base_spec != ''
         env:
-          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          # The run for the PR's exact base commit when there is one, else the newest baseline.
-          base=_results/main/latest.json
-          if [ -n "$BASE_SHA" ] && [ -f "_results/main/$BASE_SHA.json" ]; then base="_results/main/$BASE_SHA.json"; fi
-          node compare.ts --pr results/scratch/run.json --base "$base" --run-url "$RUN_URL" --out comment.md
+          node compare.ts --run results/scratch/run.json --run-url "$RUN_URL" --out comment.md
           cat comment.md >> "$GITHUB_STEP_SUMMARY"
 
       - name: Store the result

@@ -11,11 +11,18 @@
 //
 // `--spec <s>` is the same as OGYGIA_SPEC. The spec is the ONE input that changes between runs;
 // every other framework keeps the exact pins in its own package.json.
+//
+//   node build-all.ts --fast --spec <pr> --base-spec <base>     # a PR run (harness/ab.ts)
+//
+// `--base-spec <s>` (or OGYGIA_BASE_SPEC) builds every ogygia app twice: with the spec into
+// `ogygia`, and with the base spec into a copy of the same app, `ogygia-base`. Only the ogygia apps
+// are built then; benchmark.ts --ab measures the two against each other in the same job.
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { APP_ENV } from './harness/serve.ts';
+import { BASE_ID, baseDir } from './harness/ab.ts';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const OGYGIA_APP = join(ROOT, 'frameworks', 'ogygia');
@@ -27,6 +34,7 @@ function parseArgs(argv) {
 	const args = {
 		fast: process.env.BENCH_FAST === '1',
 		spec: process.env.OGYGIA_SPEC || 'latest',
+		baseSpec: process.env.OGYGIA_BASE_SPEC || null,
 		scenarios: process.env.BENCH_SCENARIOS || 'all',
 		blog: true
 	};
@@ -34,6 +42,7 @@ function parseArgs(argv) {
 		if (argv[i] === '--fast') args.fast = true;
 		else if (argv[i] === '--full') args.fast = false;
 		else if (argv[i] === '--spec') args.spec = argv[++i];
+		else if (argv[i] === '--base-spec') args.baseSpec = argv[++i];
 		else if (argv[i] === '--scenarios') args.scenarios = argv[++i];
 		else if (argv[i] === '--no-blog') args.blog = false;
 	}
@@ -132,6 +141,27 @@ function installAndBuild(fw) {
 	console.log(`\n▸ ${fw.id}`);
 	run('node', [join(ROOT, 'shared', 'sync.ts'), fw.id]);
 	installAndBuildIn(cwd, fw.install, fw.out ?? (fw.install === 'bun' ? null : 'build'));
+	if (fw.id === 'ogygia' && basePackages) buildBase('frameworks/ogygia', fw.install, fw.out ?? 'build');
+}
+
+// What an app copy leaves behind: installs, build output and the files the build writes.
+const NOT_COPIED = new Set(['node_modules', 'build', 'dist', '.svelte-kit', '.astro', '.mochi', '.bench-build.json', '.ogygia-spec.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']);
+
+/**
+ * The base build of an A/B run: copy the (already synced) ogygia app to its `ogygia-base`
+ * sibling, pin the base spec there and build it the same way.
+ */
+function buildBase(dir, install, out, client, publicDir) {
+	const from = join(ROOT, dir);
+	const to = join(ROOT, baseDir(dir));
+	console.log(`\n▸ ${baseDir(dir)} (${args.baseSpec})`);
+	rmSync(to, { recursive: true, force: true });
+	cpSync(from, to, {
+		recursive: true,
+		filter: (src) => src === from || !NOT_COPIED.has(src.slice(from.length + 1).split('/')[0])
+	});
+	pinOgygia(to, basePackages, args.baseSpec);
+	installAndBuildIn(to, install, out, client, publicDir);
 }
 
 /** Bytes of every file under `dir`, leaving out paths (relative to `dir`) in `skip`. */
@@ -210,14 +240,14 @@ function pinOgygia(appDir, packages, spec) {
 
 const args = parseArgs(process.argv.slice(2));
 const cfg = JSON.parse(readFileSync(join(ROOT, 'frameworks.config.json'), 'utf8'));
-const frameworks = args.blog ? cfg.frameworks.filter((fw) => !args.fast || fw.fast) : [];
+// An A/B build (--base-spec) builds the ogygia apps only: they are all an A/B run measures.
+const wanted = (app) => (args.baseSpec ? app.id === 'ogygia' : !args.fast || app.fast);
+const frameworks = args.blog ? cfg.frameworks.filter(wanted) : [];
 const scenarioNames = Object.keys(cfg.scenarios ?? {}).filter(
 	(name) => !args.scenarios || args.scenarios.includes(name)
 );
 const scenarioApps = scenarioNames.flatMap((name) =>
-	cfg.scenarios[name].apps
-		.filter((app) => !args.fast || app.fast)
-		.map((app) => ({ ...app, scenario: name }))
+	cfg.scenarios[name].apps.filter(wanted).map((app) => ({ ...app, scenario: name }))
 );
 
 if (frameworks.length) {
@@ -226,11 +256,17 @@ if (frameworks.length) {
 }
 
 let packages = null;
+let basePackages = null;
 if ([...frameworks, ...scenarioApps].some((fw) => fw.id === 'ogygia')) {
 	console.log(`\n▸ resolve ogygia (${args.spec})`);
 	packages = resolveOgygia(args.spec);
 	for (const [name, at] of Object.entries(packages)) console.log(`  ${name} → ${at}`);
 	pinOgygia(OGYGIA_APP, packages, args.spec);
+	if (args.baseSpec) {
+		console.log(`\n▸ resolve the base ogygia (${args.baseSpec})`);
+		basePackages = resolveOgygia(args.baseSpec);
+		for (const [name, at] of Object.entries(basePackages)) console.log(`  ${name} → ${at}`);
+	}
 }
 
 for (const fw of frameworks) installAndBuild(fw);
@@ -238,6 +274,7 @@ for (const fw of frameworks) installAndBuild(fw);
 // Scenario apps: generate the scenario's data once, copy its shared UI into each app, build. A
 // scenario app that fails to build is reported and left out; the benchmark skips unbuilt apps.
 const failed = [];
+const bases = [];
 for (const name of scenarioNames) {
 	const apps = scenarioApps.filter((a) => a.scenario === name);
 	if (!apps.length) continue;
@@ -262,12 +299,23 @@ for (const name of scenarioNames) {
 		} catch (e) {
 			failed.push(`${name}/${app.id}`);
 			console.log(`::warning title=build failed::${name}/${app.id}: ${e.message}`);
+			continue;
+		}
+		if (app.id !== 'ogygia' || !basePackages) continue;
+		try {
+			buildBase(app.dir, app.install, app.out, app.client ?? [app.out], app.public ?? 'public');
+			bases.push(`${name}/${BASE_ID}`);
+		} catch (e) {
+			failed.push(`${name}/${BASE_ID}`);
+			console.log(`::warning title=build failed::${name}/${BASE_ID}: ${e.message}`);
 		}
 	}
 }
 
 const built = [
 	...frameworks.map((fw) => fw.id),
-	...scenarioApps.map((a) => `${a.scenario}/${a.id}`).filter((id) => !failed.includes(id))
+	...(basePackages && frameworks.length ? [BASE_ID] : []),
+	...scenarioApps.map((a) => `${a.scenario}/${a.id}`).filter((id) => !failed.includes(id)),
+	...bases
 ];
 console.log(`\n✓ built ${built.join(', ')}${failed.length ? `\n✗ failed ${failed.join(', ')}` : ''}`);

@@ -1,7 +1,7 @@
 // Every scenario metric, defined once: what it is called, its unit, and which way is better. A
 // result key is `<metric>` or `<metric>:<detail>` (a route or a step), e.g. `inp:sort`,
-// `jsBr:intro`; the detail shares the metric's definition. The noise floor of each metric lives
-// in compare.ts's NOISE table.
+// `jsBr:intro`; the detail shares the metric's definition. The floor of each metric (the smallest
+// change that counts) lives in compare.ts's FLOOR table.
 
 export const kb = (n) => `${(n / 1024).toFixed(1)} KB`;
 export const ms = (n) => `${Math.round(n).toLocaleString('en-US')} ms`;
