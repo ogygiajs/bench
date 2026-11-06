@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { serialize } from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { is_ts, strip_types } from '../transform/index.ts';
+import { compile_svelte, is_svelte_module, is_ts, strip_types } from '../transform/index.ts';
 import { record_transform } from './record-transform.ts';
 import { load_records, replay } from './recorder.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
@@ -97,9 +97,18 @@ export async function replay_records(
 			if (!url.startsWith('file:')) return next(url, context);
 			const file = fileURLToPath(url);
 			const t = targets.get(file);
-			if (!t) return next(url, context);
+			if (!t) {
+				// a recorded module may import Svelte files; Node cannot load them as they are
+				if (!is_svelte_module(file) || file.includes('/node_modules/')) return next(url, context);
+				const out = compile_svelte(readFileSync(file, 'utf8'), file, 'server');
+				return { format: 'module', source: out.code, shortCircuit: true };
+			}
 			const source = readFileSync(file, 'utf8');
-			const code = is_ts(file) ? strip_types(source) : source;
+			const code = is_svelte_module(file)
+				? compile_svelte(source, file, 'server').code
+				: is_ts(file)
+					? strip_types(source)
+					: source;
 			const r = record_transform(code, { filename: file, id: t.id, targets: t.paths });
 			return { format: 'module', source: r.code, shortCircuit: true };
 		}

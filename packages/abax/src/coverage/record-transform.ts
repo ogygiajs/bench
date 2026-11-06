@@ -211,10 +211,20 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 		wrapped.push(id);
 	};
 
+	// A class constructor is not recorded: a derived one may not read `this` before `super()`, and
+	// no replay can call a constructor without `new`.
+	const constructors = new Set<Node>();
 	const visit = (node: Node, depth: number): void => {
+		if (node.type === 'MethodDefinition' && node.kind === 'constructor') {
+			constructors.add(node.value as Node);
+		}
 		if (FUNCTIONS.has(node.type)) {
 			const path = by_pos.get(position(starts, node.start));
-			if (path !== undefined && (!o.targets || o.targets.has(path))) wrap(node, path);
+			if (path !== undefined && (!o.targets || o.targets.has(path))) {
+				if (constructors.has(node))
+					skipped.push({ id: `${o.id} > ${path}`, reason: 'constructor' });
+				else wrap(node, path);
+			}
 		}
 		for (const c of child_nodes(node)) visit(c, depth + 1);
 	};
