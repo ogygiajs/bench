@@ -155,16 +155,25 @@ export async function check_program(lab: Lab, l: Loaded, o: CheckOptions = {}): 
 				failures.push({ oracle: 'counts', detail: `${f.path}: no function at ${f.line}:${f.col}` });
 				break;
 			}
-			// V8's own range of the function starts at it (a method's at its key); a function V8 compiled
-			// away as dead code has none, and was never called
-			let v8 = 0;
-			const lower = l.probed.map(l.ast.members.get(info.start) ?? info.start);
-			const upper = l.probed.map(info.start);
-			const body = l.probed.map(info.body_start);
-			let best: { start: number; end: number; count: number } | null = null;
-			for (const r of cov.fns)
-				if (r.start <= body && body < r.end && (!best || r.start >= best.start)) best = r;
-			if (best && best.start >= lower && best.start <= upper) v8 = best.count;
+			// A call counts when the body starts (one whose parameters throw is not counted): V8's
+			// count of the counter at the top of the body. An arrow's expression body has none: V8's
+			// own range of the function, which starts at it (a method's at its key); a function V8
+			// compiled away as dead code has none, and was never called.
+			let v8: number | null = 0;
+			const entry = meta.blocks.findIndex(
+				(blk, bi) => blk.fn === i && l.inst.origins[bi].kind === 'entry'
+			);
+			const entry_anchor = entry >= 0 ? l.probed.blocks[entry] : null;
+			if (entry_anchor && entry_anchor.miss >= 0) v8 = count_of(cov.ranges, entry_anchor);
+			else {
+				const lower = l.probed.map(l.ast.members.get(info.start) ?? info.start);
+				const upper = l.probed.map(info.start);
+				const body = l.probed.map(info.body_start);
+				let best: { start: number; end: number; count: number } | null = null;
+				for (const r of cov.fns)
+					if (r.start <= body && body < r.end && (!best || r.start >= best.start)) best = r;
+				if (best && best.start >= lower && best.start <= upper) v8 = best.count;
+			}
 			const calls = a.snap.calls[m.f + i];
 			if (v8 !== calls) {
 				failures.push({ oracle: 'counts', detail: `${f.path}: calls abax ${calls}, V8 ${v8}` });

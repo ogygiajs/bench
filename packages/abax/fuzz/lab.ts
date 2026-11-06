@@ -87,6 +87,7 @@ export class Lab {
 		this.builtins = new Builtins(this.rt);
 		this.det = new Determinism();
 		(globalThis as { __P?: boolean }).__P = true;
+		(globalThis as { __U?: undefined }).__U = undefined;
 		process.on('unhandledRejection', () => {});
 	}
 
@@ -260,6 +261,15 @@ function starting_at(ranges: CoverageRange[], pos: number): CoverageRange | null
 
 /** V8's count of a two-armed counter (probe.ts), or of one of V8's own ranges. */
 export function count_of(ranges: CoverageRange[], a: Anchor): number | null {
+	if (a.own !== undefined) {
+		const own = starting_at(ranges, a.own);
+		if (own) return own.count;
+	}
+	if (a.minus) {
+		const all = count_of(ranges, { hit: a.hit, miss: a.miss });
+		const off = count_of(ranges, a.minus);
+		return all === null || off === null ? null : all - off;
+	}
 	if (a.guard && count_of(ranges, a.guard) === 0) return 0;
 	if (a.miss < 0) return count_at(ranges, a.hit);
 	const own = starting_at(ranges, a.hit);

@@ -40,6 +40,10 @@ export interface Anchor {
 	hit: number;
 	miss: number;
 	guard?: Anchor;
+	/** A counter whose count is taken off this one's (an optional link: run minus nullish). */
+	minus?: Anchor;
+	/** Where V8's own range may start: when it is there, it is the count. */
+	own?: number;
 }
 
 type Role = 'hit' | 'miss';
@@ -179,8 +183,9 @@ export function probe(
 		const named = names.has(start);
 		const name = names.get(start);
 		if (named && name === null) return false;
-		// twice the span, so a name-keeping wrap sits just inside a plain wrap of the same span
-		const extent = (end - start) * 2 + 1;
+		// four times the span, so wraps of the same span nest in a fixed order (inside out): a
+		// name-keeping wrap, a plain one, then an optional link's nullish counter (see `optional`)
+		const extent = (end - start) * 4 + 1;
 		if (named) {
 			const k = JSON.stringify(name);
 			const close = `}[${k}]):0)`;
@@ -227,6 +232,8 @@ export function probe(
 
 	const block_anchor: Array<Anchor | null> = Array.from({ length: origins.length }, () => null);
 	const guards: Array<Anchor | undefined> = Array.from({ length: origins.length }, () => undefined);
+	/** Blocks whose count is their counter's minus their guard's (member optional links). */
+	const minus = new Set<number>();
 	const fixed: Array<{ index: number; pos: number }> = [];
 	for (let b = 0; b < origins.length; b++) {
 		const o = origins[b];
@@ -252,7 +259,7 @@ export function probe(
 						(x) => x.start === o.start && x.end > x.start && /Statement|Declaration/.test(x.type)
 					);
 					if (!st) break;
-					const extent = (st.end - st.start) * 2 + 3;
+					const extent = (st.end - st.start) * 4 + 3;
 					const marks = STMT_MARKS.map(([r, at]) => [r, at + 1] as [Role, number]);
 					edits.push({ pos: o.start, text: '{' + STMT, order: 2, extent, marks, anchor: a });
 					edits.push({ pos: st.end, text: '}', order: 0, extent, marks: [], anchor: null });
@@ -273,8 +280,58 @@ export function probe(
 				break;
 			}
 			case 'optional': {
+				// A member link (`obj?.x`): count how often `obj` is evaluated and how often it is
+				// nullish, with counters of our own: `((__P?(obj):0)??(__P?__U:0))?.x`. A nullish
+				// `obj` becomes `undefined`, which `?.` treats the same.
+				let member: Node | null = null;
+				for (const list of at.values())
+					for (const n of list)
+						if (
+							n.type === 'MemberExpression' &&
+							n.optional === true &&
+							code.indexOf('?.', (n.object as Node).end) === o.start
+						)
+							member = n;
+				if (member) {
+					const obj = member.object as Node;
+					const close = '):0)??(__P?__U:0))';
+					// outside every other wrap of the same span (they make the value `?.` reads)
+					const extent = (obj.end - obj.start) * 4 + 3;
+					const g = { kind: 'guard' as const, index: b };
+					edits.push({
+						pos: obj.start,
+						text: '((__P?(',
+						order: 2,
+						extent,
+						marks: [['hit', 5]],
+						anchor: a
+					});
+					// the nullish counter's marks are offsets into `close`: an empty edit just before it
+					edits.push({
+						pos: obj.end,
+						text: '',
+						order: 0,
+						extent: extent - 1,
+						marks: [
+							['hit', 10],
+							['miss', 14]
+						],
+						anchor: g
+					});
+					edits.push({
+						pos: obj.end,
+						text: close,
+						order: 0,
+						extent,
+						marks: [['miss', 1]],
+						anchor: a
+					});
+					minus.add(b);
+					break;
+				}
+				// a call link: V8's own `?.` range, and the whole chain counted (when it never ran V8
+				// has no range for its `?.`)
 				fixed.push({ index: b, pos: o.start });
-				// the whole chain, counted: when it never ran V8 has no range for its `?.`
 				let chain: Node | null = null;
 				for (const list of at.values())
 					for (const n of list)
@@ -372,6 +429,13 @@ export function probe(
 	};
 	for (const f of fixed)
 		block_anchor[f.index] = { hit: map(f.pos), miss: -1, guard: guards[f.index] };
+	for (const b of minus) {
+		const a = block_anchor[b];
+		if (a) {
+			a.minus = guards[b];
+			a.own = map(origins[b].start);
+		}
+	}
 	for (const f of site_fixed) site_anchor[f.index] = { hit: map(f.pos), miss: -1 };
 	return { code: out, blocks: block_anchor, sites: site_anchor, map };
 }

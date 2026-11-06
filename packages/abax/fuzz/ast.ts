@@ -123,3 +123,20 @@ export function fn_at(ix: AstIndex, offset: number): FnInfo | null {
 	}
 	return best;
 }
+
+/**
+ * The function V8 says a frame runs in, from the position V8 gives for that function: a method's
+ * is its key (`get a`, `static m`), before the function node itself.
+ */
+export function fn_starting_near(ix: AstIndex, offset: number): FnInfo | null {
+	let best: FnInfo | null = null;
+	let best_start = -1;
+	for (const f of ix.fns) {
+		const start = Math.min(f.start, ix.members.get(f.start) ?? f.start);
+		if (start <= offset && offset < f.end && start >= best_start) {
+			best = f;
+			best_start = start;
+		}
+	}
+	return best;
+}

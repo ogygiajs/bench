@@ -36,7 +36,7 @@ export function show(v: unknown, depth = 0, seen: unknown[] = []): string {
 	if (depth > 3) return '<deep>';
 	seen.push(o);
 	try {
-		if (o instanceof Error) return `${o.name}(${JSON.stringify(o.message)})`;
+		if (o instanceof Error) return show_error(o);
 		if (o instanceof Promise) return 'Promise';
 		if (o instanceof Map) {
 			let s = 'Map{';
@@ -72,22 +72,13 @@ export function show(v: unknown, depth = 0, seen: unknown[] = []): string {
 }
 
 /**
- * An error as text. V8 builds some messages from the source text of the expression that failed
- * (`x.y is not a function`, `x is not iterable`); instrumentation wraps those expressions, so the
- * quoted part is dropped and only the kind of failure is kept.
+ * An error as text. V8 builds TypeError messages from the source text of the expression that
+ * failed (`x.y is not a function`, `Cannot destructure property 'a' of '(f() && {...})'`), and
+ * instrumentation wraps those expressions: a TypeError is compared by its kind only. Other errors
+ * (the program's own, RangeError, ReferenceError) keep their message.
  */
 export function show_error(e: unknown): string {
 	if (!(e instanceof Error)) return `throw ${show(e)}`;
-	let m = e.message;
-	for (const tail of [
-		' is not a function',
-		' is not iterable',
-		' is not async iterable',
-		' is not a constructor',
-		' is not defined'
-	]) {
-		const at = m.indexOf(tail);
-		if (at !== -1) m = '…' + m.slice(at);
-	}
-	return `${e.name}(${JSON.stringify(m)})`;
+	if (e.name === 'TypeError') return 'TypeError(…)';
+	return `${e.name}(${JSON.stringify(e.message)})`;
 }

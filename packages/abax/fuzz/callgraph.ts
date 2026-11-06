@@ -1,7 +1,7 @@
 import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import type { AsyncFrame, Runtime } from '../src/runtime/index.ts';
-import { fn_at, index_ast, offset_of } from './ast.ts';
+import { fn_starting_near, index_ast, offset_of } from './ast.ts';
 import type { AstIndex } from './ast.ts';
 import type { Loaded } from './lab.ts';
 
@@ -210,15 +210,21 @@ export class Reference {
 
 	/** The function running the call, from V8's stack: see the note at the top. */
 	#caller_from_stack(): string {
-		const stack = new Error().stack ?? '';
-		const lines = stack.split('\n');
+		// V8's call sites: the position each frame is at, and where its function starts (a frame
+		// can be at a position inside a nested function's text: a `using` disposal at block end)
+		const prepare = Error.prepareStackTrace;
+		Error.prepareStackTrace = (_e, sites) => sites;
+		const holder: { stack?: unknown } = {};
+		Error.captureStackTrace(holder);
+		// read before putting it back: the stack is prepared on first read
+		const sites = (holder.stack ?? []) as NodeJS.CallSite[];
+		Error.prepareStackTrace = prepare;
 		let seen_callee = false;
-		for (let i = 1; i < lines.length; i++) {
-			const line = lines[i].trim();
-			if (!line.startsWith('at ')) continue;
-			if (line.startsWith('at async ')) continue;
-			const pos = this.#position(line);
-			if (pos === null) continue;
+		for (const site of sites) {
+			if (site.isAsync()) continue;
+			const file = site.getFileName() ?? '';
+			const q = file.indexOf('?');
+			if ((q === -1 ? file : file.slice(0, q)) !== this.#url) continue;
 			if (!seen_callee) {
 				seen_callee = true;
 				continue;
@@ -226,7 +232,13 @@ export class Reference {
 			// Found in the code V8 runs (code the transform inserted maps to no source position);
 			// only the function's start, which is source text, is mapped back.
 			const ix = this.#gen;
-			const f = fn_at(ix, pos);
+			const pos = offset_of(ix.lines, site.getLineNumber() ?? 1, (site.getColumnNumber() ?? 1) - 1);
+			const fn_pos = offset_of(
+				ix.lines,
+				site.getEnclosingLineNumber() ?? 1,
+				(site.getEnclosingColumnNumber() ?? 1) - 1
+			);
+			const f = fn_starting_near(ix, fn_pos);
 			if (!f) return ROOT;
 			// inside a class body, outside any of its methods: an initialiser frame
 			const cls = ix.classes.find(([s, e]) => s <= pos && pos < e);
@@ -245,21 +257,6 @@ export class Reference {
 		if (o.line == null) return `? generated ${start}`;
 		const at = offset_of(this.l.ast.lines, o.line, o.column ?? 0);
 		return this.#id_at.get(at) ?? `? ${at}`;
-	}
-
-	/** Offset in the instrumented code of a stack frame of this program's module, or null. */
-	#position(line: string): number | null {
-		const open = line.lastIndexOf('(');
-		let loc = open !== -1 && line.endsWith(')') ? line.slice(open + 1, -1) : line.slice(3);
-		const c2 = loc.lastIndexOf(':');
-		const c1 = loc.lastIndexOf(':', c2 - 1);
-		if (c1 === -1) return null;
-		const lineno = Number(loc.slice(c1 + 1, c2));
-		const col = Number(loc.slice(c2 + 1));
-		loc = loc.slice(0, c1);
-		const q = loc.indexOf('?');
-		if ((q === -1 ? loc : loc.slice(0, q)) !== this.#url) return null;
-		return offset_of(this.#gen.lines, lineno, col - 1);
 	}
 }
 

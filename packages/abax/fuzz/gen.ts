@@ -330,7 +330,7 @@ export class Generator {
 			],
 			arr: [
 				[3, () => this.array_lit(d)],
-				[2, () => `(${this.e('arr', d)}).map((x, i) => ${this.callback('any', d)})`],
+				[2, () => `(${this.e('arr', d)}).map((x, i) => (${this.callback('any', d)}))`],
 				[2, () => `(${this.e('arr', d)}).filter((x) => ${this.callback('bool', d)})`],
 				[1, () => `(${this.e('arr', d)}).slice(${this.lit('num')})`],
 				[1, () => `(${this.e('str', d)}).split(${r.pick(["''", "','", "'a'", '/b/'])})`],
@@ -939,8 +939,10 @@ export class Generator {
 				const name = this.fresh('e');
 				const body = this.nested(() => {
 					this.add({ name, ty: 'any', mutable: true });
+					// the program's own errors by message; the engine's by name (their messages quote
+					// the source text of the failing expression, which instrumentation changes)
 					return [
-						`log(${this.label()}, ${name} instanceof Error ? ${name}.message : ${name});`,
+						`log(${this.label()}, ${name} instanceof Error ? (${name}.name === 'Error' ? ${name}.message : ${name}.name) : ${name});`,
 						...this.block(r.int(3))
 					];
 				});
