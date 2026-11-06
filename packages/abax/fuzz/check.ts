@@ -185,7 +185,16 @@ export async function check_program(lab: Lab, l: Loaded, o: CheckOptions = {}): 
 		for (let s = 0; s < meta.sites.length; s++) {
 			const site = meta.sites[s];
 			if (!site.alloc) continue;
-			const pos = l.probed.sites[s];
+			let pos = l.probed.sites[s];
+			// one per call (an async function's promise, `arguments`, a rest array): the counter at
+			// the top of the body, when it has one (V8's function range is missing for dead code)
+			if (pos && (site.kind === 'promise' || site.kind === 'arguments' || site.kind === 'rest')) {
+				const entry = meta.blocks.findIndex(
+					(blk, bi) => blk.fn === site.fn && l.inst.origins[bi].kind === 'entry'
+				);
+				const entry_anchor = entry >= 0 ? l.probed.blocks[entry] : null;
+				if (entry_anchor && entry_anchor.miss >= 0) pos = entry_anchor;
+			}
 			if (!pos) continue;
 			out.sites++;
 			const v8 = count_of(cov.ranges, pos);

@@ -173,9 +173,9 @@ export class Lab {
 		} catch (e) {
 			end = show_error(e);
 		} finally {
-			// work the program left behind (a rejected sibling of Promise.all) settles in the window
-			await tick();
-			await tick();
+			// work the program left behind (the siblings of a rejected Promise.all) settles in the
+			// window, not in the next run
+			for (let i = 0; i < 20; i++) await tick();
 			if (counted) this.around.after?.();
 			this.builtins.uninstall();
 			this.det.close();

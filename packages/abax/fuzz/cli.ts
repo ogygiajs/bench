@@ -73,9 +73,21 @@ function run_worker(job: Job): Promise<SeedResult[]> {
 		let current: number | null = null;
 		let buf = '';
 		let stderr = '';
+		// Instrumented code takes more stack per call than plain code: a program run close to the
+		// stack limit would overflow only when instrumented, and do something else. With four times
+		// the stack, the programs (whose depth the generator bounds) are far from it on both sides;
+		// the ones that recurse without end still overflow on both.
 		const child = spawn(
 			process.execPath,
-			['--no-warnings', WORKER, job.suite, '--seeds', job.seeds.join(','), ...job.extra],
+			[
+				'--no-warnings',
+				'--stack-size=3900',
+				WORKER,
+				job.suite,
+				'--seeds',
+				job.seeds.join(','),
+				...job.extra
+			],
 			{ stdio: ['ignore', 'pipe', 'pipe'] }
 		);
 		let timer = setTimeout(() => child.kill('SIGKILL'), hang_ms);

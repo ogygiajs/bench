@@ -36,6 +36,9 @@ export async function check_runtime(
 		thrown = e;
 	} finally {
 		lab.around = {};
+		// async work the cut-short run left behind (a sibling of a Promise.all) is still running:
+		// it ends at the cap too before the next run starts, or it would count in that one
+		for (let i = 0; i < 50; i++) await new Promise<void>((r) => setImmediate(r));
 		rt.cap = Infinity;
 	}
 	if (thrown !== null && !(thrown instanceof StepCapError) && typeof thrown !== 'string')

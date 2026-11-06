@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
+import { parseSync } from 'oxc-parser';
 import { instrument } from '../src/transform/instrument.ts';
 import { compile_svelte } from '../src/transform/index.ts';
 import { load_prices } from '../src/prices.ts';
@@ -61,6 +62,8 @@ function has_token(text: string, tok: string): boolean {
 interface Checked {
 	failures: Failure[];
 	blocks: number;
+	/** Compiler outputs that were not valid JS (counted, not checked). */
+	compiler_errors: number;
 }
 
 function check_blocks(
@@ -72,6 +75,12 @@ function check_blocks(
 	out: Checked
 ): void {
 	const p = load_prices();
+	// A compiler can print code that is not valid JS (TypeScript drops the parentheses of
+	// `(-x) ** y`; Svelte's own TS stripping leaves some casts): not the transform's to take.
+	if (parseSync('out.mjs', compiled, { sourceType: 'module', lang: 'js' }).errors.length > 0) {
+		out.compiler_errors++;
+		return;
+	}
 	const r = instrument(compiled, {
 		id: filename,
 		filename,
@@ -127,7 +136,7 @@ let count = $state(0);
 }
 
 export function check_maps(prog: Program): Checked {
-	const out: Checked = { failures: [], blocks: 0 };
+	const out: Checked = { failures: [], blocks: 0, compiler_errors: 0 };
 	if (prog.lang === 'ts') {
 		const t = typescript();
 		const r = t.transpileModule(prog.source, {
