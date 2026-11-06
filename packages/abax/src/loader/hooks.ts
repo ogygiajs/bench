@@ -41,8 +41,11 @@ export async function resolve(
 	context: object,
 	next: NextResolve
 ): Promise<ResolveResult> {
-	if (get_core().is_virtual(specifier)) return { url: specifier, shortCircuit: true };
-	return next(specifier, context);
+	const c = get_core();
+	if (c.is_virtual(specifier)) return { url: specifier, shortCircuit: true };
+	const r = await next(specifier, context);
+	const url = c.with_generation(r.url, (context as { parentURL?: string }).parentURL);
+	return url === r.url ? r : { ...r, url };
 }
 
 export async function load(url: string, context: object, next: NextLoad): Promise<LoadResult> {

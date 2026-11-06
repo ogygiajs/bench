@@ -30,6 +30,8 @@ export interface LoaderConfig {
 }
 
 const ABAX_DIR = fileURLToPath(new URL('../', import.meta.url));
+/** Query parameter of a fresh module graph (`?abax_gen=3`). */
+export const GENERATION = 'abax_gen=';
 const EXTENSIONS = ['.js', '.mjs', '.ts', '.mts', '.svelte'];
 
 function package_name(path: string): string | null {
@@ -70,6 +72,23 @@ export class LoaderCore {
 		return specifier.startsWith(VIRTUAL_PREFIX);
 	}
 
+	/**
+	 * Fresh module state (fresh.ts): a module imported with `?abax_gen=N` passes the same query to
+	 * every file it imports, so the whole graph is a new copy with its own module state. Abax's own
+	 * files and Node built-ins stay shared. The counter modules are keyed by file, not URL: every
+	 * copy of a file counts into the same counters.
+	 */
+	with_generation(url: string, parent: string | undefined): string {
+		if (!parent || !url.startsWith('file:')) return url;
+		const q = parent.indexOf('?');
+		const at = q === -1 ? -1 : parent.indexOf(GENERATION, q);
+		if (at === -1 || url.includes(GENERATION)) return url;
+		if (fileURLToPath(url).startsWith(ABAX_DIR)) return url;
+		const end = parent.indexOf('&', at);
+		const gen = parent.slice(at, end === -1 ? undefined : end);
+		return url + (url.includes('?') ? '&' : '?') + gen;
+	}
+
 	virtual_source(url: string): string {
 		const src = this.virtual.get(url);
 		if (src === undefined) throw new Error(`abax: unknown counter module ${url}`);
@@ -88,6 +107,20 @@ export class LoaderCore {
 	/** Instrument loaded source. Returns null when the module stays as it is (CommonJS, JSON...). */
 	instrument(url: string, source: string, format: string | null | undefined): string | null {
 		const filename = fileURLToPath(url);
+		// Fresh copies of a module (with_generation) load the same file again: transform it once.
+		const cached = this.#done.get(filename);
+		if (cached && cached.source === source && cached.format === format) return cached.code;
+		const code = this.#instrument(filename, source, format);
+		this.#done.set(filename, { source, format, code });
+		return code;
+	}
+
+	#done = new Map<
+		string,
+		{ source: string; format: string | null | undefined; code: string | null }
+	>();
+
+	#instrument(filename: string, source: string, format: string | null | undefined): string | null {
 		let code = source;
 		let input_map = null;
 		if (is_svelte_module(filename)) {

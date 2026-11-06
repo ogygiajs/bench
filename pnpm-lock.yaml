@@ -189,6 +189,9 @@ catalogs:
     playwright:
       specifier: 1.62.1
       version: 1.62.1
+    tinybench:
+      specifier: 6.2.3
+      version: 6.2.3
 
 importers:
 
@@ -203,6 +206,9 @@ importers:
 
   packages/abax:
     dependencies:
+      '@bench/compare':
+        specifier: workspace:*
+        version: link:../compare
       '@jridgewell/remapping':
         specifier: 2.3.5
         version: 2.3.5
@@ -215,10 +221,16 @@ importers:
       oxc-parser:
         specifier: 'catalog:'
         version: 0.157.0
+      tinybench:
+        specifier: catalog:measure
+        version: 6.2.3
     devDependencies:
       '@types/node':
         specifier: 26.1.2
         version: 26.1.2
+      devalue:
+        specifier: 5.9.4
+        version: 5.9.4
       rolldown:
         specifier: 'catalog:'
         version: 1.2.2
@@ -1581,6 +1593,10 @@ packages:
     resolution: {integrity: sha512-wMctrWD2HZZLuIlchlkE2dfXJh7J2KDI9Dwl+2abPYg0mswQHfOAyQW3jJg1pY5VfttSINZuKcXoB3FGypVklA==}
     engines: {node: '>=8'}
 
+  tinybench@6.2.3:
+    resolution: {integrity: sha512-Al01C2JIBnO2CXCAPbpAl6sUiOZHeThGtHYNTa51JRw9PyWOCdr+9Ong05R4qg/Sk3+H645E8ov1h2c58ityNw==}
+    engines: {node: '>=20.0.0'}
+
   tinypool@2.2.0:
     resolution: {integrity: sha512-jBrmx4lYmaC9k/mgPbylxs7kBUxHtD8256up+HjLaDFfXScKJQyil+SWXSvhAtT7XHo+yTVlpB81PGmHP8oLSQ==}
     engines: {node: ^20.0.0 || >=22.0.0}
@@ -2757,6 +2773,8 @@ snapshots:
   third-party-web@0.30.0: {}
 
   timestring@6.0.0: {}
+
+  tinybench@6.2.3: {}
 
   tinypool@2.2.0: {}
 

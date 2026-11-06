@@ -1,6 +1,9 @@
-import { EDGE_KEY_SHIFT } from './runtime/index.ts';
+import { BUILTIN_UNIT_SHIFT, EDGE_KEY_SHIFT } from './runtime/index.ts';
 import type { Runtime, Snapshot } from './runtime/index.ts';
-import { op_price_vector } from './prices.ts';
+import { OP_KINDS, op_price_vector } from './prices.ts';
+import { BUILTIN_TERMS, DYNAMIC_PRICE, add_unit, add_units, op_units } from './units.ts';
+import type { Units } from './units.ts';
+import type { CaseMeasure } from './measure/types.ts';
 import type { EngineReport } from './engine/types.ts';
 import type { GrowthReport } from './growth/index.ts';
 import type { SearchReport } from './search/index.ts';
@@ -30,6 +33,8 @@ export interface BlockReport {
 	count: number;
 	price: number;
 	steps: number;
+	/** Op units of one run of the block (price = ops priced); see units.ts. */
+	ops?: Units;
 }
 
 export interface SiteReport {
@@ -52,6 +57,8 @@ export interface LineReport {
 	steps: number;
 	allocations: number;
 	bytes: number;
+	/** What the line did, unpriced (units.ts). */
+	units?: Units;
 }
 
 export interface FunctionReport {
@@ -73,6 +80,8 @@ export interface FunctionReport {
 	sites: SiteReport[];
 	builtins: BuiltinReport[];
 	lines: LineReport[];
+	/** What the function did itself, unpriced: self_steps = these units priced (units.ts). */
+	units?: Units;
 }
 
 export interface EdgeReport {
@@ -92,11 +101,14 @@ export interface CaseReport {
 	totals: { steps: number; allocations: number; bytes: number; calls: number };
 	functions: FunctionReport[];
 	edges: EdgeReport[];
+	/** The plain-build layers and the time estimate (measure/), when they ran. */
+	measure?: CaseMeasure;
 }
 
 export interface Report {
 	schema: typeof REPORT_SCHEMA;
-	prices: { version: number; hash: string };
+	/** `recounted_from`: counted with other prices and recounted from its units (recount.ts). */
+	prices: { version: number; hash: string; recounted_from?: { version: number; hash: string } };
 	node: string;
 	/** `prefix`: the run root relative to the git top level (module ids are relative to the root). */
 	git: { sha: string | null; prefix: string };
@@ -113,6 +125,29 @@ export const ROOT_ID = '<root>';
 
 function round(n: number): number {
 	return Math.round(n * 1e6) / 1e6;
+}
+
+function rounded(u: Units): Units {
+	const out: Units = {};
+	for (const k of Object.keys(u).sort()) out[k] = round(u[k]);
+	return out;
+}
+
+/** Built-in size units of a snapshot table, per site (or fid): `bi.<key>.<term>` units. */
+function builtin_units(rt: Runtime, t: Record<string, number>): Map<number, Units> {
+	const out = new Map<number, Units>();
+	for (const key of Object.keys(t)) {
+		const k = Number(key);
+		const term = k % 4;
+		const unit_key = (k - term) / 4;
+		const owner = Math.floor(unit_key / BUILTIN_UNIT_SHIFT);
+		const name = rt.bkeys[unit_key % BUILTIN_UNIT_SHIFT];
+		if (name === undefined) continue;
+		let u = out.get(owner);
+		if (!u) out.set(owner, (u = {}));
+		add_unit(u, `bi.${name}.${BUILTIN_TERMS[term]}`, t[key]);
+	}
+	return out;
 }
 
 /** Function ids of every fid the runtime knows. */
@@ -158,6 +193,8 @@ export function build_case_report(
 		});
 		unsited.set(fid, list);
 	}
+	const site_units = builtin_units(rt, snap.bunits);
+	const fn_units = builtin_units(rt, snap.uunits);
 
 	for (let mi = 0; mi < rt.modules.length && mi < snap.modules.length; mi++) {
 		const mod = rt.modules[mi];
@@ -173,13 +210,14 @@ export function build_case_report(
 			blocks: [] as BlockReport[],
 			sites: [] as SiteReport[],
 			builtins: [] as BuiltinReport[],
-			lines: new Map<number, LineReport>()
+			lines: new Map<number, LineReport & { units: Units }>(),
+			units: {} as Units
 		}));
-		const line_of = (fi: number, line: number): LineReport => {
+		const line_of = (fi: number, line: number): LineReport & { units: Units } => {
 			const lines = per_fn[fi].lines;
 			let l = lines.get(line);
 			if (!l) {
-				l = { line, steps: 0, allocations: 0, bytes: 0 };
+				l = { line, steps: 0, allocations: 0, bytes: 0, units: {} };
 				lines.set(line, l);
 			}
 			return l;
@@ -194,26 +232,37 @@ export function build_case_report(
 				line: b.line,
 				count,
 				price: b.price,
-				steps: round(count * b.price)
+				steps: round(count * b.price),
+				ops: op_units(b.ops)
 			});
 			if (count === 0) continue;
 			f.ran = true;
 			f.self += count * b.price;
+			add_units(f.units, op_units(b.ops, count));
 			for (let i = 0; i < b.line_ops.length; i += 3) {
 				const steps = count * b.line_ops[i + 2] * prices[b.line_ops[i + 1]];
-				if (steps !== 0) line_of(b.fn, b.line_ops[i]).steps += steps;
+				const l = line_of(b.fn, b.line_ops[i]);
+				if (steps !== 0) l.steps += steps;
+				add_unit(l.units, OP_KINDS[b.line_ops[i + 1]], count * b.line_ops[i + 2]);
 			}
 		}
 		for (let si = 0; si < meta.sites.length; si++) {
 			const s = meta.sites[si];
 			const count = c[s.block];
 			const dyn_bytes = d[2 * si];
-			const dyn_steps = d[2 * si + 1];
-			if (count === 0 && dyn_steps === 0) continue;
+			// d holds size units; the site kind's dynamic price makes them steps
+			const dyn_units = d[2 * si + 1];
+			const dyn_price = DYNAMIC_PRICE[s.kind];
+			const dyn_steps = dyn_price ? dyn_units * rt.prices.dynamic[dyn_price] : 0;
+			if (count === 0 && dyn_units === 0) continue;
 			const f = per_fn[s.fn];
 			f.self += dyn_steps;
 			const l = line_of(s.fn, s.line);
 			l.steps += dyn_steps;
+			if (dyn_price) {
+				add_unit(f.units, `dyn.${dyn_price}`, dyn_units);
+				add_unit(l.units, `dyn.${dyn_price}`, dyn_units);
+			}
 			if (!s.alloc) continue;
 			const bytes = count * s.bytes + dyn_bytes;
 			f.allocations += count;
@@ -228,7 +277,13 @@ export function build_case_report(
 			const bs = meta.bsites[k];
 			const f = per_fn[bs.fn];
 			f.self += steps;
-			line_of(bs.fn, bs.line).steps += steps;
+			const l = line_of(bs.fn, bs.line);
+			l.steps += steps;
+			const u = site_units.get(mod.b + k);
+			if (u) {
+				add_units(l.units, u);
+				add_units(f.units, u);
+			}
 			f.builtins.push({
 				name: bs.name,
 				line: bs.line,
@@ -242,6 +297,8 @@ export function build_case_report(
 				for (const e of extra) f.self += e.steps;
 				f.builtins.push(...extra);
 			}
+			const u = fn_units.get(f.fid);
+			if (u) add_units(f.units, u);
 			const calls = snap.calls[f.fid] ?? 0;
 			if (!f.ran && calls === 0 && !extra) continue;
 			total_allocs += f.allocations;
@@ -253,7 +310,8 @@ export function build_case_report(
 					line: l.line,
 					steps: round(l.steps),
 					allocations: l.allocations,
-					bytes: round(l.bytes)
+					bytes: round(l.bytes),
+					units: rounded(l.units)
 				}))
 				.sort((a, b) => a.line - b.line);
 			functions.push({
@@ -272,7 +330,8 @@ export function build_case_report(
 				blocks: f.blocks,
 				sites: f.sites,
 				builtins: f.builtins,
-				lines
+				lines,
+				units: rounded(f.units)
 			});
 		}
 	}

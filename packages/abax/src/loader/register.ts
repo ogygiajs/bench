@@ -13,7 +13,9 @@ export function register_abax(config: LoaderConfig): LoaderCore {
 	registerHooks({
 		resolve(specifier, context, next) {
 			if (core.is_virtual(specifier)) return { url: specifier, shortCircuit: true };
-			return next(specifier, context);
+			const r = next(specifier, context);
+			const url = core.with_generation(r.url, context.parentURL);
+			return url === r.url ? r : { ...r, url };
 		},
 		load(url, context, next) {
 			if (core.is_virtual(url)) {
