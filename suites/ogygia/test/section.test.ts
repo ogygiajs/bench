@@ -43,7 +43,8 @@ function result(over: Partial<Result>): Result {
 			merge_base: 'c'.repeat(40),
 			abax: null,
 			node: 'v26',
-			run_url: 'https://example.test/run/1'
+			run_url: 'https://example.test/run/1',
+			measure: null
 		},
 		selection: select_changed(new Map([['x.bench.ts', ['x.bench.ts']]]), ['y.ts']),
 		head: null,
@@ -84,6 +85,32 @@ test('a bench file that never loaded is listed, with its first error line', () =
 	);
 	assert.match(md, /- base: `x\.bench\.ts` \(run\): `SyntaxError: no export named x`/);
 	assert.match(md, /The base has none of these cases yet/);
+});
+
+test('the time layer’s table follows the steps; a failed time layer says so', () => {
+	const sel = select_changed(new Map([['x.bench.ts', ['x.bench.ts', 'y.ts']]]), ['y.ts']);
+	const timed = render_pr_section(
+		result({
+			selection: sel,
+			time: {
+				comparison: {
+					schema: 'abax-time/1',
+					repeats: 5,
+					node: 'v26',
+					cases: [{ name: 'c' } as never],
+					missing: { base: [], pr: [] },
+					errors: []
+				},
+				markdown: '#### Time (plain build, PR and base taking turns)\n\n| Case |',
+				error: null
+			}
+		})
+	);
+	assert.match(timed, /#### Time \(plain build, PR and base taking turns\)/);
+	const failed = render_pr_section(
+		result({ selection: sel, time: { comparison: null, markdown: '', error: '\nboom\nat x' } })
+	);
+	assert.match(failed, /\*\*Time layer failed\*\*: `boom`/);
 });
 
 test('reports of several bench files merge into one per tree', () => {

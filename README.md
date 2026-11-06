@@ -6,8 +6,8 @@ Benchmarks for [ogygia](https://github.com/ogygiajs/ogygia). One pnpm workspace:
   other Svelte frameworks, measured the same way. Its blog is a port of
   [Stanislav Khromov's interactive-blogs-benchmark](https://github.com/khromov/interactive-blogs-benchmark).
 - [`suites/ogygia`](suites/ogygia): Abax on ogygia's own source. It runs the bench files in
-  ogygia's `packages/*/bench` on a commit and, for a PR, on the commit it branched from, and writes
-  the `abax` section of the PR comment.
+  ogygia's `packages/*/bench` on a commit and, for a PR, on the commit it branched from (counted,
+  then timed with both taking turns), and writes the `abax` section of the PR comment.
 - [`packages/abax`](packages/abax): Abax, the function-level benchmark engine. It counts steps,
   allocations and calls per function and line, exactly, so one run of each side decides.
 - [`packages/compare`](packages/compare): the noise rule for a PR build against its base, and the

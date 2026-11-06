@@ -2,7 +2,7 @@
  * The `abax` section of the PR's benchmark comment, and the JSON result kept on the results branch.
  */
 import { SECTION_MARKER, renderMarkdown, renderSections } from '@bench/abax';
-import type { DiffResult, Report } from '@bench/abax';
+import type { DiffResult, Report, TimeComparison } from '@bench/abax';
 import type { LoadError } from './run.ts';
 import type { Selection } from './select.ts';
 
@@ -24,6 +24,8 @@ export interface Meta {
 	abax: string | null;
 	node: string;
 	run_url: string | null;
+	/** The plain-build layers each `abax run` added (`time,bytes,leaks`), or null. */
+	measure: string | null;
 }
 
 export interface Result {
@@ -34,8 +36,8 @@ export interface Result {
 	base: Report | null;
 	diff: (DiffResult & SectionsDiff) | null;
 	load_errors: { head: LoadError[]; base: LoadError[] };
-	/** The time layer's part, once Abax has one (see run_time_layer). */
-	time: string | null;
+	/** A PR's time layer: both trees timed in turns (null on a full run, or with nothing to time). */
+	time: { comparison: TimeComparison | null; markdown: string; error: string | null } | null;
 }
 
 function code(s: string): string {
@@ -123,7 +125,12 @@ export function render_pr_section(r: Result): string {
 		const extra = renderSections(r.diff);
 		if (extra) lines.push('', extra);
 	}
-	if (r.time) lines.push('', r.time);
+	if (r.time?.error) {
+		const first = r.time.error.split('\n').find((l) => l.trim() !== '') ?? '';
+		lines.push('', `**Time layer failed**: ${code(first.trim().slice(0, 200))}`);
+	} else if (r.time?.comparison && r.time.comparison.cases.length > 0) {
+		lines.push('', r.time.markdown);
+	}
 	return lines.join('\n').trimEnd() + '\n';
 }
 
@@ -143,13 +150,21 @@ export function render_full_summary(r: Result): string {
 	if (errors.length > 0) lines.push('**Did not run**:', '', ...errors, '');
 	if (cases.length > 0) {
 		lines.push(
-			'| Case | Steps | Allocations | Bytes | Calls | |',
-			'| --- | ---: | ---: | ---: | ---: | --- |'
+			'| Case | Steps | Allocations | Bytes (est.) | Bytes (real) | p50 | Leak | |',
+			'| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |'
 		);
 		for (const c of cases) {
+			const m = c.measure;
 			const note = c.error ? `failed: ${code(c.error.slice(0, 120))}` : c.stable ? '' : 'unstable';
+			const real = m?.bytes ? fmt(m.bytes.real) : '';
+			const p50 = m?.time ? `${fmt(m.time.p50_ns)} ns` : '';
+			const leak = m?.leak
+				? m.leak.leaked
+					? `⚠️ ${fmt(m.leak.bytes_per_call)} B/call`
+					: 'none'
+				: '';
 			lines.push(
-				`| ${code(c.name)} | ${fmt(c.totals.steps)} | ${fmt(c.totals.allocations)} | ${fmt(c.totals.bytes)} | ${fmt(c.totals.calls)} | ${note} |`
+				`| ${code(c.name)} | ${fmt(c.totals.steps)} | ${fmt(c.totals.allocations)} | ${fmt(c.totals.bytes)} | ${real} | ${p50} | ${leak} | ${note} |`
 			);
 		}
 		lines.push('');

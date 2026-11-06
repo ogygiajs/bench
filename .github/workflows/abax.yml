@@ -2,7 +2,9 @@ name: abax
 
 # Abax (packages/abax) on ogygia's own source: the bench files in ogygia's packages/*/bench, counted
 # exactly (steps, allocations and calls per function and line), with V8's engine health and, for
-# the cases that declare a scaler, how their steps grow with the input. suites/ogygia does the work.
+# the cases that declare a scaler, how their steps grow with the input. A PR is also timed (the
+# plain build, PR and base taking turns in this job); a main or nightly run adds every plain-build
+# layer of its one commit (time, real bytes, leaks). suites/ogygia does the work.
 #
 #   repository_dispatch `ogygia-abax`  ogygia's CI, as soon as a PR is opened or pushed (Abax builds
 #                                      from source: no pkg.pr.new preview to wait for). The PR's
@@ -17,7 +19,8 @@ name: abax
 #                                      with `pr`, the section is posted to that PR of `comment_repo`.
 #                                      Kept as an artifact only.
 #
-# Counts are exact, so one run of each side decides (no repeats, no noise rule). Results land on
+# Counts are exact, so one run of each side decides (no repeats); only the time table is judged by
+# the same-job no-overlap noise rule of packages/compare. Results land on
 # the `results` branch next to the app benchmark's, under abax/: `abax/pr/<number>.json` (the
 # newest run of that PR), `abax/commit/<sha>.json` (the newest run of that commit),
 # `abax/main/<sha>.json` and `abax/main/latest.json` (main pushes and the nightly run).
@@ -66,7 +69,9 @@ env:
 jobs:
   abax:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A PR counts and times what its changes reach; a full run also takes real bytes and leaks of
+    # every case (about 15 s a case).
+    timeout-minutes: ${{ github.event.action == 'ogygia-abax' && 45 || 120 }}
     steps:
       - uses: actions/checkout@v4
 
