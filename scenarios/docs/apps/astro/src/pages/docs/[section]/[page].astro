@@ -1,0 +1,54 @@
+---
+// The markup of the shared DocPage.svelte, with Astro's directives on the three interactive parts.
+import nav from '../../../shared/data/nav.json';
+import pages from '../../../shared/data/pages.json';
+import Sidebar from '../../../shared/components/Sidebar.svelte';
+import Pager from '../../../shared/components/Pager.svelte';
+import Search from '../../../shared/components/Search.svelte';
+import CodeTabs from '../../../shared/components/CodeTabs.svelte';
+import Toc from '../../../shared/components/Toc.svelte';
+
+export function getStaticPaths() {
+	return Object.keys(pages).map((slug) => {
+		const [section, page] = slug.split('/');
+		return { params: { section, page } };
+	});
+}
+
+const page = pages[`${Astro.params.section}/${Astro.params.page}`];
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="/docs.css" />
+		<title>{page.title} · Bench Docs</title>
+	</head>
+	<body>
+		<div class="docs">
+			<header class="top">
+				<a class="brand" href="/docs/getting-started/getting-started-overview">Bench Docs</a>
+				<Search client:idle />
+			</header>
+			<div class="cols">
+				<Sidebar nav={nav} current={page.slug} />
+				<main class="article">
+					<p class="crumb">{page.section}</p>
+					<h1>{page.title}</h1>
+					{
+						page.blocks.map((block) =>
+							block.type === 'html' ? (
+								<Fragment set:html={block.html} />
+							) : (
+								<CodeTabs client:visible tabs={block.tabs} />
+							)
+						)
+					}
+					<Pager prev={page.prev} next={page.next} />
+				</main>
+				<Toc client:idle headings={page.headings} />
+			</div>
+		</div>
+	</body>
+</html>

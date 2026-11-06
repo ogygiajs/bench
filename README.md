@@ -1,42 +1,102 @@
 # ogygia benchmarks
 
-How much JavaScript does a long blog post with a few interactive widgets ship, and does that grow
-with the length of the post? This repo builds the same page with [ogygia](https://github.com/ogygiajs/ogygia)
-and three other setups, then measures each one with Lighthouse.
+The same apps built with [ogygia](https://github.com/ogygiajs/ogygia) and other Svelte 5 frameworks,
+then measured the same way: page load, interaction latency, client navigation, memory, server cost,
+bytes, build and lines of code. Five scenarios, each standing for a kind of site people build.
 
-It is a port of **[Stanislav Khromov's interactive-blogs-benchmark](https://github.com/khromov/interactive-blogs-benchmark)**.
+The first scenario, the blog, is a port of **[Stanislav Khromov's interactive-blogs-benchmark](https://github.com/khromov/interactive-blogs-benchmark)**.
 The method, the line-up of islands versus whole-page hydration, and the idea of three posts of
 growing length are his. This version runs on current tooling and adds ogygia. Thank you,
 [@khromov](https://github.com/khromov).
 
-## What it measures
+## Scenarios
 
-Every app renders the same three posts (about 8.8k, 23k and 71k words), each with five `Counter`
-buttons. The prose is static; the counters are the only interactive parts. For every app and post:
+| scenario    | stands for                                   | what it has                                                                                         | what it stresses                                                         |
+| ----------- | -------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `blog`      | content sites with a few widgets             | three posts of 8.8k, 23k and 71k words, five counters each                                          | JS that grows (or not) with the page; Lighthouse load                     |
+| `docs`      | documentation sites                          | 300 generated pages, a 300-link sidebar, search (index loaded on first use), code tabs, a scroll-spy table of contents, prev/next | load, navigation over a reading session, search and tab INP             |
+| `dashboard` | internal tools and admin apps                | four live KPI cards and a live chart (a tick every second), a static bar chart, a 1,000-row orders table with sort and filters | sort/filter INP, the cost of one live update, JS weight, render per request |
+| `ai-chat`   | chat UIs over a streaming model              | a 120-message history (markdown, code, tool calls), replies streamed token by token from a deterministic local stream (no model) and rendered as markdown as they arrive, tool-call cards | time to first token on screen, INP while streaming, memory after a long conversation, the stream's first chunk |
+| `shop`      | storefronts with personal bits on shared HTML | a 48-product grid and product pages, "Hello, name" and the cart count in the header, Add to cart     | load, time to the personal header, server cost per view, whether one copy of the HTML can be cached for everyone |
 
-- **JS size**: every script the page loads, raw and brotli.
-- **HTML size**: raw and brotli.
-- **Lighthouse** (mobile, simulated throttling, performance only): score, LCP, CLS, TBT.
-- **JS eval time** (script evaluation + parse/compile on the main thread during the page load, from
-  Lighthouse's trace, scaled by its CPU slowdown) and **DOM element count**.
-
-Islands should ship about the same JS on all three posts. Whole-page hydration ships more as the post
-grows. Before measuring, a fidelity check makes sure every app rendered the same prose, headings and
-five counters, and refuses to publish numbers if not (`results/fidelity.md`).
-
-The posts are synthetic (`generate-posts.ts`), so upstream's article text is not redistributed.
+All content is generated and deterministic: `generate-posts.ts` and `scenarios/<name>/generate.ts`.
+Each scenario keeps its UI and data in `scenarios/<name>/shared` (Svelte components, CSS, the
+generated data); `scenarios/sync.ts` copies them into each app before it builds. Its browser
+script, routes and checks are in `scenarios/<name>/scenario.ts`.
 
 ## Frameworks
 
-| id          | approach                       | tooling                            |
-| ----------- | ------------------------------ | ---------------------------------- |
-| `ogygia`    | Svelte 5 islands               | SvelteKit + ogygia (`OGYGIA_SPEC`) |
-| `sveltekit` | Svelte 5, whole-page hydration | SvelteKit                          |
-| `astro`     | Svelte 5 islands               | Astro                              |
-| `mochi`     | Svelte 5 islands               | [Mochi](https://mochi.fast/), bun  |
+Which frameworks are in and why (and which were looked at and left out) is in
+[FRAMEWORKS.md](FRAMEWORKS.md).
 
-Each app lives in `frameworks/<id>` with its own exact version pins and installs on its own (no
+| id           | blog | docs | dashboard | ai-chat | shop | how it builds the scenarios                                                        |
+| ------------ | :--: | :--: | :-------: | :-----: | :--: | ---------------------------------------------------------------------------------- |
+| `ogygia`     |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | SvelteKit + ogygia: `csr = false` server HTML, islands, server islands (PPR), its router |
+| `sveltekit`  |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | SvelteKit: SSR or prerender, whole-page hydration, Kit's router                     |
+| `astro`      |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | Astro + `@astrojs/svelte`: islands, server islands, the Node adapter where it needs a server |
+| `mochi`      |  ✓   |  ✓   |     ✓     |    ✓    |  ✓   | Mochi on Bun: server rendering per request, islands, `mochi:defer` server islands    |
+| `vike`       |      |  ✓   |     ✓     |    ✓    |  ✓   | Vike + `vike-svelte`: SSR or prerender, hydration, Vike's client routing, Hono server |
+| `svelte-spa` |      |  ✓   |     ✓     |    ✓    |  ✓   | plain Svelte + Vite: client-rendered, data from JSON endpoints (the baseline)        |
+
+The blog keeps its original four apps in `frameworks/<id>`. Scenario apps live in
+`scenarios/<name>/apps/<id>`. Every app has its own exact version pins and installs on its own (no
 workspace, no lockfile). The only thing that changes between runs is which ogygia gets installed.
+
+### Fair play
+
+- **Same UI and data.** Every app of a scenario renders the same shared components from the same
+  generated data and links the same stylesheet. Before measuring, a fidelity check renders each
+  app's check pages in a browser and compares what the scenario says must match (headings, counts,
+  visible text length, the personal header). A scenario whose apps differ publishes no numbers
+  (`results/fidelity.md`, `results/fidelity-scenarios.md`).
+- **Each framework's own best practice.** Prerender where the framework would (docs), render per
+  request where the page is per request (dashboard, chat, SvelteKit's and Vike's shop), islands
+  with the directive the framework recommends, server islands where the framework has them
+  (ogygia, Astro, Mochi in the shop), the framework's default router or full page loads. The
+  choice is written at the top of each app's config.
+- **No framework-specific cheats.** No hand-tuned bundles, no skipping work another app does, no
+  caching the measurement can see. The two settings that differ from a default are there because
+  the measurement would otherwise be wrong for everyone's real users: ogygia's shop turns off the
+  per-IP rate limit of its server-island endpoint (the load test sends everything from one IP),
+  and the Mochi apps set `proxy.origin` (Mochi's production CSRF check needs it).
+
+## Metrics
+
+Each metric is defined once, in `harness/metrics.ts` (name, unit, which way is better), with its
+noise floor in `compare.ts`'s `NOISE` table. A result key is `<metric>` or `<metric>:<route|step>`.
+Timings are the median of N passes; sizes and lines of code are exact.
+
+| metric | what it is |
+| --- | --- |
+| `score`, `lcp`, `tbt`, `cls` | Lighthouse (mobile, simulated throttling, performance only) on the scenario's Lighthouse page(s) |
+| `evalMs` | JS evaluation + parse/compile on the main thread during the load, from Lighthouse's trace, × its CPU slowdown (`harness/lighthouse.ts`) |
+| `jsBr`, `htmlBr` | brotli bytes of every script / of the document a route loads cold, before any interaction or scroll; bare = average of the routes |
+| `inp:<step>` | the worst Event Timing duration of the interactions one scripted step caused (Playwright input, 4× CPU throttle); `inp` = the worst step. Below 16 ms reads as 16 |
+| `resp:<step>` | from the step's last input to its result on screen: the wait Event Timing cannot see (a fetch, a lazy island waking) |
+| `navMs` | median time from a click on a link to the new page's heading on screen, over a scripted visit |
+| `visitBr` | brotli bytes of every response in that visit |
+| `heapMb` | JS heap (`JSHeapUsedSize`, after a forced GC) after the scenario's long session |
+| `updateMs` | dashboard: the DOM-update work of one live tick, measured in the page |
+| `ttft`, `streamMs` | ai-chat: from Send to the first / last token on screen |
+| `personalMs` | shop: from navigation start to the visitor's greeting and cart count on screen |
+| `ttfb`, `htmlMs` | server apps: sequential requests (median of 25), time to headers / to the whole document |
+| `p50`, `p99`, `vps`, `reqsPerView` | server apps under load: 10 connections replay every request one page view makes to the server (document, data and server-island fetches, a batched POST included) with the visitor's cookies; latency, page views per second, requests per view |
+| `ttfc`, `streamTotal` | ai-chat server apps: the stream's first chunk and its end, from Node |
+| `cacheable` | shop: 1 when the page's HTML carries no visitor's personal content and allows shared caching (no `private`/`no-store`, no cookie set) |
+| `buildMs`, `outBytes` | the app's `build` command, and every file in its client output except the scenario's shared static files |
+| `loc`, `locCode`, `locConfig` | lines of code a developer wrote for the app (rule below) |
+
+The browser sessions run in Chrome with 4× CPU throttling and a 40 ms, 10 Mbps down / 5 Mbps up
+network applied per request, pages served uncompressed like the Lighthouse runs
+(`harness/profile.ts`). A step waits for the page to be ready first: the load event, 500 ms with
+no request in flight, then an idle callback.
+
+**Lines of code** (`harness/loc.ts`): non-blank lines that are not only a comment, in the app's
+own tracked `.svelte`, `.ts`, `.js`, `.astro` and `.html` files. Config (vite / svelte / astro
+config, tsconfig) is counted apart from source. Left out: the scenario's shared components and
+data, the blog's generated posts and copied counter, `package.json`, lockfiles, `node_modules`,
+build output. The apps that hydrate the whole page render the scenario's shared page component
+instead of writing the page's markup themselves; they are charged that component's lines.
 
 ## Run it locally
 
@@ -46,32 +106,40 @@ TypeScript run by plain `node`.
 ```bash
 pnpm install
 
-# build: every app, or only ogygia + sveltekit with --fast
+# build: every app of the blog and every scenario, or only ogygia + sveltekit with --fast
 node build-all.ts
 node build-all.ts --fast
+
+# one scenario only (its generator, sync and every app of it)
+node build-all.ts --no-blog --scenarios docs
 
 # pick the ogygia to build: an npm version or dist-tag (default `latest`), or a pkg.pr.new build
 OGYGIA_SPEC=0.11.4 node build-all.ts --fast
 OGYGIA_SPEC=https://pkg.pr.new/ogygia@<sha7> node build-all.ts --fast
 
-# full runs measure mochi as a running server; start it in another terminal
+# the blog's mochi app is measured as a running server; start it in another terminal
+# (scenario apps start their own servers)
 cd frameworks/mochi && PORT=3335 MOCHI_KEY=dGVzdC1rZXktMzItYnl0ZXMtYmFzZTY0dXJsISEh bun run start
 
-# measure: --passes N reports the median of N Lighthouse runs per page
+# measure: --passes N = Lighthouse passes on the blog, --scenario-passes N = passes per scenario
 node benchmark.ts --out results/latest.md --json
-node benchmark.ts --fast --passes 5 --out results/scratch/run.md --json
+node benchmark.ts --fast --passes 5 --scenario-passes 3 --out results/scratch/run.md --json
+
+# one scenario, without the blog's Lighthouse run
+node benchmark.ts --no-blog --scenarios docs --out results/scratch/docs.md --json
 
 # the PR comment body, from two result files
 node compare.ts --pr results/scratch/run.json --base results/latest.json
 ```
 
 `OGYGIA_SPEC` (or `--spec`) is the one input. For a pkg.pr.new build, `build-all.ts` takes
-`ogygia`, `@ogygia/core` and `@ogygia/content` from the same commit. For an npm version, core is
-whatever that ogygia depends on, and content is the release that was current at the time
-(`OGYGIA_CONTENT_SPEC` overrides it).
+`ogygia`, `@ogygia/core` and `@ogygia/content` from the same commit, for the blog app and every
+scenario's ogygia app alike. For an npm version, core is whatever that ogygia depends on, and
+content is the release that was current at the time (`OGYGIA_CONTENT_SPEC` overrides it).
 
 Chrome comes from `CHROME_PATH`, else Playwright's Chromium if it is installed, else the system
-Chrome. The `MOCHI_KEY` above is a fixed dummy value Mochi needs to start, not a secret.
+Chrome. The `MOCHI_KEY` above is a fixed dummy value Mochi needs to start, not a secret (the
+scenario apps get theirs, and a dummy `OGYGIA_SECRET`, from `harness/serve.ts`).
 
 ### Docker
 
@@ -88,12 +156,19 @@ ogygia's CI sends a `repository_dispatch` here after pkg.pr.new has published a 
 [`bench` workflow](.github/workflows/bench.yml) then:
 
 - **`ogygia-pr`**: builds ogygia from `https://pkg.pr.new/ogygia@<sha7>`, runs the fast set
-  (ogygia + sveltekit) five times, and compares it with the main baseline. It posts one comment on
-  the PR and edits that same comment on later pushes. A newer push cancels a run that is still
-  going.
-- **`ogygia-main`**: runs every framework and stores the result as the new baseline.
+  (ogygia + sveltekit) on the blog (five Lighthouse passes) and on every scenario (three passes),
+  and compares it with the main baseline. It posts one comment on the PR and edits that same
+  comment on later pushes. A newer push cancels a run that is still going. **Time budget: about
+  25 to 30 minutes** (job timeout 45).
+- **`ogygia-main`**: runs every app of every scenario and stores the result as the new baseline
+  (about 75 minutes, timeout 120).
 - **Weekly**: the same full run against `ogygia@latest`.
-- **By hand** (`workflow_dispatch`): pick fast or full and any spec. The result is an artifact only.
+- **By hand** (`workflow_dispatch`): pick fast or full, any spec, the passes and which scenarios.
+  The result is an artifact only.
+
+The PR comment is grouped by scenario: one summary table (a row per scenario: load, JS, INP,
+navigation or streaming, server p99, lines of code, and how many metrics regressed), then every
+metric of each scenario in its own collapsed `<details>`.
 
 Results are kept on the orphan `results` branch:
 
@@ -103,12 +178,14 @@ Results are kept on the orphan `results` branch:
 
 The ogygia docs read
 `https://raw.githubusercontent.com/ogygiajs/bench/results/main/latest.json`. The JSON is what
-`benchmark.ts --json` writes, with a `meta` block (`ogygia`, `spec`, `sha`, `mode`, `passes`,
-`runAt`).
+`benchmark.ts --json` writes: the blog's fields at the top level as before (`posts`,
+`frameworks[].rows`, `frameworks[].avg`), a `meta` block (`ogygia`, `spec`, `sha`, `mode`,
+`passes`, `scenarioPasses`, `scenarios`, `runAt`), and beside them
+`scenarios: { <name>: { title, routes, steps, frameworks: [{ id, approach, served, metrics }] } }`.
 
 A change counts as a regression only when it is worse than the baseline by more than a noise floor.
 The floors are defined once, at the top of `compare.ts`. The comment also shows how much the plain
-SvelteKit app moved between the two runs, since that app never changes: if it moved a lot, so did
+SvelteKit apps moved between the two runs, since they never change: if they moved a lot, so did
 the runner.
 
 The PR comment needs a token in the `BENCH_TOKEN` secret that can write comments on ogygiajs/ogygia.
@@ -129,5 +206,5 @@ They are not part of CI. Their last results are in `results/router-latest.md` an
 
 ## License
 
-MIT. See [LICENSE](LICENSE). The benchmark design is Stanislav Khromov's; see his
+MIT. See [LICENSE](LICENSE). The blog benchmark's design is Stanislav Khromov's; see his
 [original repository](https://github.com/khromov/interactive-blogs-benchmark).

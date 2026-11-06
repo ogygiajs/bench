@@ -24,6 +24,9 @@
 // of each metric. Passes go round-robin over every target, so a slow stretch on the machine lands
 // on all of them instead of on whichever framework happened to be running.
 // --kind / --sha (or BENCH_KIND / BENCH_SHA) only label the JSON's `meta` block.
+// --scenarios all|none|docs,dashboard,… (or BENCH_SCENARIOS, default all) then runs the scenarios
+// (harness/run.ts) with --scenario-passes N passes (or BENCH_SCENARIO_PASSES, default --passes);
+// --skip and --fast apply to their apps too. --no-blog skips the blog's Lighthouse run above.
 // Requires: Chrome/Chromium (set CHROME_PATH if not auto-detected), and `pnpm install`.
 //
 // --gzip makes the run use Content-Encoding: gzip; without it, everything is served
@@ -45,9 +48,8 @@ import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { join, resolve, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import lighthouse from 'lighthouse';
-import { TraceProcessor } from 'lighthouse/core/lib/tracehouse/trace-processor.js';
-import { MainThreadTasks } from 'lighthouse/core/lib/tracehouse/main-thread-tasks.js';
 import { launch } from 'chrome-launcher';
+import { scriptTime } from './harness/lighthouse.ts';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const KB = (n) => n / 1024;
@@ -72,11 +74,16 @@ function parseArgs(argv) {
 		fast: process.env.BENCH_FAST === '1',
 		passes: Number(process.env.BENCH_PASSES || 1),
 		kind: process.env.BENCH_KIND || 'manual',
-		sha: process.env.BENCH_SHA || null
+		sha: process.env.BENCH_SHA || null,
+		scenarios: process.env.BENCH_SCENARIOS || 'all',
+		scenarioPasses: process.env.BENCH_SCENARIO_PASSES ? Number(process.env.BENCH_SCENARIO_PASSES) : null
 	};
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (a === '--config') args.config = argv[++i];
+		else if (a === '--scenarios') args.scenarios = argv[++i];
+		else if (a === '--scenario-passes') args.scenarioPasses = Number(argv[++i]);
+		else if (a === '--no-blog') args.noBlog = true;
 		else if (a === '--fast') args.fast = true;
 		else if (a === '--passes') args.passes = Number(argv[++i]);
 		else if (a === '--kind') args.kind = argv[++i];
@@ -95,6 +102,13 @@ function parseArgs(argv) {
 		throw new Error(`--passes must be a positive integer`);
 	if (!['pr', 'main', 'manual'].includes(args.kind))
 		throw new Error(`--kind must be pr, main or manual`);
+	// `all`, `none`, or a comma list (`docs,dashboard`). The blog's browser-session metrics are the
+	// `blog` scenario; its Lighthouse run is the top level and only `--no-blog` skips it.
+	args.scenarios =
+		args.scenarios === 'none' ? [] : args.scenarios === 'all' ? null : args.scenarios.split(',');
+	args.scenarioPasses ??= args.passes;
+	if (!Number.isInteger(args.scenarioPasses) || args.scenarioPasses < 1)
+		throw new Error(`--scenario-passes must be a positive integer`);
 	return args;
 }
 
@@ -196,41 +210,8 @@ async function runLighthouse(url, chromePort, acceptEncoding) {
 	};
 }
 
-// Time the main thread spends on JS (evaluation + parse/compile) for the measured page load,
-// scaled by the CPU slowdown like Lighthouse's own numbers. Unlike TBT this isn't windowed
-// between FCP and TTI, so it stays meaningful when the two coincide, which they do here.
-//
-// This reads the trace rather than the `bootup-time` audit, which gets it wrong twice:
-//   - it sums every main-thread task in the trace, including ones from before the navigation.
-//     Chrome sometimes hands back the renderer's events from before tracing started, and then
-//     Lighthouse's own ~1 s CPU benchmark on about:blank lands in the trace and is charged to
-//     the page's document (x4 for throttling, ~3.9 s). It happens on the second Lighthouse run
-//     in a Chrome session, whichever page that is.
-//   - it drops every URL whose total is under 50 ms, so the scripts of a light page don't count.
-// Here only top-level tasks that start at or after navigationStart count, and every one does,
-// except Lighthouse's own page evaluations (tagged `_lighthouse-eval.js`).
-const LIGHTHOUSE_EVAL = /(^|\/)_lighthouse-eval\.js$/;
-function scriptTime(trace, settings) {
-	const { mainThreadEvents, frames, timestamps } = TraceProcessor.processTrace(trace);
-	const tasks = MainThreadTasks.getMainThreadTasks(
-		mainThreadEvents,
-		frames,
-		timestamps.traceEnd,
-		timestamps.timeOrigin
-	);
-	const sum = (task) =>
-		task.attributableURLs.some((url) => LIGHTHOUSE_EVAL.test(url))
-			? 0
-			: (task.group.id === 'scriptEvaluation' || task.group.id === 'scriptParseCompile'
-					? task.selfTime
-					: 0) + task.children.reduce((s, c) => s + sum(c), 0);
-	const ms = tasks
-		.filter((task) => !task.parent && task.startTime >= 0)
-		.reduce((s, task) => s + sum(task), 0);
-	const slowdown =
-		settings.throttlingMethod === 'simulate' ? settings.throttling.cpuSlowdownMultiplier : 1;
-	return ms * slowdown;
-}
+// JS eval time (`scriptTime`) is defined once, in harness/lighthouse.ts, for the blog and the
+// scenarios alike.
 
 const avg = (xs) => xs.reduce((s, x) => s + x, 0) / xs.length;
 const kb1 = (n) => KB(n).toFixed(1);
@@ -537,8 +518,11 @@ function runMeta(args, frameworks) {
 		}
 	};
 	const measured = frameworks.some((f) => f.id === 'ogygia');
-	const installed = measured ? read(join(app, 'node_modules', 'ogygia', 'package.json')) : null;
-	const chosen = measured ? read(join(app, '.ogygia-spec.json')) : null;
+	// The blog's ogygia app, else the first scenario's (a `--no-blog` run); all install the same spec.
+	const apps = [app, ...Object.values(args.cfg?.scenarios ?? {}).flatMap((s) => s.apps.filter((a) => a.id === 'ogygia').map((a) => join(ROOT, a.dir)))];
+	const pick = (rel) => apps.map((dir) => read(join(dir, rel))).find(Boolean) ?? null;
+	const installed = measured ? pick('node_modules/ogygia/package.json') : null;
+	const chosen = measured ? pick('.ogygia-spec.json') : null;
 	return {
 		ogygia: installed?.version ?? null,
 		spec: chosen?.spec ?? null,
@@ -563,36 +547,58 @@ async function main() {
 
 	const acceptEncoding = args.gzip ? 'gzip' : 'identity';
 
-	if (!args.skipFidelity) {
-		console.error('▸ fidelity preflight');
-		const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, 'results/fidelity.md'));
-		if (!fidelityOk) {
+	// The blog's Lighthouse run (the top-level result the docs chart reads). `--no-blog` skips it,
+	// for working on a scenario locally.
+	let results = [];
+	if (!args.noBlog) {
+		if (!args.skipFidelity) {
+			console.error('▸ fidelity preflight');
+			const fidelityOk = await fidelityCheck(frameworks, posts, resolve(ROOT, 'results/fidelity.md'));
+			if (!fidelityOk) {
+				console.error(
+					'\nFidelity failed — not publishing numbers. Fix apps or pass --skip-fidelity.'
+				);
+				process.exit(1);
+			}
+		}
+
+		const chrome = await launch({
+			chromePath: await resolveChromePath(),
+			chromeFlags: ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+		});
+
+		try {
+			results = await measureAll(frameworks, posts, chrome.port, {
+				acceptEncoding,
+				passes: args.passes
+			});
+		} finally {
+			await chrome.kill();
+		}
+
+		if (!results.length) {
 			console.error(
-				'\nFidelity failed — not publishing numbers. Fix apps or pass --skip-fidelity.'
+				'\nNo frameworks measured. Build the static ones and/or start the server ones, then retry.'
 			);
 			process.exit(1);
 		}
 	}
 
-	const chrome = await launch({
-		chromePath: await resolveChromePath(),
-		chromeFlags: ['--headless=new', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage']
+	// The scenarios (harness/): every scenario named by --scenarios, each with its own apps.
+	const { runScenarios } = await import('./harness/run.ts');
+	const { scenarioMarkdown } = await import('./harness/report.ts');
+	const scenarios = await runScenarios(ROOT, cfg, {
+		names: args.scenarios,
+		fast: args.fast,
+		passes: args.scenarioPasses,
+		skip,
+		skipFidelity: args.skipFidelity
 	});
-
-	let results;
-	try {
-		results = await measureAll(frameworks, posts, chrome.port, {
-			acceptEncoding,
-			passes: args.passes
-		});
-	} finally {
-		await chrome.kill();
-	}
-
-	if (!results.length) {
-		console.error(
-			'\nNo frameworks measured. Build the static ones and/or start the server ones, then retry.'
-		);
+	const measuredIds = [
+		...new Set([...results, ...Object.values(scenarios).flatMap((s) => s.frameworks)].map((f) => f.id))
+	];
+	if (!measuredIds.length) {
+		console.error('\nNothing measured.');
 		process.exit(1);
 	}
 
@@ -605,7 +611,12 @@ async function main() {
 		console.error('    LCP scales with transfer bytes, so these rows are not directly comparable.');
 	}
 
-	const meta = runMeta(args, results);
+	const meta = runMeta(
+		{ ...args, cfg },
+		measuredIds.map((id) => ({ id }))
+	);
+	meta.scenarioPasses = args.scenarioPasses;
+	meta.scenarios = Object.keys(scenarios);
 	const md = [
 		'# ogygiaBench results',
 		'',
@@ -614,21 +625,27 @@ async function main() {
 		meta.ogygia ? `ogygia \`${meta.ogygia}\`${meta.spec ? ` (spec \`${meta.spec}\`)` : ''}.` : '',
 		args.passes > 1 ? `Lighthouse numbers are the median of ${args.passes} passes.` : '',
 		'',
-		'## Condensed',
-		'',
-		condensedTable(results),
-		'',
-		'- **JS brotli** = brotli JS the page loads. *flat* = identical on all posts (islands); `→` = first → last-post growth.',
-		'- HTML ≈ identical across frameworks (same prose). Prefer **Avg JS eval** over TBT here.',
-		'',
-		'## Full (JS / HTML shown as uncompressed / brotli KB)',
-		'',
-		fullTable(results, posts),
-		'',
-		mixed
-			? `> ⚠️ **Mixed content-encoding across targets** (${results.map((r) => `${r.id}: ${r.encoding}`).join(', ')}). LCP scales with transfer bytes, so these rows are not directly comparable.\n`
-			: '',
-		`_Lighthouse, mobile + simulated throttling, HTTP/1.1, content-encoding: ${encodings.join(' + ')}. Generated by \`benchmark.ts\`${args.gzip ? ' --gzip' : ''}._`
+		...(results.length
+			? [
+					'## Condensed',
+					'',
+					condensedTable(results),
+					'',
+					'- **JS brotli** = brotli JS the page loads. *flat* = identical on all posts (islands); `→` = first → last-post growth.',
+					'- HTML ≈ identical across frameworks (same prose). Prefer **Avg JS eval** over TBT here.',
+					'',
+					'## Full (JS / HTML shown as uncompressed / brotli KB)',
+					'',
+					fullTable(results, posts),
+					'',
+					mixed
+						? `> ⚠️ **Mixed content-encoding across targets** (${results.map((r) => `${r.id}: ${r.encoding}`).join(', ')}). LCP scales with transfer bytes, so these rows are not directly comparable.\n`
+						: '',
+					`_Lighthouse, mobile + simulated throttling, HTTP/1.1, content-encoding: ${encodings.join(' + ')}. Generated by \`benchmark.ts\`${args.gzip ? ' --gzip' : ''}._`,
+					''
+				]
+			: []),
+		scenarioMarkdown(scenarios, args.scenarioPasses)
 	].join('\n');
 
 	console.log('\n' + md + '\n');
@@ -676,7 +693,11 @@ async function main() {
 					evalMs: f.avg.evalMs,
 					dom: f.avg.dom
 				}
-			}))
+			})),
+			// One entry per scenario: `{ title, routes, steps, frameworks: [{ id, approach, served,
+			// metrics: { <key>: number } }] }`. Metric keys are `<metric>` or `<metric>:<route|step>`;
+			// compare.ts and README.md define each one.
+			scenarios
 		};
 		writeFileSync(jsonPath, JSON.stringify(clean, null, 2) + '\n');
 		console.error(`Wrote ${jsonPath}`);

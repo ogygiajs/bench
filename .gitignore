@@ -10,6 +10,16 @@ bun.lock
 # pnpm 11 writes one into an app when it waives its release-age rule for a fresh pin; build-all
 # writes the ogygia app's on every run
 frameworks/*/pnpm-workspace.yaml
+scenarios/*/apps/*/pnpm-workspace.yaml
+scenarios/*/apps/*/.ogygia-spec.json
+# build-all.ts: build time + client output size of each app
+.bench-build.json
+# scenarios: generated data, and the copies scenarios/sync.ts puts into each app
+scenarios/*/shared/data
+scenarios/*/apps/*/src/lib/shared
+scenarios/*/apps/*/src/shared
+scenarios/*/apps/*/public
+scenarios/*/apps/*/static
 
 # per-run output: only the files under results/ that are committed on purpose are kept
 results/scratch

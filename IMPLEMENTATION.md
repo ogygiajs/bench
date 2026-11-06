@@ -3,7 +3,8 @@
 > This is the original spec the benchmark was built from, inside the ogygia repo (where it lived
 > under `bench/`). The rules in §0 and §7 still hold. The paths, the "packed tarball" install of
 > §6.1 and the `.mjs` names are history: the harness now lives at this repo's root, its scripts are
-> `.ts`, and ogygia comes from npm or pkg.pr.new (see the README).
+> `.ts`, and ogygia comes from npm or pkg.pr.new (see the README). §1–§8 are the blog; §9 is how
+> the scenarios (docs, dashboard, ai-chat, shop) and their shared harness are built.
 
 A build-ready spec for finishing `bench/`. It ports **[khromov's interactive-blogs-benchmark](https://github.com/khromov/interactive-blogs-benchmark)**
 into this repo on latest tooling, with **ogygia** added. Credit khromov in every user-facing surface
@@ -218,6 +219,67 @@ Emit `results/fidelity.md` (pass/fail per post) and refuse to publish numbers if
 - Fidelity preflight passes (identical page across all four).
 - README credits khromov; versions pinned; content synthetic.
 - Add `pnpm run bench` at repo root → `node bench/...` convenience (optional).
+
+---
+
+## 9. Scenarios and the shared harness
+
+The blog (§1–§8) is one scenario. Four more stand for other kinds of sites: `docs`, `dashboard`,
+`ai-chat`, `shop` (the README says what each stands for and measures). The §0 rule holds for each:
+every app of a scenario renders the same page; only the framework's way of building it differs.
+
+### 9.1 Layout
+
+```
+scenarios/
+  sync.ts                       copies shared/ into an app (gitignored copy), static files into its public dir
+  <name>/
+    generate.ts                 deterministic data → shared/data/ (gitignored)
+    scenario.ts                 routes, Lighthouse routes, fidelity print, session(), long(), server/stream/cacheability
+    shared/                     Svelte components, .ts helpers, public/<name>.css, data/
+    apps/<framework>/           one app per framework, own package.json with exact pins
+harness/
+  profile.ts                    the throttling, load and sampling profile, in one place
+  serve.ts                      static serving (SPA fallback, shared API handler) or spawning a server app
+  browser.ts                    Playwright sessions: ready, interact (INP + response), nav, bytes, heap, route weight
+  lighthouse.ts                 one Lighthouse load + JS eval time from the trace (the blog uses it too)
+  server.ts                     render time, load test (replays one page view), stream timing, cacheability
+  loc.ts                        lines of code per app
+  metrics.ts                    every metric's name, unit and direction
+  run.ts                        runs the scenarios; returns the JSON's `scenarios` block
+  report.ts                     the scenario tables of results/*.md
+```
+
+`frameworks.config.json` lists each scenario's apps under `scenarios.<name>.apps`: `dir`, then
+either `dist` (a static build the harness serves; `spa: true` answers unknown paths with
+index.html; `api` names a shared module whose `handle(request)` answers the scenario's endpoints
+for an app without a server) or `start` (the app's own server command, run in `dir` with `PORT`,
+`HOST`, `ORIGIN` and the dummy secrets set), plus `out` (build output, removed before each build
+and checked before measuring), `client` (the parts of it a browser can fetch, for `outBytes`),
+`shared` / `public` (where sync.ts copies to) and `fast`.
+
+### 9.2 Apps
+
+- Shared components render the UI. Apps that hydrate the whole page (SvelteKit, Vike, the SPA)
+  render the scenario's shared page component; the islands apps (ogygia, Astro, Mochi) write the
+  same markup in their own page template, with their directive on each interactive part. Data
+  comes from the generated JSON: imported by server code, fetched from `/api/*.json` by the SPA.
+- Endpoints (the chat stream, the cart, the visitor) are shared functions taking a `Request` and
+  returning a `Response`; each server app routes to them its own way (a `+server.ts`, an Astro API
+  route, `Mochi.api`, a Hono route), the SPA gets them from the harness's static server.
+- Each app's config starts with a comment saying how that framework builds the scenario.
+
+### 9.3 Measuring
+
+Per scenario: boot every app, run the fidelity print on each (refuse the scenario's numbers on a
+mismatch), measure route weights once, then `passes` rounds over the apps of the browser session
+(`session()` then `long()` then the heap) and of Lighthouse; then, for server apps, render time,
+the load test, the stream timing and cacheability; add build time, output size and lines of code.
+Timings are medians over the passes. The JSON shape and every metric are in the README.
+
+**Acceptance:** `node build-all.ts --fast && node benchmark.ts --fast --json` produces, for every
+scenario, a fidelity PASS and a number for every metric the scenario defines, for both apps;
+`node compare.ts --pr <run.json> --base <older run.json>` renders the grouped comment.
 
 ---
 

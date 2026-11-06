@@ -1,0 +1,27 @@
+---
+// The markup of the shared Dashboard.svelte, with Astro's directives on the live panel and the table.
+import data from '../shared/data/dashboard.json';
+import BarChart from '../shared/components/BarChart.svelte';
+import LivePanel from '../shared/components/LivePanel.svelte';
+import OrdersTable from '../shared/components/OrdersTable.svelte';
+---
+
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<link rel="stylesheet" href="/dashboard.css" />
+		<title>Operations · Bench Dashboard</title>
+	</head>
+	<body>
+		<div class="dash">
+			<header class="dash-head">
+				<h1>Operations</h1>
+				<p>{data.orders.length} orders this month</p>
+			</header>
+			<LivePanel client:load live={data.live} />
+			<BarChart regions={data.regions} />
+			<OrdersTable client:visible orders={data.orders} />
+		</div>
+	</body>
+</html>

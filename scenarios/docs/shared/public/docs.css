@@ -1,0 +1,219 @@
+/* The docs scenario's one stylesheet, linked as /docs.css by every app. */
+:root {
+	--fg: #1a1a1a;
+	--muted: #6b7280;
+	--accent: #2563eb;
+	--border: #e5e7eb;
+	--soft: #f6f7f9;
+}
+* {
+	box-sizing: border-box;
+}
+body {
+	margin: 0;
+	font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+	color: var(--fg);
+	line-height: 1.65;
+}
+.top {
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	gap: 2rem;
+	height: 3.5rem;
+	padding: 0 1.25rem;
+	background: #fff;
+	border-bottom: 1px solid var(--border);
+}
+.brand {
+	font-weight: 700;
+	color: inherit;
+	text-decoration: none;
+}
+.search {
+	position: relative;
+	flex: 0 1 26rem;
+}
+.search input {
+	width: 100%;
+	padding: 0.45rem 0.75rem;
+	font: inherit;
+	border: 1px solid var(--border);
+	border-radius: 0.4rem;
+	background: var(--soft);
+}
+.search-results {
+	position: absolute;
+	inset: 2.6rem 0 auto;
+	margin: 0;
+	padding: 0.25rem;
+	list-style: none;
+	background: #fff;
+	border: 1px solid var(--border);
+	border-radius: 0.4rem;
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.08);
+}
+.search-results a {
+	display: flex;
+	justify-content: space-between;
+	padding: 0.35rem 0.5rem;
+	color: inherit;
+	text-decoration: none;
+}
+.search-results span {
+	color: var(--muted);
+	font-size: 0.85em;
+}
+.cols {
+	display: grid;
+	grid-template-columns: 16rem minmax(0, 1fr) 14rem;
+	gap: 2rem;
+	max-width: 80rem;
+	margin: 0 auto;
+	padding: 0 1.25rem;
+}
+.sidebar {
+	position: sticky;
+	top: 3.5rem;
+	height: calc(100vh - 3.5rem);
+	overflow-y: auto;
+	padding: 1rem 0;
+	font-size: 0.9rem;
+}
+.sidebar summary {
+	font-weight: 600;
+	cursor: pointer;
+	padding: 0.2rem 0;
+}
+.sidebar ul {
+	margin: 0.2rem 0 0.6rem;
+	padding-left: 0.75rem;
+	list-style: none;
+}
+.sidebar a {
+	display: block;
+	padding: 0.1rem 0;
+	color: var(--muted);
+	text-decoration: none;
+}
+.sidebar a[aria-current='page'] {
+	color: var(--accent);
+	font-weight: 600;
+}
+.article {
+	padding: 2rem 0 5rem;
+	min-width: 0;
+}
+.crumb {
+	margin: 0;
+	color: var(--accent);
+	font-size: 0.85rem;
+	font-weight: 600;
+}
+.article h1 {
+	margin: 0.25rem 0 1.5rem;
+	font-size: 2rem;
+	line-height: 1.2;
+}
+.article h2 {
+	margin: 2.25rem 0 0.75rem;
+	font-size: 1.35rem;
+}
+.article h3 {
+	margin: 1.5rem 0 0.5rem;
+}
+.article code {
+	padding: 0.1rem 0.3rem;
+	background: var(--soft);
+	border-radius: 0.25rem;
+	font-size: 0.9em;
+}
+.callout {
+	margin: 1rem 0;
+	padding: 0.75rem 1rem;
+	border-left: 3px solid var(--accent);
+	background: #eff6ff;
+}
+.code-tabs {
+	margin: 1.25rem 0;
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	overflow: hidden;
+}
+.tab-list {
+	display: flex;
+	background: var(--soft);
+	border-bottom: 1px solid var(--border);
+}
+.tab-list button {
+	padding: 0.45rem 0.9rem;
+	font: inherit;
+	font-size: 0.85rem;
+	background: none;
+	border: 0;
+	border-bottom: 2px solid transparent;
+	cursor: pointer;
+}
+.tab-list button.active {
+	border-bottom-color: var(--accent);
+	font-weight: 600;
+}
+.tab-panel {
+	margin: 0;
+	padding: 0.9rem 1rem;
+	overflow-x: auto;
+}
+.tab-panel code {
+	padding: 0;
+	background: none;
+}
+.pager {
+	display: flex;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-top: 3rem;
+}
+.pager a {
+	flex: 1;
+	padding: 0.75rem 1rem;
+	border: 1px solid var(--border);
+	border-radius: 0.5rem;
+	color: inherit;
+	text-decoration: none;
+}
+.pager a.next {
+	text-align: right;
+}
+.pager span {
+	display: block;
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+.toc {
+	position: sticky;
+	top: 3.5rem;
+	align-self: start;
+	padding: 2rem 0;
+	font-size: 0.85rem;
+}
+.toc p {
+	margin: 0 0 0.5rem;
+	font-weight: 600;
+}
+.toc ul {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+.toc .depth-3 {
+	padding-left: 0.75rem;
+}
+.toc a {
+	color: var(--muted);
+	text-decoration: none;
+}
+.toc a.active {
+	color: var(--accent);
+}

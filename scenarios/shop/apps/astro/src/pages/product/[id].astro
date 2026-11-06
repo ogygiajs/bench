@@ -1,0 +1,26 @@
+---
+// The markup of the shared ProductPage.svelte, with Astro's directive on Add to cart.
+import Shop from '../../layouts/Shop.astro';
+import ProductDetail from '../../shared/components/ProductDetail.svelte';
+import ProductCard from '../../shared/components/ProductCard.svelte';
+import AddToCart from '../../shared/components/AddToCart.svelte';
+import products from '../../shared/data/products.json';
+import { productPage } from '../../shared/catalog.ts';
+
+export function getStaticPaths() {
+	return products.map((p) => ({ params: { id: p.id } }));
+}
+
+const { product, related } = productPage(products, Astro.params.id);
+---
+
+<Shop title={`${product.name} · Bench Shop`}>
+	<main class="shop">
+		<ProductDetail product={product} />
+		<AddToCart client:load id={product.id} />
+		<h2>You may also like</h2>
+		<div class="grid related">
+			{related.map((p) => <ProductCard product={p} />)}
+		</div>
+	</main>
+</Shop>
