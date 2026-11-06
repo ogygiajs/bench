@@ -1,0 +1,1478 @@
+import MagicString from 'magic-string';
+import { parseSync } from 'oxc-parser';
+import remapping from '@jridgewell/remapping';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
+import { Positions } from './positions.ts';
+import { OP_INDEX, OP_KINDS, builtin_names, op_price_vector } from '../prices.ts';
+import type { OpKind, Prices } from '../prices.ts';
+import {
+	ASYNC_FUNCTION_OBJECT,
+	CLASS,
+	KNOWN_CONSTRUCTORS,
+	PROMISE,
+	REGEXP,
+	array_bytes,
+	bound_bytes,
+	closure_bytes,
+	generator_bytes,
+	object_bytes
+} from '../layout.ts';
+import { META_SCHEMA } from '../meta.ts';
+import type {
+	BlockMeta,
+	BuiltinSiteMeta,
+	FunctionKind,
+	FunctionMeta,
+	ModuleMeta,
+	SiteKind,
+	SiteMeta
+} from '../meta.ts';
+
+/*
+ * The counting transform (spec 1).
+ *
+ * Every function gets a frame for the shadow call stack and every basic block a counter:
+ *
+ *   function f(a) { const r = R.enter(F+3); try { c[7]++, s[0] += 12; ...body } finally { R.exit(r) } }
+ *
+ * `c` is the module's Float64Array of block counts, `s` the one-slot running step total (used for
+ * inclusive steps). Short-circuit parts of expressions are blocks too: `a && (c[8]++, b)`.
+ * Optional chains count through `R.opt(c, i, price, obj)?.x`; awaits and yields save and restore
+ * the shadow stack: `R.resume(r, await R.suspend(r, x))`.
+ *
+ * Every edit is created in pre-order and applied after the walk, when block prices are known:
+ * opening text with appendRight (outer first), closing text with prependLeft (inner first).
+ */
+
+/** A loose ESTree node from oxc-parser. Fields are read through the helpers below. */
+interface Node {
+	type: string;
+	start: number;
+	end: number;
+	[key: string]: unknown;
+}
+
+function get(node: Node, key: string): Node | null {
+	const v = node[key];
+	return v && typeof v === 'object' && 'type' in v ? (v as Node) : null;
+}
+
+function list(node: Node, key: string): Array<Node | null> {
+	const v = node[key];
+	return Array.isArray(v) ? (v as Array<Node | null>) : [];
+}
+
+function text(node: Node, key: string): string {
+	const v = node[key];
+	return typeof v === 'string' ? v : '';
+}
+
+function flag(node: Node, key: string): boolean {
+	return node[key] === true;
+}
+
+function nodes(node: Node, key: string): Node[] {
+	return list(node, key).filter((n): n is Node => n !== null);
+}
+
+const SKIP_KEYS = new Set([
+	'type',
+	'start',
+	'end',
+	'range',
+	'loc',
+	'typeAnnotation',
+	'typeParameters',
+	'returnType',
+	'typeArguments',
+	'superTypeArguments',
+	'implements',
+	'decorators'
+]);
+
+const TS_EXPRESSION_WRAPPERS = new Set([
+	'TSAsExpression',
+	'TSSatisfiesExpression',
+	'TSNonNullExpression',
+	'TSTypeAssertion',
+	'TSInstantiationExpression',
+	'ParenthesizedExpression'
+]);
+
+const ARITH = new Set(['+', '-', '*', '/', '%', '**', '<<', '>>', '>>>', '&', '|', '^']);
+
+export interface InstrumentOptions {
+	/** Module identity in reports (path relative to the run root). */
+	id: string;
+	/** File name, used for the parser language and the output source map. */
+	filename: string;
+	/** Map from `code` back to the original source (compiled .svelte, Vite's TS output). */
+	input_map?: SourceMapInput | null;
+	prices: Prices;
+	prices_hash: string;
+	/** Specifier of the per-module virtual import that provides the counters (see virtual.ts). */
+	module_specifier: string;
+	/** Append `export const __abax = {...}` with every private top-level binding. Default true. */
+	expose?: boolean;
+	lang?: 'js' | 'jsx' | 'ts' | 'tsx';
+}
+
+export interface InstrumentResult {
+	code: string;
+	map: ReturnType<MagicString['generateMap']>;
+	meta: ModuleMeta;
+}
+
+interface FnRec {
+	index: number;
+	meta: FunctionMeta;
+	parent: FnRec | null;
+	is_arrow: boolean;
+	framed: boolean;
+	declared: Set<string>;
+	refs: Set<string>;
+	uses_arguments: boolean;
+	blocks: number;
+}
+
+interface BlockRec {
+	id: number;
+	fn: FnRec;
+	index: number;
+	line: number;
+	col: number;
+	ops: number[];
+	/** key = line * 64 + op kind */
+	line_ops: Map<number, number>;
+}
+
+interface SiteRec {
+	index: number;
+	meta: SiteMeta;
+	block: BlockRec;
+	/** Closure sites: the function whose captured variables size the context. */
+	closure_of: FnRec | null;
+	/** `new X()` sites: constructor name, sized after the walk. */
+	new_name: string | null;
+	/** `arguments` sites: the function that may use it. */
+	arguments_of: FnRec | null;
+}
+
+interface Edit {
+	pos: number;
+	open: boolean;
+	text: () => string;
+}
+
+interface Naming {
+	path: string;
+	used: Map<string, number>;
+}
+
+class Instrumenter {
+	code: string;
+	opts: InstrumentOptions;
+	pos: Positions;
+	prices: Float64Array;
+	builtin_names: Set<string>;
+	n: { c: string; d: string; f: string; b: string; s: string; R: string; r: string };
+
+	fns: FnRec[] = [];
+	blocks: BlockRec[] = [];
+	sites: SiteRec[] = [];
+	bsites: BuiltinSiteMeta[] = [];
+	edits: Edit[] = [];
+	naming: Naming[] = [{ path: '', used: new Map() }];
+	zero_args = new Map<Node, Array<() => string>>();
+	class_fields = new Map<string, number>();
+
+	fn!: FnRec;
+	block!: BlockRec;
+	scope_block: BlockRec | null = null;
+
+	constructor(code: string, opts: InstrumentOptions) {
+		this.code = code;
+		this.opts = opts;
+		this.pos = new Positions(code, opts.input_map);
+		this.prices = op_price_vector(opts.prices);
+		this.builtin_names = new Set(builtin_names(opts.prices));
+		let p = '$a$';
+		for (let i = 1; code.includes(p); i++) p = `$a${i}$`;
+		this.n = {
+			c: p + 'c',
+			d: p + 'd',
+			f: p + 'f',
+			b: p + 'b',
+			s: p + 's',
+			R: p + 'R',
+			r: p + 'r'
+		};
+	}
+
+	// ---------------------------------------------------------------- records
+
+	new_fn(
+		path: string,
+		kind: FunctionKind,
+		node: Node,
+		o: { async?: boolean; generator?: boolean; arrow?: boolean; framed: boolean }
+	): FnRec {
+		const at = this.pos.original(node.start);
+		const end = this.pos.original(Math.max(node.start, node.end - 1));
+		const f: FnRec = {
+			index: this.fns.length,
+			meta: {
+				path,
+				line: at.line,
+				col: at.col,
+				end_line: end.line,
+				kind,
+				async: o.async ?? false,
+				generator: o.generator ?? false
+			},
+			parent: this.fns.length === 0 ? null : this.fn,
+			is_arrow: o.arrow ?? false,
+			framed: o.framed,
+			declared: new Set(),
+			refs: new Set(),
+			uses_arguments: false,
+			blocks: 0
+		};
+		this.fns.push(f);
+		return f;
+	}
+
+	new_block(offset: number): BlockRec {
+		const at = this.pos.original(offset);
+		const b: BlockRec = {
+			id: this.blocks.length,
+			fn: this.fn,
+			index: this.fn.blocks++,
+			line: at.line,
+			col: at.col,
+			ops: Array.from({ length: OP_KINDS.length }, () => 0),
+			line_ops: new Map()
+		};
+		this.blocks.push(b);
+		return b;
+	}
+
+	price(b: BlockRec): number {
+		let p = 0;
+		for (let i = 0; i < b.ops.length; i++) p += b.ops[i] * this.prices[i];
+		return Math.round(p * 1e6) / 1e6;
+	}
+
+	op(kind: OpKind, offset: number, count = 1, block: BlockRec = this.block): void {
+		this.op_at_line(kind, this.pos.original(offset).line, count, block);
+	}
+
+	op_at_line(kind: OpKind, line: number, count: number, block: BlockRec): void {
+		const k = OP_INDEX[kind];
+		block.ops[k] += count;
+		const key = line * 64 + k;
+		block.line_ops.set(key, (block.line_ops.get(key) ?? 0) + count);
+	}
+
+	site(
+		kind: SiteKind,
+		offset: number,
+		bytes: number,
+		dynamic: boolean,
+		alloc = true,
+		block: BlockRec = this.block
+	): SiteRec {
+		const at = this.pos.original(offset);
+		const rec: SiteRec = {
+			index: this.sites.length,
+			meta: {
+				fn: block.fn.index,
+				block: block.id,
+				kind,
+				line: at.line,
+				col: at.col,
+				bytes,
+				dynamic,
+				alloc
+			},
+			block,
+			closure_of: null,
+			new_name: null,
+			arguments_of: null
+		};
+		this.sites.push(rec);
+		if (alloc) this.op_at_line('alloc', at.line, 1, block);
+		return rec;
+	}
+
+	// ---------------------------------------------------------------- edits
+
+	open(pos: number, t: () => string): void {
+		this.edits.push({ pos, open: true, text: t });
+	}
+
+	close(pos: number, t: () => string): void {
+		this.edits.push({ pos, open: false, text: t });
+	}
+
+	counter_expr(b: BlockRec): string {
+		const p = this.price(b);
+		const c = `${this.n.c}[${b.id}]++`;
+		return p === 0 ? c : `${c},${this.n.s}[0]+=${p}`;
+	}
+
+	counter_stmt(b: BlockRec): string {
+		return this.counter_expr(b) + ';';
+	}
+
+	/** Start a block whose counter is a statement inserted at `pos`. */
+	start_block_at(pos: number, origin: number, prefix?: () => string): BlockRec {
+		const b = this.new_block(origin);
+		this.block = b;
+		this.open(pos, () => (prefix ? prefix() : '') + this.counter_stmt(b));
+		if (this.scope_block === null) this.scope_block = b;
+		return b;
+	}
+
+	/** Wrap an expression so it counts a block of its own: `(c[i]++, expr)`. */
+	expr_block(node: Node, hint?: string): BlockRec {
+		const prev = this.block;
+		const b = this.new_block(node.start);
+		this.open(node.start, () => `(${this.counter_expr(b)},`);
+		this.close(node.end, () => ')');
+		this.block = b;
+		this.walk_expr(node, hint);
+		this.block = prev;
+		return b;
+	}
+
+	/** Extra arguments spread into an empty argument list: `f(...R.site_zero(k))`. */
+	add_zero_arg(call: Node, piece: () => string): void {
+		let pieces = this.zero_args.get(call);
+		if (!pieces) {
+			const ps: Array<() => string> = [];
+			pieces = ps;
+			this.zero_args.set(call, ps);
+			this.open(call.end - 1, () => ps.map((p) => p()).join(','));
+		}
+		pieces.push(piece);
+	}
+
+	// ---------------------------------------------------------------- naming
+
+	name_path(name: string): string {
+		const top = this.naming[this.naming.length - 1];
+		const seen = top.used.get(name) ?? 0;
+		top.used.set(name, seen + 1);
+		const unique = seen === 0 ? name : `${name}#${seen + 1}`;
+		return top.path ? `${top.path} > ${unique}` : unique;
+	}
+
+	key_name(key: Node | null, computed: boolean): string {
+		if (!key) return '<anonymous>';
+		if (key.type === 'Literal') return String(key.value);
+		if (!computed) {
+			if (key.type === 'Identifier') return text(key, 'name');
+			if (key.type === 'PrivateIdentifier') return '#' + text(key, 'name');
+		}
+		return '[computed]';
+	}
+
+	callee_name(callee: Node): string {
+		if (callee.type === 'Identifier') return text(callee, 'name');
+		if (callee.type === 'MemberExpression' && !flag(callee, 'computed')) {
+			const p = get(callee, 'property');
+			if (p) return text(p, 'name');
+		}
+		if (callee.type === 'Super') return 'super';
+		return 'call';
+	}
+
+	// ---------------------------------------------------------------- scope
+
+	declare(name: string): void {
+		this.fn.declared.add(name);
+	}
+
+	ref(name: string): void {
+		this.fn.refs.add(name);
+		if (name === 'arguments') {
+			let f: FnRec | null = this.fn;
+			while (f && f.is_arrow) f = f.parent;
+			if (f && f.meta.kind === 'function') f.uses_arguments = true;
+		}
+	}
+
+	// ---------------------------------------------------------------- program
+
+	run(program: Node): void {
+		const top = this.new_fn('<top>', 'top', program, { framed: false });
+		this.fn = top;
+		const body = nodes(program, 'body');
+		let first = 0;
+		while (first < body.length && typeof body[first].directive === 'string') first++;
+		const header_pos = first < body.length ? body[first].start : this.code.length;
+		const n = this.n;
+		const spec = JSON.stringify(this.opts.module_specifier);
+		this.open(
+			header_pos,
+			() =>
+				`import{c as ${n.c},d as ${n.d},f as ${n.f},b as ${n.b},s as ${n.s},r as ${n.R}}from${spec};`
+		);
+		this.scope_block = null;
+		if (first < body.length) {
+			this.start_block_at(header_pos, header_pos);
+			this.walk_statements(body.slice(first), false);
+		} else {
+			this.block = this.new_block(header_pos);
+		}
+	}
+
+	/** Returns true when the code after the list needs a new block. */
+	walk_statements(stmts: Array<Node | null>, need_block: boolean): boolean {
+		const prev_scope = this.scope_block;
+		this.scope_block = need_block ? null : this.block;
+		let split = need_block;
+		for (const st of stmts) {
+			if (!st) continue;
+			if (split) {
+				this.start_block_at(st.start, st.start);
+				split = false;
+			}
+			if (this.walk_statement(st)) split = true;
+		}
+		this.scope_block = prev_scope;
+		return split;
+	}
+
+	/** A branch body (if/else, loop body, catch, finally) is always a block of its own. */
+	walk_branch(st: Node, prefix?: () => string, before?: () => void): void {
+		const prev = this.block;
+		if (st.type === 'BlockStatement') {
+			this.start_block_at(st.start + 1, st.start, prefix);
+			before?.();
+			this.walk_statements(list(st, 'body'), false);
+		} else {
+			const b = this.new_block(st.start);
+			this.block = b;
+			this.open(st.start, () => '{' + (prefix ? prefix() : '') + this.counter_stmt(b));
+			this.close(st.end, () => '}');
+			before?.();
+			this.walk_statement(st);
+		}
+		this.block = prev;
+	}
+
+	resume_prefix(): (() => string) | undefined {
+		const f = this.fn;
+		if (!f.framed || !(f.meta.async || f.meta.generator)) return undefined;
+		return () => `${this.n.R}.resume_if(${this.n.r});`;
+	}
+
+	walk_statement(st: Node): boolean {
+		switch (st.type) {
+			case 'ExpressionStatement': {
+				const e = get(st, 'expression');
+				if (e) this.walk_expr(e);
+				return false;
+			}
+			case 'VariableDeclaration':
+				if (flag(st, 'declare')) return false;
+				this.walk_var_decl(st);
+				return false;
+			case 'FunctionDeclaration': {
+				if (!get(st, 'body')) return false;
+				const id = get(st, 'id');
+				if (id) this.declare(text(id, 'name'));
+				this.walk_function(st, id ? text(id, 'name') : 'default', this.scope_block ?? this.block);
+				return false;
+			}
+			case 'ClassDeclaration': {
+				if (flag(st, 'declare')) return false;
+				const id = get(st, 'id');
+				if (id) this.declare(text(id, 'name'));
+				this.walk_class(st, id ? text(id, 'name') : 'default');
+				return false;
+			}
+			case 'ReturnStatement': {
+				const a = get(st, 'argument');
+				if (a) this.walk_expr(a);
+				return true;
+			}
+			case 'ThrowStatement': {
+				const a = get(st, 'argument');
+				if (a) this.walk_expr(a);
+				this.op('throw', st.start);
+				return true;
+			}
+			case 'BreakStatement':
+			case 'ContinueStatement':
+				return true;
+			case 'BlockStatement':
+				return this.walk_statements(list(st, 'body'), false);
+			case 'IfStatement': {
+				const test = get(st, 'test')!;
+				this.walk_expr(test);
+				this.op('branch', test.start);
+				this.walk_branch(get(st, 'consequent')!);
+				const alt = get(st, 'alternate');
+				if (alt) this.walk_branch(alt);
+				return true;
+			}
+			case 'ForStatement': {
+				const init = get(st, 'init');
+				if (init) {
+					if (init.type === 'VariableDeclaration') this.walk_var_decl(init);
+					else this.walk_expr(init);
+				}
+				const test = get(st, 'test');
+				if (test) {
+					const b = this.expr_block(test);
+					this.op('branch', test.start, 1, b);
+				}
+				const update = get(st, 'update');
+				if (update) this.expr_block(update);
+				this.walk_branch(get(st, 'body')!);
+				return true;
+			}
+			case 'WhileStatement': {
+				const test = get(st, 'test')!;
+				const b = this.expr_block(test);
+				this.op('branch', test.start, 1, b);
+				this.walk_branch(get(st, 'body')!);
+				return true;
+			}
+			case 'DoWhileStatement': {
+				this.walk_branch(get(st, 'body')!);
+				const test = get(st, 'test')!;
+				const b = this.expr_block(test);
+				this.op('branch', test.start, 1, b);
+				return true;
+			}
+			case 'ForInStatement':
+			case 'ForOfStatement':
+				this.walk_for_in_of(st);
+				return true;
+			case 'SwitchStatement': {
+				this.walk_expr(get(st, 'discriminant')!);
+				const prev = this.block;
+				for (const c of nodes(st, 'cases')) {
+					const test = get(c, 'test');
+					if (test) {
+						const b = this.expr_block(test);
+						this.op('compare', test.start, 1, b);
+					}
+					const cons = nodes(c, 'consequent');
+					if (cons.length > 0) {
+						this.start_block_at(cons[0].start, cons[0].start);
+						this.walk_statements(cons, false);
+					}
+					this.block = prev;
+				}
+				return true;
+			}
+			case 'TryStatement': {
+				this.walk_branch(get(st, 'block')!);
+				const handler = get(st, 'handler');
+				if (handler) {
+					const param = get(handler, 'param');
+					this.walk_branch(get(handler, 'body')!, this.resume_prefix(), () => {
+						if (param) this.walk_pattern(param, 'declare');
+					});
+				}
+				const fin = get(st, 'finalizer');
+				if (fin) this.walk_branch(fin, this.resume_prefix());
+				return true;
+			}
+			case 'LabeledStatement':
+				return this.walk_statement(get(st, 'body')!);
+			case 'WithStatement':
+				this.walk_expr(get(st, 'object')!);
+				return this.walk_statement(get(st, 'body')!);
+			case 'ExportNamedDeclaration': {
+				const d = get(st, 'declaration');
+				return d ? this.walk_statement(d) : false;
+			}
+			case 'ExportDefaultDeclaration': {
+				const d = get(st, 'declaration')!;
+				if (d.type === 'FunctionDeclaration' || d.type === 'FunctionExpression') {
+					if (!get(d, 'body')) return false;
+					const id = get(d, 'id');
+					if (id) this.declare(text(id, 'name'));
+					this.walk_function(d, id ? text(id, 'name') : 'default', this.scope_block ?? this.block);
+				} else if (d.type === 'ClassDeclaration' || d.type === 'ClassExpression') {
+					const id = get(d, 'id');
+					if (id) this.declare(text(id, 'name'));
+					this.walk_class(d, id ? text(id, 'name') : 'default');
+				} else if (!d.type.startsWith('TS')) {
+					this.walk_expr(d, 'default');
+				}
+				return false;
+			}
+			case 'TSExportAssignment': {
+				const e = get(st, 'expression');
+				if (e) this.walk_expr(e);
+				return false;
+			}
+			case 'ImportDeclaration':
+			case 'ExportAllDeclaration':
+			case 'EmptyStatement':
+			case 'DebuggerStatement':
+				return false;
+			default:
+				if (st.type.startsWith('TS')) return false;
+				this.walk_any(st);
+				return false;
+		}
+	}
+
+	walk_var_decl(decl: Node): void {
+		for (const d of nodes(decl, 'declarations')) {
+			const id = get(d, 'id')!;
+			const init = get(d, 'init');
+			this.walk_pattern(id, 'declare');
+			if (init) {
+				this.walk_expr(init, id.type === 'Identifier' ? text(id, 'name') : undefined);
+				this.op('assign', d.start);
+			}
+		}
+	}
+
+	walk_for_in_of(st: Node): void {
+		const of = st.type === 'ForOfStatement';
+		const right = get(st, 'right')!;
+		const left = get(st, 'left')!;
+		const f = this.fn;
+		const is_await = flag(st, 'await') && f.framed && f.meta.async;
+		// Outer edits are created before inner ones (see the edit-order note at the top): the
+		// resume after the loop must land outside braces the body may get.
+		if (is_await) {
+			this.close(st.end, () => `;${this.n.R}.resume_if(${this.n.r});`);
+			this.open(right.start, () => `${this.n.R}.for_await(${this.n.r},`);
+			this.close(right.end, () => ')');
+		}
+		this.walk_expr(right);
+		if (of) this.op('iter_init', right.start);
+		this.walk_branch(get(st, 'body')!, is_await ? this.resume_prefix() : undefined, () => {
+			// The iterator protocol step of each iteration is a hidden cost of the body block.
+			this.op(of ? 'iter_step' : 'forin_step', left.start);
+			if (left.type === 'VariableDeclaration') {
+				for (const d of nodes(left, 'declarations')) this.walk_pattern(get(d, 'id')!, 'declare');
+			} else {
+				this.walk_pattern(left, 'assign');
+			}
+		});
+	}
+
+	// ---------------------------------------------------------------- functions
+
+	walk_function(node: Node, name: string, site_block: BlockRec = this.block): FnRec {
+		const parent_fn = this.fn;
+		const prev_block = this.block;
+		const prev_scope = this.scope_block;
+		const is_arrow = node.type === 'ArrowFunctionExpression';
+		const is_async = flag(node, 'async');
+		const is_generator = flag(node, 'generator');
+		const closure = this.site('closure', node.start, 0, false, true, site_block);
+
+		const path = this.name_path(name);
+		const f = this.new_fn(path, 'function', node, {
+			async: is_async,
+			generator: is_generator,
+			arrow: is_arrow,
+			framed: true
+		});
+		closure.closure_of = f;
+		this.fn = f;
+		this.naming.push({ path, used: new Map() });
+		const own_id = get(node, 'id');
+		if (own_id && node.type === 'FunctionExpression') this.declare(text(own_id, 'name'));
+
+		const body = get(node, 'body')!;
+		const entry = this.new_block(body.start);
+		this.block = entry;
+		this.scope_block = entry;
+
+		const prologue: Array<() => string> = [];
+		const { R, d, r } = this.n;
+		for (const p of nodes(node, 'params')) {
+			if (p.type === 'TSParameterProperty') {
+				const inner = get(p, 'parameter');
+				if (inner) this.walk_pattern(inner, 'declare');
+				continue;
+			}
+			if (p.type === 'RestElement') {
+				const arg = get(p, 'argument')!;
+				const rest = this.site('rest', p.start, 0, true);
+				if (arg.type === 'Identifier') {
+					const nm = text(arg, 'name');
+					prologue.push(() => `${R}.rest(${d},${rest.index},${nm}.length);`);
+				}
+			}
+			this.walk_pattern(p, 'declare');
+		}
+		if (is_async && !is_generator) {
+			this.site('promise', node.start, PROMISE + ASYNC_FUNCTION_OBJECT, false);
+		}
+		const gen_site = is_generator ? this.site('generator', node.start, 0, false) : null;
+		if (!is_arrow) {
+			// Materialised only when the function already reads `arguments` (decided in finalize).
+			const args_site = this.site('arguments', node.start, 0, true, false);
+			args_site.arguments_of = f;
+			prologue.push(() =>
+				f.uses_arguments ? `${R}.args(${d},${args_site.index},arguments.length);` : ''
+			);
+		}
+
+		const framed_async = is_async || is_generator;
+		const enter = framed_async ? 'enter_async' : 'enter';
+		const exit = framed_async ? 'exit_async' : 'exit';
+		const fid = `${this.n.f}+${f.index}`;
+		const head = () =>
+			`const ${r}=${R}.${enter}(${fid});try{` +
+			this.counter_stmt(entry) +
+			prologue.map((p) => p()).join('');
+		const tail = () => `}finally{${R}.${exit}(${r})}`;
+
+		if (body.type === 'BlockStatement') {
+			const stmts = nodes(body, 'body');
+			let first = 0;
+			while (first < stmts.length && typeof stmts[first].directive === 'string') first++;
+			const at = first > 0 ? stmts[first - 1].end : body.start + 1;
+			this.open(at, head);
+			this.close(body.end - 1, tail);
+			this.walk_statements(stmts.slice(first), false);
+		} else {
+			const arrow = this.code.lastIndexOf('=>', body.start);
+			this.open(arrow + 2, () => '{' + head() + 'return(');
+			this.close(node.end, () => ')' + tail() + '}');
+			this.walk_expr(body);
+		}
+
+		if (gen_site) gen_site.meta.bytes = generator_bytes(f.declared.size);
+
+		this.naming.pop();
+		this.fn = parent_fn;
+		this.block = prev_block;
+		this.scope_block = prev_scope;
+		return f;
+	}
+
+	walk_class(node: Node, name: string): void {
+		const sup = get(node, 'superClass');
+		if (sup) this.walk_expr(sup);
+		this.site('class', node.start, CLASS, false);
+		const path = this.name_path(name);
+		this.naming.push({ path, used: new Map() });
+		const body = get(node, 'body')!;
+		let fields_fn: FnRec | null = null;
+		let field_count = 0;
+		let ctor_fields = 0;
+		for (const m of nodes(body, 'body')) {
+			const computed = flag(m, 'computed');
+			const key = get(m, 'key');
+			if (computed && key) this.walk_expr(key);
+			const is_static = flag(m, 'static');
+			if (m.type === 'MethodDefinition') {
+				const value = get(m, 'value');
+				if (!value || !get(value, 'body')) continue;
+				const kind = text(m, 'kind');
+				let nm = kind === 'constructor' ? 'constructor' : this.key_name(key, computed);
+				if (kind === 'get' || kind === 'set') nm = `${kind} ${nm}`;
+				if (is_static) nm = `static ${nm}`;
+				this.walk_function(value, nm);
+				if (kind === 'constructor') ctor_fields = count_this_writes(get(value, 'body')!);
+			} else if (m.type === 'PropertyDefinition' || m.type === 'AccessorProperty') {
+				if (flag(m, 'declare')) continue;
+				const value = get(m, 'value');
+				const nm = this.key_name(key, computed);
+				if (!is_static) field_count++;
+				if (!value) continue;
+				if (is_static) {
+					// evaluated once, when the class is defined: part of the enclosing block
+					this.walk_expr(value, nm);
+					continue;
+				}
+				// Instance field initialisers run on every construction: one pseudo-function per class.
+				if (!fields_fn)
+					fields_fn = this.new_fn(`${path} > <fields>`, 'fields', node, { framed: false });
+				const prev_fn = this.fn;
+				const prev_block = this.block;
+				this.fn = fields_fn;
+				this.expr_block(value, nm);
+				this.fn = prev_fn;
+				this.block = prev_block;
+			} else if (m.type === 'StaticBlock') {
+				const prev = this.block;
+				const brace = this.code.indexOf('{', m.start);
+				this.start_block_at(brace + 1, m.start);
+				this.walk_statements(list(m, 'body'), false);
+				this.block = prev;
+			}
+		}
+		if (name) this.class_fields.set(name, field_count + ctor_fields);
+		this.naming.pop();
+	}
+
+	// ---------------------------------------------------------------- patterns
+
+	walk_pattern(node: Node, mode: 'declare' | 'assign'): void {
+		switch (node.type) {
+			case 'Identifier':
+				if (mode === 'declare') this.declare(text(node, 'name'));
+				else this.ref(text(node, 'name'));
+				return;
+			case 'ObjectPattern':
+				for (const p of nodes(node, 'properties')) {
+					if (p.type === 'RestElement') {
+						this.site('object', p.start, object_bytes(0), false);
+						this.walk_pattern(get(p, 'argument')!, mode);
+						continue;
+					}
+					const key = get(p, 'key');
+					if (flag(p, 'computed') && key) this.walk_expr(key);
+					this.op('prop_read', p.start);
+					this.walk_pattern(get(p, 'value')!, mode);
+				}
+				return;
+			case 'ArrayPattern': {
+				this.op('iter_init', node.start);
+				for (const e of list(node, 'elements')) {
+					if (!e) continue;
+					this.op('iter_step', e.start);
+					if (e.type === 'RestElement') this.site('array', e.start, array_bytes(0), false);
+					this.walk_pattern(e, mode);
+				}
+				return;
+			}
+			case 'AssignmentPattern': {
+				const left = get(node, 'left')!;
+				this.walk_pattern(left, mode);
+				this.op('compare', node.start);
+				this.expr_block(
+					get(node, 'right')!,
+					left.type === 'Identifier' ? text(left, 'name') : undefined
+				);
+				return;
+			}
+			case 'RestElement':
+				this.walk_pattern(get(node, 'argument')!, mode);
+				return;
+			case 'MemberExpression':
+				this.walk_expr(get(node, 'object')!);
+				if (flag(node, 'computed')) this.walk_expr(get(node, 'property')!);
+				this.op('prop_write', node.start);
+				return;
+			default:
+				if (TS_EXPRESSION_WRAPPERS.has(node.type)) {
+					this.walk_pattern(get(node, 'expression')!, mode);
+					return;
+				}
+				this.walk_any(node);
+		}
+	}
+
+	// ---------------------------------------------------------------- expressions
+
+	alloc_site(kind: SiteKind, offset: number, bytes: number, dynamic: boolean): SiteRec {
+		return this.site(kind, offset, bytes, dynamic);
+	}
+
+	walk_expr(node: Node, hint?: string): void {
+		switch (node.type) {
+			case 'Identifier':
+				this.ref(text(node, 'name'));
+				return;
+			case 'Literal':
+				if (node.regex) this.alloc_site('regexp', node.start, REGEXP, false);
+				return;
+			case 'ThisExpression':
+			case 'Super':
+			case 'MetaProperty':
+			case 'PrivateIdentifier':
+				return;
+			case 'TemplateLiteral':
+				this.walk_template(node, true);
+				return;
+			case 'TaggedTemplateExpression':
+				this.walk_expr(get(node, 'tag')!);
+				this.walk_template(get(node, 'quasi')!, false);
+				this.op('call', node.start);
+				return;
+			case 'ArrayExpression':
+				this.walk_array(node);
+				return;
+			case 'ObjectExpression':
+				this.walk_object(node, hint);
+				return;
+			case 'FunctionExpression':
+			case 'ArrowFunctionExpression': {
+				const id = get(node, 'id');
+				this.walk_function(node, hint ?? (id ? text(id, 'name') : '<anonymous>'));
+				return;
+			}
+			case 'ClassExpression': {
+				const id = get(node, 'id');
+				this.walk_class(node, hint ?? (id ? text(id, 'name') : '<class>'));
+				return;
+			}
+			case 'CallExpression':
+				this.walk_expr(get(node, 'callee')!);
+				this.walk_call_tail(node);
+				return;
+			case 'NewExpression': {
+				const callee = get(node, 'callee')!;
+				this.walk_expr(callee);
+				this.walk_args(node, this.callee_name(callee));
+				this.op('new', node.start);
+				const site = this.alloc_site('new', node.start, object_bytes(0), false);
+				site.new_name = callee.type === 'Identifier' ? text(callee, 'name') : null;
+				return;
+			}
+			case 'MemberExpression':
+				this.walk_expr(get(node, 'object')!);
+				if (flag(node, 'computed')) this.walk_expr(get(node, 'property')!);
+				this.op('prop_read', get(node, 'property')!.start);
+				return;
+			case 'ChainExpression':
+				this.walk_chain(node);
+				return;
+			case 'AssignmentExpression':
+				this.walk_assign(node);
+				return;
+			case 'UpdateExpression': {
+				const arg = get(node, 'argument')!;
+				if (arg.type === 'MemberExpression') {
+					this.walk_expr(get(arg, 'object')!);
+					if (flag(arg, 'computed')) this.walk_expr(get(arg, 'property')!);
+					this.op('prop_read', arg.start);
+					this.op('prop_write', arg.start);
+				} else {
+					this.walk_pattern(arg, 'assign');
+				}
+				this.op('update', node.start);
+				return;
+			}
+			case 'UnaryExpression': {
+				const arg = get(node, 'argument')!;
+				if (text(node, 'operator') === 'delete' && arg.type === 'MemberExpression') {
+					this.walk_expr(get(arg, 'object')!);
+					if (flag(arg, 'computed')) this.walk_expr(get(arg, 'property')!);
+					this.op('prop_write', node.start);
+				} else {
+					this.walk_expr(arg);
+				}
+				this.op('unary', node.start);
+				return;
+			}
+			case 'BinaryExpression':
+				this.walk_binary(node, false);
+				return;
+			case 'LogicalExpression':
+				this.walk_expr(get(node, 'left')!);
+				this.op('logical', node.start);
+				this.expr_block(get(node, 'right')!, hint);
+				return;
+			case 'ConditionalExpression':
+				this.walk_expr(get(node, 'test')!);
+				this.op('branch', node.start);
+				this.expr_block(get(node, 'consequent')!, hint);
+				this.expr_block(get(node, 'alternate')!, hint);
+				return;
+			case 'SequenceExpression':
+				for (const e of nodes(node, 'expressions')) this.walk_expr(e);
+				return;
+			case 'AwaitExpression':
+				this.walk_await(node);
+				return;
+			case 'YieldExpression':
+				this.walk_yield(node);
+				return;
+			case 'ImportExpression':
+				this.walk_expr(get(node, 'source')!);
+				this.op('call', node.start);
+				return;
+			default:
+				if (TS_EXPRESSION_WRAPPERS.has(node.type)) {
+					this.walk_expr(get(node, 'expression')!, hint);
+					return;
+				}
+				if (node.type.startsWith('TS')) return;
+				this.walk_any(node);
+		}
+	}
+
+	walk_any(node: Node): void {
+		for (const key in node) {
+			if (SKIP_KEYS.has(key)) continue;
+			const v = node[key];
+			if (Array.isArray(v)) {
+				for (const x of v) {
+					if (x && typeof x === 'object' && 'type' in x) this.walk_expr(x as Node);
+				}
+			} else if (v && typeof v === 'object' && 'type' in v) {
+				this.walk_expr(v as Node);
+			}
+		}
+	}
+
+	walk_template(node: Node, allocates: boolean): void {
+		const exprs = nodes(node, 'expressions');
+		for (const e of exprs) this.walk_expr(e);
+		if (exprs.length === 0) return;
+		this.op('template', node.start, exprs.length);
+		if (!allocates) return;
+		const s = this.alloc_site('string', node.start, 0, true);
+		this.open(node.start, () => `${this.n.R}.str(${this.n.d},${s.index},`);
+		this.close(node.end, () => ')');
+	}
+
+	walk_array(node: Node): void {
+		const elements = list(node, 'elements');
+		let fixed = 0;
+		let has_spread = false;
+		for (const e of elements) {
+			if (e && e.type === 'SpreadElement') has_spread = true;
+			else fixed++;
+		}
+		const site = this.alloc_site(
+			has_spread ? 'spread_array' : 'array',
+			node.start,
+			array_bytes(fixed),
+			has_spread
+		);
+		for (const e of elements) {
+			if (!e) continue;
+			if (e.type === 'SpreadElement') {
+				const arg = get(e, 'argument')!;
+				this.walk_expr(arg);
+				this.op('iter_init', e.start);
+				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${site.index},`);
+				this.close(arg.end, () => ')');
+			} else {
+				this.walk_expr(e);
+			}
+		}
+	}
+
+	walk_object(node: Node, hint?: string): void {
+		const props = nodes(node, 'properties');
+		let fixed = 0;
+		let has_spread = false;
+		for (const p of props) {
+			if (p.type === 'SpreadElement') has_spread = true;
+			else fixed++;
+		}
+		const site = this.alloc_site(
+			has_spread ? 'spread_object' : 'object',
+			node.start,
+			object_bytes(fixed),
+			has_spread
+		);
+		const pushed = hint !== undefined;
+		if (hint !== undefined) this.naming.push({ path: this.name_path(hint), used: new Map() });
+		for (const p of props) {
+			if (p.type === 'SpreadElement') {
+				const arg = get(p, 'argument')!;
+				this.walk_expr(arg);
+				this.open(arg.start, () => `${this.n.R}.spread_obj(${this.n.d},${site.index},`);
+				this.close(arg.end, () => ')');
+				continue;
+			}
+			const computed = flag(p, 'computed');
+			const key = get(p, 'key');
+			if (computed && key) this.walk_expr(key);
+			const value = get(p, 'value')!;
+			const kind = text(p, 'kind');
+			let nm = this.key_name(key, computed);
+			if (kind === 'get' || kind === 'set') nm = `${kind} ${nm}`;
+			this.walk_expr(value, nm);
+		}
+		if (pushed) this.naming.pop();
+	}
+
+	walk_args(call: Node, callee: string): void {
+		const args = list(call, 'arguments');
+		for (let i = 0; i < args.length; i++) {
+			const a = args[i];
+			if (!a) continue;
+			if (a.type === 'SpreadElement') {
+				const arg = get(a, 'argument')!;
+				this.walk_expr(arg);
+				this.op('iter_init', a.start);
+				const s = this.site('spread_args', a.start, 0, true, false);
+				this.open(arg.start, () => `${this.n.R}.spread_iter(${this.n.d},${s.index},`);
+				this.close(arg.end, () => ')');
+			} else {
+				this.walk_expr(a, `${callee}:${i}`);
+			}
+		}
+	}
+
+	/** Everything of a call except its callee: built-in site marking, arguments, `.bind`. */
+	walk_call_tail(call: Node): void {
+		const callee = get(call, 'callee')!;
+		const name = this.callee_name(callee);
+		const args = nodes(call, 'arguments');
+		const is_member = callee.type === 'MemberExpression' && !flag(callee, 'computed');
+		if ((is_member || callee.type === 'Identifier') && this.builtin_names.has(name)) {
+			const at = this.pos.original(callee.end);
+			const k = this.bsites.length;
+			this.bsites.push({
+				fn: this.fn.index,
+				block: this.block.id,
+				line: at.line,
+				col: at.col,
+				name
+			});
+			const base = this.n.b;
+			if (args.length === 0) {
+				this.add_zero_arg(call, () => `...${this.n.R}.site_zero(${base}+${k})`);
+			} else {
+				// The site is set after every argument is evaluated, right before the call.
+				const last = args[args.length - 1];
+				const target = last.type === 'SpreadElement' ? get(last, 'argument')! : last;
+				this.open(target.start, () => `${this.n.R}.site_last(${base}+${k},`);
+				this.close(target.end, () => ')');
+			}
+		}
+		if (is_member && name === 'bind') {
+			this.alloc_site('bound', call.start, bound_bytes(Math.max(0, args.length - 1)), false);
+		}
+		this.walk_args(call, name);
+		this.op('call', callee.end);
+	}
+
+	walk_chain(chain: Node): void {
+		const links: Node[] = [];
+		let cur = get(chain, 'expression')!;
+		while (cur.type === 'MemberExpression' || cur.type === 'CallExpression') {
+			links.push(cur);
+			cur = cur.type === 'MemberExpression' ? get(cur, 'object')! : get(cur, 'callee')!;
+		}
+		links.reverse();
+		const prev = this.block;
+		this.walk_expr(cur);
+		const { R, c } = this.n;
+		for (const link of links) {
+			if (flag(link, 'optional')) {
+				this.op('compare', link.start);
+				const b = this.new_block(link.start);
+				if (link.type === 'MemberExpression') {
+					const obj = get(link, 'object')!;
+					this.open(obj.start, () => `${R}.opt(${c},${b.id},${this.price(b)},`);
+					this.close(obj.end, () => ')');
+				} else {
+					const args = nodes(link, 'arguments');
+					if (args.length > 0) {
+						const a0 = args[0].type === 'SpreadElement' ? get(args[0], 'argument')! : args[0];
+						this.open(a0.start, () => `(${this.counter_expr(b)},`);
+						this.close(a0.end, () => ')');
+					} else {
+						this.add_zero_arg(link, () => `...${R}.z(${c},${b.id},${this.price(b)})`);
+					}
+				}
+				this.block = b;
+			}
+			if (link.type === 'MemberExpression') {
+				if (flag(link, 'computed')) this.walk_expr(get(link, 'property')!);
+				this.op('prop_read', get(link, 'property')!.start);
+			} else {
+				this.walk_call_tail(link);
+			}
+		}
+		this.block = prev;
+	}
+
+	walk_assign(node: Node): void {
+		const op = text(node, 'operator');
+		const left = get(node, 'left')!;
+		const right = get(node, 'right')!;
+		let hint: string | undefined;
+		if (left.type === 'Identifier') hint = text(left, 'name');
+		else if (left.type === 'MemberExpression' && !flag(left, 'computed'))
+			hint = text(get(left, 'property')!, 'name');
+		if (left.type === 'MemberExpression') {
+			this.walk_expr(get(left, 'object')!);
+			if (flag(left, 'computed')) this.walk_expr(get(left, 'property')!);
+			if (op !== '=') this.op('prop_read', left.start);
+			this.op('prop_write', get(left, 'property')!.start);
+		} else {
+			this.walk_pattern(left, 'assign');
+		}
+		this.op('assign', node.start);
+		if (op === '&&=' || op === '||=' || op === '??=') {
+			this.op('logical', node.start);
+			this.expr_block(right, hint);
+			return;
+		}
+		if (op === '+=' && is_string_expr(right)) {
+			this.op('concat', node.start);
+			const s = this.alloc_site('string', node.start, 0, true);
+			this.open(node.start, () => `${this.n.R}.str(${this.n.d},${s.index},`);
+			this.close(node.end, () => ')');
+		} else if (op !== '=') {
+			this.op('arith', node.start);
+		}
+		this.walk_expr(right, hint);
+	}
+
+	walk_binary(node: Node, inside_concat: boolean): void {
+		const op = text(node, 'operator');
+		const left = get(node, 'left')!;
+		const right = get(node, 'right')!;
+		const concat = op === '+' && is_string_expr(node);
+		if (concat && !inside_concat) {
+			const s = this.alloc_site('string', node.start, 0, true);
+			this.open(node.start, () => `${this.n.R}.str(${this.n.d},${s.index},`);
+			this.close(node.end, () => ')');
+		}
+		for (const side of [left, right]) {
+			if (concat && side.type === 'BinaryExpression' && text(side, 'operator') === '+')
+				this.walk_binary(side, true);
+			else if (side.type !== 'PrivateIdentifier') this.walk_expr(side);
+		}
+		if (concat) this.op('concat', node.start);
+		else if (ARITH.has(op)) this.op('arith', node.start);
+		else this.op('compare', node.start);
+	}
+
+	walk_await(node: Node): void {
+		const f = this.fn;
+		if (f.framed && f.meta.async) {
+			const { R, r } = this.n;
+			this.open(node.start, () => `${R}.resume(${r},`);
+			this.open(node.start + 5, () => ` ${R}.suspend(${r},`);
+			this.close(node.end, () => '))');
+		}
+		this.walk_expr(get(node, 'argument')!);
+		this.op('await', node.start);
+	}
+
+	walk_yield(node: Node): void {
+		const arg = get(node, 'argument');
+		const f = this.fn;
+		if (f.framed && f.meta.generator) {
+			const { R, r } = this.n;
+			this.open(node.start, () => `${R}.resume(${r},`);
+			if (arg) {
+				let at = node.start + 5;
+				if (flag(node, 'delegate')) at = this.code.indexOf('*', at) + 1;
+				this.open(at, () => ` ${R}.suspend(${r},`);
+				this.close(node.end, () => '))');
+			} else {
+				this.close(node.end, () => ` ${R}.suspend(${r},undefined))`);
+			}
+		}
+		if (arg) this.walk_expr(arg);
+		this.op('yield', node.start);
+	}
+
+	// ---------------------------------------------------------------- finalize
+
+	finalize(): ModuleMeta {
+		for (const s of this.sites) {
+			if (s.closure_of) s.meta.bytes = closure_bytes(captured(s.closure_of));
+			if (s.meta.kind === 'new') {
+				const known = s.new_name ? KNOWN_CONSTRUCTORS[s.new_name] : undefined;
+				const fields = s.new_name ? this.class_fields.get(s.new_name) : undefined;
+				s.meta.bytes = known ?? object_bytes(fields ?? 0);
+			}
+			if (s.arguments_of && s.arguments_of.uses_arguments && !s.meta.alloc) {
+				s.meta.alloc = true;
+				this.op_at_line('alloc', s.meta.line, 1, s.block);
+			}
+			if (s.meta.alloc && s.meta.bytes > 0) {
+				this.op_at_line('alloc_word', s.meta.line, s.meta.bytes / 4, s.block);
+			}
+		}
+		const blocks: BlockMeta[] = this.blocks.map((b) => {
+			const line_ops: number[] = [];
+			for (const [key, n] of b.line_ops)
+				if (n !== 0) line_ops.push(Math.floor(key / 64), key % 64, n);
+			return {
+				fn: b.fn.index,
+				index: b.index,
+				line: b.line,
+				col: b.col,
+				price: this.price(b),
+				ops: b.ops,
+				line_ops
+			};
+		});
+		return {
+			schema: META_SCHEMA,
+			id: this.opts.id,
+			file: this.pos.source ?? this.opts.filename,
+			prices_hash: this.opts.prices_hash,
+			functions: this.fns.map((f) => f.meta),
+			blocks,
+			sites: this.sites.map((s) => s.meta),
+			bsites: this.bsites
+		};
+	}
+}
+
+/** Variables a closure reads from an enclosing function scope (module scope costs no context). */
+function captured(f: FnRec): number {
+	let n = 0;
+	const free = free_refs(f);
+	for (const name of free) {
+		let a = f.parent;
+		while (a && a.meta.kind !== 'top') {
+			if (a.declared.has(name)) {
+				n++;
+				break;
+			}
+			a = a.parent;
+		}
+	}
+	return n;
+}
+
+const free_cache = new WeakMap<FnRec, Set<string>>();
+
+function free_refs(f: FnRec): Set<string> {
+	const hit = free_cache.get(f);
+	if (hit) return hit;
+	const out = new Set<string>();
+	for (const name of f.refs) if (!f.declared.has(name)) out.add(name);
+	free_cache.set(f, out);
+	return out;
+}
+
+function is_string_expr(node: Node): boolean {
+	if (node.type === 'Literal') return typeof node.value === 'string';
+	if (node.type === 'TemplateLiteral') return true;
+	if (node.type === 'BinaryExpression' && node.operator === '+') {
+		return is_string_expr(get(node, 'left')!) || is_string_expr(get(node, 'right')!);
+	}
+	return false;
+}
+
+/** Distinct `this.x =` writes in a constructor body (not crossing into nested non-arrow functions). */
+function count_this_writes(body: Node): number {
+	const names = new Set<string>();
+	const visit = (n: Node): void => {
+		if (n.type === 'FunctionExpression' || n.type === 'FunctionDeclaration') return;
+		if (n.type === 'AssignmentExpression') {
+			const left = get(n, 'left');
+			if (
+				left &&
+				left.type === 'MemberExpression' &&
+				!flag(left, 'computed') &&
+				get(left, 'object')?.type === 'ThisExpression'
+			) {
+				names.add(text(get(left, 'property')!, 'name'));
+			}
+		}
+		for (const key in n) {
+			if (SKIP_KEYS.has(key)) continue;
+			const v = n[key];
+			if (Array.isArray(v)) {
+				for (const x of v) if (x && typeof x === 'object' && 'type' in x) visit(x as Node);
+			} else if (v && typeof v === 'object' && 'type' in v) visit(v as Node);
+		}
+	};
+	visit(body);
+	return names.size;
+}
+
+/** Top-level bindings that are not exported (spec 7). let/var become live getters. */
+export function private_bindings(program: Node): Array<{ name: string; live: boolean }> {
+	const out = new Map<string, boolean>();
+	const exported = new Set<string>();
+	const names_of = (p: Node | null, acc: string[]): void => {
+		if (!p) return;
+		switch (p.type) {
+			case 'Identifier':
+				acc.push(text(p, 'name'));
+				return;
+			case 'ObjectPattern':
+				for (const q of nodes(p, 'properties')) {
+					names_of(q.type === 'RestElement' ? get(q, 'argument') : get(q, 'value'), acc);
+				}
+				return;
+			case 'ArrayPattern':
+				for (const e of list(p, 'elements')) names_of(e, acc);
+				return;
+			case 'AssignmentPattern':
+				names_of(get(p, 'left'), acc);
+				return;
+			case 'RestElement':
+				names_of(get(p, 'argument'), acc);
+				return;
+		}
+	};
+	for (const st of nodes(program, 'body')) {
+		if (st.type === 'FunctionDeclaration' && get(st, 'body') && get(st, 'id')) {
+			out.set(text(get(st, 'id')!, 'name'), false);
+		} else if (st.type === 'ClassDeclaration' && !flag(st, 'declare') && get(st, 'id')) {
+			out.set(text(get(st, 'id')!, 'name'), false);
+		} else if (st.type === 'VariableDeclaration' && !flag(st, 'declare')) {
+			const live = text(st, 'kind') !== 'const';
+			for (const d of nodes(st, 'declarations')) {
+				const acc: string[] = [];
+				names_of(get(d, 'id'), acc);
+				for (const nm of acc) out.set(nm, live);
+			}
+		} else if (st.type === 'ExportNamedDeclaration' && !get(st, 'source')) {
+			for (const s of nodes(st, 'specifiers')) {
+				const local = get(s, 'local');
+				if (local) exported.add(text(local, 'name'));
+			}
+		}
+	}
+	const res: Array<{ name: string; live: boolean }> = [];
+	for (const [name, live] of out) if (!exported.has(name)) res.push({ name, live });
+	return res;
+}
+
+function lang_of(filename: string): 'js' | 'jsx' | 'ts' | 'tsx' {
+	if (filename.endsWith('.tsx')) return 'tsx';
+	if (filename.endsWith('.ts') || filename.endsWith('.mts') || filename.endsWith('.cts'))
+		return 'ts';
+	if (filename.endsWith('.jsx')) return 'jsx';
+	return 'js';
+}
+
+export function instrument(code: string, opts: InstrumentOptions): InstrumentResult {
+	const parsed = parseSync(opts.filename, code, {
+		sourceType: 'module',
+		lang: opts.lang ?? lang_of(opts.filename),
+		preserveParens: false
+	});
+	if (parsed.errors.length > 0) {
+		throw new Error(`abax: cannot parse ${opts.filename}: ${parsed.errors[0].message}`);
+	}
+	const program = parsed.program as unknown as Node;
+	const ins = new Instrumenter(code, opts);
+	ins.run(program);
+	const meta = ins.finalize();
+
+	const s = new MagicString(code);
+	for (const e of ins.edits) {
+		if (e.open) s.appendRight(e.pos, e.text());
+		else s.prependLeft(e.pos, e.text());
+	}
+
+	if (opts.expose ?? true) {
+		const bindings = private_bindings(program);
+		if (!bindings.some((b) => b.name === '__abax')) {
+			const props = bindings.map((b) => (b.live ? `get ${b.name}(){return ${b.name}}` : b.name));
+			s.append(`\nexport const __abax={${props.join(',')}};\n`);
+		}
+	}
+
+	let map = s.generateMap({
+		hires: 'boundary',
+		source: opts.filename,
+		file: opts.filename,
+		includeContent: true
+	});
+	if (opts.input_map) {
+		const chained = remapping([map, opts.input_map] as Parameters<typeof remapping>[0], () => null);
+		map = chained as unknown as typeof map;
+	}
+	return { code: s.toString(), map, meta };
+}

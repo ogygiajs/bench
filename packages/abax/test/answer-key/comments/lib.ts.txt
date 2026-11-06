@@ -1,0 +1,24 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+/** Sum of the tag lengths of one row. */
+function score(row: Row): number {
+	let s = 0; // running total
+	for (const t of row.tags) {
+		// one step per tag
+		s += t.length;
+	}
+	return s;
+}
+
+// Scores in input order.
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	/* every row */
+	for (const r of rows) {
+		out.push(score(r));
+	}
+	return out;
+}
