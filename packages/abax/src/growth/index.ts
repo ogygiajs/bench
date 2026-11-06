@@ -38,6 +38,8 @@ export interface GrowthReport {
 
 export interface GrowthOptions extends LoadOptions {
 	sizes?: number[];
+	/** Only the cases that declare their own `scale` (default: every case, the rest scaled generically). */
+	scaled?: boolean;
 	log?: (line: string) => void;
 }
 
@@ -85,7 +87,8 @@ export async function grow_case(
 export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 	const sizes = opts.sizes ?? DEFAULT_SIZES;
 	const log = opts.log ?? (() => {});
-	const list = await load_cases(opts);
+	const loaded = await load_cases(opts);
+	const list = opts.scaled ? loaded.filter((c) => c.scale !== undefined) : loaded;
 	const m = new Measurer();
 	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
 	for (const c of list) {
