@@ -22,6 +22,36 @@ function is_plain(v: unknown): v is Obj {
 	return p === Object.prototype || p === null;
 }
 
+/**
+ * The keys of an object's own data properties. A getter is never read by the input walkers (a
+ * getter can throw, like a type-only phantom, or do work the case never asked for): copies keep it
+ * as the same getter, sizes count its key only.
+ */
+export function data_keys(o: object): string[] {
+	const out: string[] = [];
+	for (const key of Object.keys(o)) {
+		const d = Object.getOwnPropertyDescriptor(o, key);
+		if (d && 'value' in d) out.push(key);
+	}
+	return out;
+}
+
+/** Copy `from`'s own accessor properties onto `to` as they are (never read). */
+function copy_accessors(from: object, to: object): void {
+	for (const key of Object.keys(from)) {
+		const d = Object.getOwnPropertyDescriptor(from, key);
+		if (d && !('value' in d)) Object.defineProperty(to, key, d);
+	}
+}
+
+/** `{ ...o }` that never reads a getter: data properties copied, accessors kept as they are. */
+export function shallow_copy(o: Obj): Obj {
+	const out: Obj = {};
+	for (const key of data_keys(o)) out[key] = o[key];
+	copy_accessors(o, out);
+	return out;
+}
+
 /** Deep copy of arrays, plain objects, Map, Set and Date; anything else is shared. */
 export function clone<T>(v: T, seen = new Map<unknown, unknown>()): T {
 	if (v === null || typeof v !== 'object') return v;
@@ -49,7 +79,11 @@ export function clone<T>(v: T, seen = new Map<unknown, unknown>()): T {
 	if (is_plain(v)) {
 		const out: Obj = Object.create(Object.getPrototypeOf(v)) as Obj;
 		seen.set(v, out);
-		for (const key of Object.keys(v)) out[key] = clone(v[key], seen);
+		for (const key of Object.keys(v)) {
+			const d = Object.getOwnPropertyDescriptor(v, key);
+			if (d && !('value' in d)) Object.defineProperty(out, key, d);
+			else out[key] = clone(v[key], seen);
+		}
 		return out as T;
 	}
 	return v;
@@ -65,7 +99,7 @@ function same_keys(a: Obj, b: Obj): boolean {
 
 /** The property that links an object to a next object of the same shape, if any. */
 function chain_key(o: Obj): string | null {
-	for (const key of Object.keys(o)) {
+	for (const key of data_keys(o)) {
 		const v = o[key];
 		if (is_plain(v) && v !== o && same_keys(o, v)) return key;
 	}
@@ -101,7 +135,8 @@ function deepen(head: Obj, key: string, k: number): Obj {
 	for (let j = 0; j < k; j++) {
 		for (const n of nodes) {
 			const copy: Obj = {};
-			for (const p of Object.keys(n)) copy[p] = p === key ? undefined : clone(n[p]);
+			for (const p of data_keys(n)) copy[p] = p === key ? undefined : clone(n[p]);
+			copy_accessors(n, copy);
 			if (last) last[key] = copy;
 			else first = copy;
 			last = copy;
@@ -135,7 +170,8 @@ function scale(v: unknown, k: number, inside: boolean): unknown {
 		const link = chain_key(v);
 		if (link !== null) return deepen(v, link, k);
 		const out: Obj = Object.create(Object.getPrototypeOf(v)) as Obj;
-		for (const key of Object.keys(v)) out[key] = scale(v[key], k, false);
+		for (const key of data_keys(v)) out[key] = scale(v[key], k, false);
+		copy_accessors(v, out);
 		return out;
 	}
 	return v;
@@ -188,7 +224,9 @@ function size_of(v: unknown, seen: Set<unknown>, left: { n: number }): number {
 		n += keys.length;
 		for (const key of keys) {
 			if (left.n <= 0) break;
-			n += size_of((v as Obj)[key], seen, left);
+			// a getter counts as its key only: it is never read
+			const d = Object.getOwnPropertyDescriptor(v, key);
+			if (d && 'value' in d) n += size_of(d.value, seen, left);
 		}
 	} else {
 		n += 1;

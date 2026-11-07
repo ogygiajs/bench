@@ -11,6 +11,10 @@
  *   });
  */
 
+import type { GrammarOption } from './search/grammar.ts';
+
+export type { Grammar, GrammarName, GrammarOption } from './search/grammar.ts';
+
 export interface BenchOptions<T> {
 	setup?: () => T | Promise<T>;
 	teardown?: (ctx: T) => unknown;
@@ -19,6 +23,13 @@ export interface BenchOptions<T> {
 	 * the generic scaler cannot grow (a size given as a number, an input that must stay valid).
 	 */
 	scale?: (ctx: T, factor: number) => T;
+	/**
+	 * Worst-case search (`heisenbench search`): how the input's strings are built, so they are
+	 * edited as valid input. A built-in name (`html`, `markdown`, `url`, `js`, `json`, `text`), a
+	 * grammar object, or a map from input paths (`'page.body'`) to either. Undeclared strings get
+	 * the built-in grammar their text looks like.
+	 */
+	grammar?: GrammarOption;
 }
 
 export interface BenchCase<T = unknown> extends BenchOptions<T> {

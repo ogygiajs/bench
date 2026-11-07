@@ -53,7 +53,7 @@ code as it ships, nothing counted) next to the count:
 | Growth            | Is the case constant, linear, n log n, quadratic or worse in its input size?       |
 | Recorded growth   | Which function grows quadratically on its tests' real inputs, with no growth case? |
 | Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?      |
-| Worst-case search | Which input of the same size costs the most steps?                                 |
+| Worst-case search | Which input costs the most work per unit of input, and how does it grow?           |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
 
 [docs/layers.md](docs/layers.md) explains each one.
@@ -203,6 +203,7 @@ bench<T>(name: string, fn: (ctx: T) => unknown, options?: {
 	setup?: () => T | Promise<T>;     // outside the window, before every run
 	teardown?: (ctx: T) => unknown;   // outside the window, after every run
 	scale?: (ctx: T, factor: number) => T; // for `heisenbench growth`, when the generic scaler cannot grow ctx
+	grammar?: GrammarOption; // for `heisenbench search`: 'html', 'markdown', 'url', 'js', 'json', 'text', or { 'page.body': 'html' }
 });
 ```
 
@@ -286,7 +287,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
 | `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
 | `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
-| `heisenbench search <bench files>`                                                     | Mutates the input and keeps what costs more steps; reports the worst input found.                                  |
+| `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.              |
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
 | `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |
 | `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
@@ -382,7 +383,8 @@ only comparable on one V8.
   The seed prices understated the same change (+31%).
 - **Built-ins without a price cost one call.** `Array.prototype.push` is 4 steps whatever it does.
 - **Regular expressions are priced by input length.** A pattern that backtracks badly costs no more
-  steps than one that does not, and the worst-case search does not find it.
+  steps than one that does not in `heisenbench run`. Only the worst-case search counts
+  backtracking, on a model of V8's matcher; lookbehind, `\p{}` and the `v` flag are left to V8.
 - **The byte estimate misses what grows in place.** It covers allocations written in counted code
   and what priced built-ins return (`split`, `slice`, `map`, `JSON.parse`). The backing store
   that `push` grows is not in it. In the quick start, `rank` is estimated at 16 B and V8 allocates
@@ -411,7 +413,7 @@ only comparable on one V8.
   ([layers.md](docs/layers.md#real-traffic)).
 - **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes,
   leaks and the price audit run on main and nightly. The worst-case search runs on a PR only for
-  changed cases that declare a `setup`, within a 4 minute budget.
+  changed cases that declare a `setup`, within a 4 minute budget, and nightly on every case.
 
 ## How it compares
 
@@ -464,8 +466,8 @@ pass  engine/shape-order         planted  deopt in total:18, inline cache in tot
 pass  engine/shape-order-twin    no-op    nothing flagged
 pass  growth/constant-factor     no-op    no class change
 pass  growth/quadratic           planted  rank: linear -> quadratic
-pass  search/order               planted  worst/typical 10.64, flagged
-pass  search/count               planted  worst/typical 4.61, flagged
+pass  search/order               planted  worst/typical 11.25, flagged
+pass  search/count               planted  worst/typical 4.93, flagged
 pass  search/total               no-op    worst/typical 1.00, not flagged
 pass  app/cold-large             planted  configure: cold, shown (+774 steps/call)
 pass  app/cold-small             planted  configure: cold, suppressed (+5 steps/call)

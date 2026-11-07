@@ -33,6 +33,8 @@ export interface Grammar {
 	near: readonly string[];
 	/** Ways to wrap a node one level deeper: [before, after]. */
 	wraps: ReadonlyArray<readonly [string, string]>;
+	/** Whether a string is valid input: room made for a bigger edit keeps a valid input valid. */
+	valid?: (s: string) => boolean;
 }
 
 export type GrammarName = 'html' | 'markdown' | 'url' | 'js' | 'json' | 'text';
@@ -756,7 +758,15 @@ export const json: Grammar = {
 	wraps: [
 		['[', ']'],
 		['{"a":', '}']
-	]
+	],
+	valid: (s) => {
+		try {
+			JSON.parse(s);
+			return true;
+		} catch {
+			return false;
+		}
+	}
 };
 
 // ---------------------------------------------------------------- text

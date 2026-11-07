@@ -107,7 +107,8 @@ In this repository:
     then the base. The whole layer has 4 minutes; each search gets an even share of what is left,
     at most 30 seconds, and the cases the budget does not reach are counted as skipped. A case is
     flagged by Heisenbench's own rule: its worst input costs at least 4 times its typical one, and at
-    least twice the base's ratio.
+    least twice the base's ratio; or it never finishes and the base does; or its shrunk input grows
+    superlinearly and the base's does not ([layers.md](layers.md#worst-case-search)).
 11. **Growth from recorded calls** (`suites/ogygia/src/recorded.ts`), for the source files the PR
     changed: the packages are built (`pnpm build:lib`; the node tests import `dist/`), the
     functions of the changed files are the recorder's targets, together with their `dist/` twins
@@ -172,6 +173,16 @@ with every source file a target), and the summary lists what grows quadratically
 are closures or class methods, or their module does not load outside Vite), 1,116 of them decided,
 in 60 s of recording and 152 s of growing (6.2×10⁹ counted steps). Two recordings gave the same
 findings, and growing the same records twice the same report.
+
+The nightly run also searches every case that declares an input for its worst input
+(`--search all`, [layers.md](layers.md#worst-case-search)): one `heisenbench search` process per
+bench file on the head, within 30 minutes in all (`--search-budget`), and the summary lists only
+the findings. A main push does not. On ogygia main `01dc5b9` the 57 cases of its 11 bench files
+took 698 s on an M4 Max (729 s on a second run, with the same findings), more than half of it in
+`compiler.bench.ts` (381 s). That is more than the whole audit (480 to 504 s) and too much for every push; once
+a night it fits in the 30 minutes on a runner up to 2.5 times slower, and the measure job's limit
+is 150 minutes for the nightly run instead of 120. A file the budget does not reach is counted in
+the summary line.
 
 A main or nightly run also counts the real apps, in an `app-weights` job beside the full run
 (read-only like it, 60 minutes): it waits for the commit's pkg.pr.new build, builds the ogygia app
@@ -315,8 +326,9 @@ cat suites/ogygia/out/section.md
 Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones and trees, default
 `.work`, reused across runs), `--measure time,bytes,leaks|all|none`, `--time off`,
 `--weights app-weights.json` (rank a PR by those weights), `--real-weights real-weights.json` (and by
-real cost on that traffic), `--requests-per-day <n>`, `--search-budget <seconds>` (default
-240, `0` turns the search off). On an M4 Max,
+real cost on that traffic), `--requests-per-day <n>`, `--search changed|all|off` (default
+`changed` for a PR, `off` for a full run; the nightly run passes `all`), `--search-budget
+<seconds>` (default 240 for a PR, 1800 for a full run, `0` turns the search off). On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
 already installed.
 

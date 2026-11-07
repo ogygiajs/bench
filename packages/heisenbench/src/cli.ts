@@ -17,7 +17,7 @@ import { locate_findings, reusable_growth, run_audit } from './audit/index.ts';
 import { render_audit } from './audit/markdown.ts';
 import { render_recorded_growth, run_recorded_growth } from './growth/recorded.ts';
 import { alias_records, read_record_dir } from './coverage/replay-run.ts';
-import { run_search } from './search/index.ts';
+import { render_search, run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
 import { measure_command, measure_run, time_section } from './measure/cli.ts';
 import { app_command, app_diff_sections, diff_ranking } from './app/cli.ts';
@@ -49,8 +49,11 @@ Layers (each writes its section into --out, default heisenbench-report.json)
                                  every recorded function's steps over its input sizes
       [--modules a.ts,b.ts] [--alias built-to-source.json] [--cap 5e8] [--budget-steps n]
       [--root dir] [--out file] [--md file]
-  heisenbench search <bench files...>   the input of the same size that costs the most steps
+  heisenbench search <bench files...>   the input that costs the most work per unit of input:
+                                 shrunk, grown 1x to 8x, blamed by line
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
+      [--shrink 200] [--flag 4] [--guided on|off] [--regex on|off] [--root dir]
+      [--filter text] [--out file] [--md file]
   heisenbench audit <bench files...>    the prices checked against time at every growth size
       [--sizes 1,10,100] [--scaled on|off] [--repeats 5] [--time-ms 200] [--root dir]
       [--filter text] [--out file] [--md audit.md]
@@ -214,7 +217,19 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	search: {
-		values: [...BENCH, 'evals', 'budget-steps', 'budget-ms', 'seed', 'size-factor'],
+		values: [
+			...BENCH,
+			'evals',
+			'budget-steps',
+			'budget-ms',
+			'seed',
+			'size-factor',
+			'shrink',
+			'flag',
+			'guided',
+			'regex',
+			'md'
+		],
 		args: [1, MANY],
 		files: true
 	},
@@ -511,6 +526,12 @@ async function main(argv: string[]): Promise<number> {
 		};
 		const num = (k: string): number | undefined =>
 			flags.has(k) ? Number(flags.get(k)) : undefined;
+		const on_off = (k: string): boolean | undefined => {
+			const v = flags.get(k);
+			if (v === undefined) return undefined;
+			if (v !== 'on' && v !== 'off') throw new UsageError(`--${k} takes on or off`);
+			return v === 'on';
+		};
 		const info = { root, sha: flags.get('sha') ?? null };
 		if (cmd === 'health') {
 			const r = await engine_health({
@@ -563,9 +584,15 @@ async function main(argv: string[]): Promise<number> {
 			steps: num('budget-steps'),
 			ms: num('budget-ms'),
 			seed: num('seed'),
-			size_factor: num('size-factor')
+			size_factor: num('size-factor'),
+			shrink: num('shrink'),
+			flag: num('flag'),
+			guided: on_off('guided'),
+			regex: on_off('regex')
 		});
 		write_section(out, 'search', r, info);
+		const md = flags.get('md');
+		if (md) writeFileSync(md, render_search(r));
 		return r.cases.some((c) => c.error !== null) ? 1 : 0;
 	}
 	if (cmd === 'dts') {
