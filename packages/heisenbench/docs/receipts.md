@@ -64,7 +64,9 @@ and the function lists.
 2. **The root.** Its path is 200 characters long and 16 directories deep on every machine
    (directories are added and the last one padded). Code that walks or splits its own
    `import.meta.url` does work per character and per directory, and a checker's temp directory is
-   not the maker's.
+   not the maker's. The published Heisenbench is such code: its transform writes the runtime's
+   file URL into every module it makes, and `transform: a module of 20 functions` counts 1,636,997
+   steps under a 160-character root and 1,637,437 under a 200-character one.
 3. **The environment.** No `NODE_OPTIONS` from the caller; `NODE_ENV=production`, `TZ=UTC`,
    `LC_ALL=C`.
 4. **Each case alone.** The cases are listed once, then each case is counted in a process of its
@@ -83,13 +85,13 @@ then growth curve by curve, and prints the first difference by its place in the 
 
 ```
 heisenbench verify-receipt: heisenbench@0.0.0
-  ok   receipt  whole (sha256-19d182064fbd…)
+  ok   receipt  whole (sha256-f3fd7bbbc474…)
   NO   tarball  heisenbench@0.0.0 is not the receipt's tarball: sha512-jwcW3frPQeRo… vs sha512-DxwMyVMsy2GU… (counted anyway)
-  ok   engine   heisenbench 0.0.0, checkout … (…), the receipt's
+  ok   engine   heisenbench 0.0.0, checkout 184eee3262f3 (1d90a1c4e658), the receipt's
   ok   node     v26.4.0, the receipt's
   NO   counts   2 of 2 case(s) count differently
   NO   growth   1 of 1 growth curve(s) differ
-differs: case "transform: a module of 20 functions" (receipts/transform.bench.ts): totals.steps: 1636997.15625 vs 1636837.75
+differs: case "transform: a module of 20 functions" (receipts/transform.bench.ts): totals.steps: 1637437.15625 vs 1637277.75
 ```
 
 That is the receipt of `heisenbench@0.0.0` checked against its own tarball with one character
