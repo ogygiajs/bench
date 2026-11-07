@@ -290,6 +290,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
 | `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |
 | `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
+| `heisenbench weights import <profiles>`                                                | Weights of real traffic from production profiles; `diff --weights` then ranks findings by CPU time per day.        |
 | `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
 | `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
 | `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
@@ -403,6 +404,11 @@ only comparable on one V8.
 - **Coverage is low today.** ogygia's gate on PR #180: 1,524 of 8,234 functions (18.5%) have a
   measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
   app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
+- **A real cost rests on the bench's input looking like the traffic's.** A planted O(n) pass in
+  an O(1) function, priced from a sampled profile alone, read 43 times what the planted build
+  then measured. With the app scenarios' call counts as a second way, the two ways disagreed
+  1,756x and said so, and their range held the measured cost
+  ([layers.md](docs/layers.md#real-traffic)).
 - **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes,
   leaks and the price audit run on main and nightly. The worst-case search runs on a PR only for
   changed cases that declare a `setup`, within a 4 minute budget.

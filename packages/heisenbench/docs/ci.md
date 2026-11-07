@@ -97,7 +97,11 @@ In this repository:
    newest main run's, see [Full runs](#full-runs)) and ranks the changed functions by it: the
    change per call times the calls per unit of real work (`rank_changes`). Weights counted on
    another Node, V8, platform or steps-to-ns weights (`envMismatch`) are not used, and neither are
-   missing ones: the section says which, in one line.
+   missing ones: the section says which, in one line. When `heisenbench/main/real-weights.json`
+   is there too ([Real traffic](#real-traffic)), the section ranks by real cost instead: every
+   changed function and growth finding priced in CPU time per day on that traffic, with its range
+   and how much of the profiles mapped. Without the file nothing changes, and a file that does not
+   read is set aside.
 10. **Worst-case search.** `heisenbench search` on the cases with a changed function that declare an
     input (a static `setup` in the bench file), biggest change first, at most 8, on the PR tree and
     then the base. The whole layer has 4 minutes; each search gets an even share of what is left,
@@ -257,12 +261,44 @@ files, under `heisenbench/`:
 | `heisenbench/main/latest.json`            | The newest full run.                                       |
 | `heisenbench/main/app-weights.json`       | Real-app weights of the newest main run: what PRs rank by. |
 | `heisenbench/main/app-weights/<sha>.json` | Real-app weights of that main commit.                      |
+| `heisenbench/main/real-weights.json`      | Weights of real traffic, uploaded by the owner (optional). |
 
 Each run file is a `result.json` (`schema: "ogygia-heisenbench/1"`): `meta` (kind, PR, commits, the Heisenbench
 commit that counted, the Node version, the run URL, the layers measured), `selection`, the `head`
 and `base` reports, the `diff`, load errors, the time comparison and, for a PR, the weight ranking
 and the search. A weights file is `heisenbench-app-weights/1` plus `node` and `env`. The publish job only adds files
 under `heisenbench/`, and retries its push with a rebase when another run pushed first.
+
+## Real traffic
+
+No job makes the real-traffic weights: they come from the production servers, which this
+repository cannot see. The owner makes them and puts them on the results branch:
+
+1. Record profiles of production servers: `.cpuprofile` files (`node --cpu-prof`, or the inspector
+   over a window of traffic), or ogygia profiler reports (`/__profiler`, "Record the live server",
+   saved as `.json` or `.ogp`). Note how many requests each `.cpuprofile` covered; ogygia's reports
+   say it themselves.
+2. In a checkout of the build that served them (same commit, built the same way, with server
+   source maps), import them. Nothing about a request is kept, only function ids and numbers
+   ([layers.md](layers.md#real-traffic)):
+
+   ```bash
+   heisenbench weights import profiles/* --requests <n> --root . --path-map /srv/app=. --out real-weights.json
+   ```
+
+3. Check the coverage line it prints (the share of sampled time that mapped to counted functions),
+   then commit the file to the `results` branch as `heisenbench/main/real-weights.json`:
+
+   ```bash
+   git clone --branch results --single-branch --depth 1 https://github.com/ogygiajs/bench.git results
+   cp real-weights.json results/heisenbench/main/real-weights.json
+   git -C results add heisenbench/main/real-weights.json
+   git -C results commit -m "heisenbench: real traffic weights" && git -C results push
+   ```
+
+Every PR run after that reads it (`--real-weights`). Replace it when the traffic changes; delete
+it to go back to ranking by app weight. A run never fails on it: without the file the section is
+as before, and an unreadable one is set aside with a note.
 
 ## Running it locally
 
@@ -278,7 +314,8 @@ cat suites/ogygia/out/section.md
 
 Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones and trees, default
 `.work`, reused across runs), `--measure time,bytes,leaks|all|none`, `--time off`,
-`--weights app-weights.json` (rank a PR by those weights), `--search-budget <seconds>` (default
+`--weights app-weights.json` (rank a PR by those weights), `--real-weights real-weights.json` (and by
+real cost on that traffic), `--requests-per-day <n>`, `--search-budget <seconds>` (default
 240, `0` turns the search off). On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
 already installed.

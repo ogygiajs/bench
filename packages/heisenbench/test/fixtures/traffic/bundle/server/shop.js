@@ -1,0 +1,2 @@
+function e(e){return e.reduce((e,t)=>e+t.price*t.qty,0)}var t=class{items=[];add(e){this.items.push(e)}cheapest(){return[...this.items].sort((e,t)=>e.price-t.price)[0]}};export{t as Cart,e as total};
+//# sourceMappingURL=shop.js.map

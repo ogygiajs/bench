@@ -173,8 +173,10 @@ jobs:
         run: pnpm install --frozen-lockfile --filter '@bench/ogygia...' --config.confirmModulesPurge=false
 
       # A PR-style run ranks its changed functions by main's real-app weights (the app-weights job
-      # of a main run stores them): that one file of the results branch, read as data. A missing
-      # file or branch is said in one line of the section.
+      # of a main run stores them) and, when the owner has uploaded one, by the weights of real
+      # production traffic (`heisenbench/main/real-weights.json`, docs/ci.md "Real traffic"): those
+      # files of the results branch, read as data. A missing app weights file or branch is said in
+      # one line of the section; a missing real-traffic file changes nothing.
       - name: Fetch main's real-app weights
         if: needs.plan.outputs.base_sha != ''
         continue-on-error: true
@@ -182,7 +184,9 @@ jobs:
         with:
           ref: results
           path: _weights
-          sparse-checkout: heisenbench/main/app-weights.json
+          sparse-checkout: |
+            heisenbench/main/app-weights.json
+            heisenbench/main/real-weights.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -200,7 +204,8 @@ jobs:
         run: |
           set -euo pipefail
           node suites/ogygia/src/cli.ts --sha "$SHA" ${BASE_SHA:+--base "$BASE_SHA"} ${PR:+--pr "$PR"} \
-            ${BASE_SHA:+--weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/app-weights.json"} --search-budget 240 \
+            ${BASE_SHA:+--weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/app-weights.json"} \
+            ${BASE_SHA:+--real-weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/real-weights.json"} --search-budget 240 \
             --kind "$KIND" --work "$RUNNER_TEMP/heisenbench" --out suites/ogygia/out --run-url "$RUN_URL"
           cat suites/ogygia/out/section.md >> "$GITHUB_STEP_SUMMARY"
 
