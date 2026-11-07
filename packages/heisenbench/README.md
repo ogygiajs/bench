@@ -345,6 +345,7 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
   npx heisenbench run bench/ssr.bench.ts --conditions svelte --out report.json
   npx heisenbench run bench/client.bench.ts --svelte client --import bench/dom.ts --out report.json --append
   ```
+
 - Dependencies are counted like your own code, and reported under their package name and
   version: `acorn@8.18.0/dist/acorn.mjs > Parser`. Work a dependency does for your code is your
   code's work: ogygia's compiler case read 33 times less work after a fix while its wall time

@@ -17,7 +17,11 @@ const HEISENBENCH = fileURLToPath(new URL('../', import.meta.url));
 const CLI = join(HEISENBENCH, 'src/cli.ts');
 
 function heisenbench(args: string[], cwd: string) {
-	const r = spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: 'utf8', timeout: 120_000 });
+	const r = spawnSync(process.execPath, [CLI, ...args], {
+		cwd,
+		encoding: 'utf8',
+		timeout: 120_000
+	});
 	return { code: r.status, out: r.stdout + r.stderr };
 }
 
@@ -55,9 +59,12 @@ function project(): string {
 	return dir;
 }
 
-const read = (dir: string): Report => JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')) as Report;
+const read = (dir: string): Report =>
+	JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')) as Report;
 const client_runtime = (r: Report, name: string) =>
-	r.cases.find((c) => c.name === name)!.functions.some((f) => f.module.includes('/src/internal/client/'));
+	r.cases
+		.find((c) => c.name === name)!
+		.functions.some((f) => f.module.includes('/src/internal/client/'));
 
 test('--svelte client counts the client runtime, in the run and its plain-build children', () => {
 	const dir = project();
@@ -66,19 +73,36 @@ test('--svelte client counts the client runtime, in the run and its plain-build 
 	assert.equal(client_runtime(read(dir), 'counter · server'), false, 'server output by default');
 
 	const client = heisenbench(
-		['run', 'client.bench.ts', '--svelte', 'client', '--measure', 'time', '--time-ms', '20', '--out', 'r.json'],
+		[
+			'run',
+			'client.bench.ts',
+			'--svelte',
+			'client',
+			'--measure',
+			'time',
+			'--time-ms',
+			'20',
+			'--out',
+			'r.json'
+		],
 		dir
 	);
 	assert.equal(client.code, 0, client.out);
 	const r = read(dir);
 	const c = r.cases[0];
 	assert.equal(c.error, null);
-	assert.ok(client_runtime(r, 'counter · client'), 'client output, counted with the runtime it calls');
+	assert.ok(
+		client_runtime(r, 'counter · client'),
+		'client output, counted with the runtime it calls'
+	);
 	assert.ok(
 		c.functions.some((f) => f.path.endsWith('flushSync')),
 		"`svelte` resolved to the client runtime (the server's flushSync is not the one called)"
 	);
-	assert.ok((c.measure?.time?.samples ?? 0) > 0, 'the plain build compiled it the same way: ' + JSON.stringify(c.measure));
+	assert.ok(
+		(c.measure?.time?.samples ?? 0) > 0,
+		'the plain build compiled it the same way: ' + JSON.stringify(c.measure)
+	);
 
 	const bad = heisenbench(['run', 'client.bench.ts', '--svelte', 'browser'], dir);
 	assert.equal(bad.code, 2, bad.out);
@@ -87,7 +111,10 @@ test('--svelte client counts the client runtime, in the run and its plain-build 
 test('--append: a server run and a client run of one commit are one report', () => {
 	const dir = project();
 	assert.equal(heisenbench(['run', 'server.bench.ts', '--out', 'r.json'], dir).code, 0);
-	const a = heisenbench(['run', 'client.bench.ts', '--svelte', 'client', '--out', 'r.json', '--append'], dir);
+	const a = heisenbench(
+		['run', 'client.bench.ts', '--svelte', 'client', '--out', 'r.json', '--append'],
+		dir
+	);
 	assert.equal(a.code, 0, a.out);
 	assert.match(a.out, /appended to r\.json: 2 cases in all/);
 	assert.deepEqual(
@@ -95,10 +122,19 @@ test('--append: a server run and a client run of one commit are one report', () 
 		['counter · server', 'counter · client']
 	);
 	// again: the client case is replaced, not added twice
-	assert.equal(heisenbench(['run', 'client.bench.ts', '--svelte', 'client', '--out', 'r.json', '--append'], dir).code, 0);
+	assert.equal(
+		heisenbench(
+			['run', 'client.bench.ts', '--svelte', 'client', '--out', 'r.json', '--append'],
+			dir
+		).code,
+		0
+	);
 	assert.equal(read(dir).cases.length, 2);
 	// without --append the run starts the report again
-	assert.equal(heisenbench(['run', 'client.bench.ts', '--svelte', 'client', '--out', 'r.json'], dir).code, 0);
+	assert.equal(
+		heisenbench(['run', 'client.bench.ts', '--svelte', 'client', '--out', 'r.json'], dir).code,
+		0
+	);
 	assert.deepEqual(
 		read(dir).cases.map((c) => c.name),
 		['counter · client']

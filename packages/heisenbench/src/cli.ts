@@ -777,7 +777,8 @@ async function main(argv: string[]): Promise<number> {
 			throw new UsageError('--source-from counts only: it takes no --measure');
 		const out = flags.get('out') ?? 'heisenbench-report.json';
 		// read before the run writes it: the cases of an earlier run this one adds to
-		const before = flags.has('append') && existing_report_text(out) !== null ? read_report(out) : null;
+		const before =
+			flags.has('append') && existing_report_text(out) !== null ? read_report(out) : null;
 		const report = await run_benches({
 			files: positional,
 			root: flags.get('root'),
