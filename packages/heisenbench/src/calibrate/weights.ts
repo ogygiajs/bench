@@ -44,9 +44,68 @@ export interface Weights {
 	ns: Record<string, number>;
 	/** Families below this R^2 are time-led. */
 	time_led_below: number;
-	fit: { r2: number; points: number };
+	fit: { r2: number; points: number; spread?: FitSpread };
 	/** `file > family` -> fit of the family's points. */
 	families: Record<string, { r2: number | null; points: number }>;
+}
+
+/**
+ * How far the fit misses measured time on its own points, as the 10th, 50th and 90th percentile
+ * of measured / estimated ns (weight/cost.ts turns it into the range of a real-cost estimate):
+ *
+ *   absolute        every point: one estimate of some code's time
+ *   relative        two points of one family at different sizes, the ratio of their misses: the
+ *                   error of one estimate over another of the same code (a change over its base)
+ *   *_steps         the same with steps × the prices' step_ns instead of the fit, for numbers
+ *                   that come without units (growth curves)
+ */
+export interface FitSpread {
+	absolute: [number, number, number];
+	relative: [number, number, number];
+	absolute_steps: [number, number, number];
+	relative_steps: [number, number, number];
+}
+
+/** The ns one step takes (`calibration.step_ns` of the price file), or null when it has none. */
+export function prices_step_ns(prices: Prices): number | null {
+	const n = (prices as { calibration?: { step_ns?: unknown } }).calibration?.step_ns;
+	return typeof n === 'number' && n > 0 ? n : null;
+}
+
+/** Nearest-rank percentiles 10, 50 and 90 of `xs`, rounded to three decimals. */
+function deciles(xs: number[]): [number, number, number] {
+	const s = xs.filter((x) => Number.isFinite(x) && x > 0).sort((a, b) => a - b);
+	if (s.length === 0) return [1, 1, 1];
+	const at = (q: number) => Math.round(s[Math.max(0, Math.ceil(q * s.length) - 1)] * 1000) / 1000;
+	return [at(0.1), at(0.5), at(0.9)];
+}
+
+/** The spread of a fit (`ns`) over the points it was fitted on (see FitSpread). */
+export function fit_spread(
+	points: readonly CorpusPoint[],
+	ns: Record<string, number>,
+	prices: Prices,
+	step_ns: number | null
+): FitSpread {
+	const w = { ns } as Weights;
+	const miss = points.map((p) => p.ns / units_ns(p.units, w, prices, true));
+	const step_miss = points.map((p) => (step_ns ? p.ns / (p.steps * step_ns) : NaN));
+	const rel: number[] = [];
+	const rel_steps: number[] = [];
+	for (let i = 0; i < points.length; i++) {
+		for (let j = 0; j < points.length; j++) {
+			if (i === j || points[i].family !== points[j].family || points[i].name === points[j].name)
+				continue;
+			rel.push(miss[i] / miss[j]);
+			rel_steps.push(step_miss[i] / step_miss[j]);
+		}
+	}
+	return {
+		absolute: deciles(miss),
+		relative: deciles(rel),
+		absolute_steps: deciles(step_miss),
+		relative_steps: deciles(rel_steps)
+	};
 }
 
 export interface CorpusPoint {
@@ -187,7 +246,11 @@ export function fit_weights(
 		node: process.version,
 		ns,
 		time_led_below,
-		fit: { r2: Math.round(r2 * 1000) / 1000, points: points.length },
+		fit: {
+			r2: Math.round(r2 * 1000) / 1000,
+			points: points.length,
+			spread: fit_spread(points, ns, prices.prices, prices_step_ns(prices.prices))
+		},
 		families
 	};
 }
