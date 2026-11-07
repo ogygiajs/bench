@@ -1,0 +1,84 @@
+name: training-data
+
+# Builds a version of the labeled training dataset (packages/heisenbench/calibration/data/training.md)
+# on a fresh GitHub-hosted runner, where nothing else competes for the CPU while pairs are timed.
+# Run by hand only. The dataset comes back as the `training-data-<version>` artifact; commit it in
+# a PR (it is not committed from here).
+#
+# One job, so every pair is counted and timed on the same machine: the two sides of a pair are
+# timed in turns, so a label never compares two machines. The runner's load is recorded with every
+# group, and a group whose load rose above `retime_above` is timed again.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'dataset version to write (training-counts-<v>.json, training-times-<v>.json)'
+        type: string
+        default: '2'
+      from:
+        description: 'oldest ogygia commit of the history replay'
+        type: string
+        default: 3bff2999bf36c9fb9ae1cf3b7a9c04613cf0bd78
+      to:
+        description: 'newest ogygia commit of the history replay (its bench files count every commit)'
+        type: string
+        default: 01dc5b99c13cba0e30a96b0ff765865096a76dca
+      retime_above:
+        description: 'time a group again when the 1-minute load average went above this'
+        type: string
+        default: '3'
+
+permissions:
+  contents: read
+
+env:
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: pnpm install --frozen-lockfile
+      - name: Check the inputs
+        env:
+          VERSION: ${{ inputs.version }}
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          RETIME: ${{ inputs.retime_above }}
+        run: |
+          [[ "$VERSION" =~ ^[0-9]+$ ]] || { echo "::error::version must be a number"; exit 1; }
+          [[ "$FROM" =~ ^[0-9a-f]{40}$ && "$TO" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::from and to must be full commit shas"; exit 1; }
+          [[ "$RETIME" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::retime_above must be a number"; exit 1; }
+      - name: Count and time the pairs
+        env:
+          FROM: ${{ inputs.from }}
+          TO: ${{ inputs.to }}
+          RETIME: ${{ inputs.retime_above }}
+        run: |
+          nproc; uptime
+          node suites/ogygia/src/training.ts measure --planted --history \
+            --from "$FROM" --to "$TO" --work "$RUNNER_TEMP/training" --retime-above "$RETIME" \
+            2>&1 | tee "$RUNNER_TEMP/measure.log"
+      - name: Assemble the dataset
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/out"
+          node suites/ogygia/src/training.ts assemble --work "$RUNNER_TEMP/training" \
+            --out "$RUNNER_TEMP/out" --version "$VERSION"
+          ls -la "$RUNNER_TEMP/out"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: training-data-${{ inputs.version }}
+          path: |
+            ${{ runner.temp }}/out
+            ${{ runner.temp }}/measure.log
+          if-no-files-found: warn
