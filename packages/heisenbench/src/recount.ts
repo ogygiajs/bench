@@ -25,6 +25,27 @@ function has_units(r: Report, prices: Prices): boolean {
 	return r.cases.every((c) => c.functions.every((f) => f.units !== undefined));
 }
 
+/**
+ * One set of units (a line's, a function's) priced with `prices`, or null when the report did not
+ * keep what they charge for: a built-in whose price uses a size term the report's `unit_terms`
+ * lack. A report too old to recount as a whole still recounts every line that calls no such
+ * built-in, exactly (`heisenbench history` reads old runs this way).
+ */
+export function recount_units(
+	u: Units | undefined,
+	prices: Prices,
+	kept: readonly string[] | undefined
+): number | null {
+	if (u === undefined) return null;
+	const have = new Set(kept ?? []);
+	for (const k of Object.keys(u)) {
+		if (!k.startsWith('bi.')) continue;
+		const p = prices.builtins[k.slice(3, k.lastIndexOf('.'))];
+		for (const t of Object.keys(p?.terms ?? {})) if (!have.has(t)) return null;
+	}
+	return price_units(u, prices);
+}
+
 function pick(u: Units, keep: (key: string) => boolean): Units {
 	const out: Units = {};
 	for (const k of Object.keys(u)) if (keep(k)) out[k] = u[k];

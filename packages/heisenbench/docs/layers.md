@@ -20,6 +20,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Blame             | `heisenbench blame`                                  | counting | regressed cases, 60 recounts or 5 min      | no                   |
 | Upgrades          | `heisenbench upgrade`                                | counting | a package counted at another version       | no                   |
 | Upstream draft    | `heisenbench upstream draft`                         | counting | no (on demand)                             | no (on demand)       |
+| History blame     | `heisenbench history`                                | none     | no (on demand)                             | no (on demand)       |
 | Proof             | `heisenbench prove`                                  | counting | no (on demand)                             | no (on demand)       |
 | Mutation score    | `heisenbench mutate`                                 | counting | no                                         | nightly: all reached |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
@@ -1309,6 +1310,111 @@ said where to look instead: "has_lf_line_breaks_only holds 3% of the call's extr
 the script's input; the most is in
 `@sveltejs/acorn-typescript@1.0.13/index.js > adaptParser > EffectAdapter > updateContext`
 (+67,382)".
+
+## History blame
+
+`git blame` says who wrote a line. `heisenbench history` says who last changed what it costs,
+and by how much. That is often a commit that never touched the line: a caller that stopped
+calling it once per item.
+
+```bash
+heisenbench history packages/core/src/compiler/flags.ts:line_at --reports <runs> [--repo .] [--rev HEAD] [--out history.json] [--md history.md]
+```
+
+`--reports` takes report files or directories: one report per commit of the first-parent line
+of `--rev`. A report (`heisenbench run --out`) names its commit (`--sha`); a run file of the
+`results` branch (`result.json`, its report under `head`) also names the Heisenbench that counted
+it. A directory is read recursively, and a file named `<sha>.json` whose commit is not on the
+line is never parsed: the results branch keeps every PR's run too. The file and the function are
+named as git names them at `--rev`; the function is matched by its path, its last part
+(`line_at`) or a name it had before (`#ast_refs_local` finds `#referenced_names`, see below).
+
+**Following a line back.** From the newest run to the oldest, every line of the file is placed at
+the run before:
+
+1. `git blame -M -C <run before>..<run>`: a line that no commit in between wrote is blamed on the
+   run before, at its line and path there. Moves inside the file and moves or copies from another
+   file go through. Blaming only the range costs milliseconds; a full `-C` blame of a 3,000-line
+   file takes a second per commit.
+2. Its function. A function is the same function when its id is the same, or its place
+   (`context_path`, the id without the shape hash an edit changes), or it holds most of the lines
+   step 1 placed, or it has the same place in another module (a moved file), or a function inside
+   it matched (`#referenced_names > walk` was `#ast_refs_local > walk`, so `#referenced_names`
+   was `#ast_refs_local`). The lines of a matched function that blame did not place are paired
+   with its free lines by their text, in order (the Dice coefficient of their character pairs, 0.5
+   or more): an edited line keeps its history.
+3. Its hunk: what is left is paired by text inside each `git diff` hunk.
+
+A line with no partner was new at that run.
+
+**A change** is the line's steps after minus before, summed over the cases both runs counted with
+the same input. A case only one run has, or whose bench file (or a helper beside it) changed, is
+left out and named in the JSON: by their text as counting sees it, so a comment in a bench file
+changes nothing (cache/normalize.ts). Steps are exact, so any difference is a change. Runs counted
+with other prices are priced again from the units they keep (recount.ts), line by line when the
+whole report cannot be (a report from before the size terms were kept still recounts every line
+that calls no built-in whose price uses one); a line that cannot be priced makes its change
+"unpriced". A change of the counter (another Heisenbench or Node) is marked, and the newest change
+that is not marked is the one a line names. When runs are missing, a change names the commits
+between the two runs it saw.
+
+The terminal gets the file the way `git blame` prints it, with steps per call today (the line's
+steps over the calls of the function that counted it), the commit that last changed its cost and
+the change in front; then each function: its steps and calls today, its earlier ids, and every
+change. `--md` writes the lines that ran or changed and each function's timeline; `--out` writes
+all of it, with where each line was at every run.
+
+### On ogygia
+
+`suites/ogygia/src/history.ts` counts the newest first-parent commits of main with one set of
+bench files laid over each (the newest commit's, as the real-world check does), so a case a later
+PR added counts the old code too:
+
+```bash
+node suites/ogygia/src/history.ts --repo <ogygia clone> --to b46798f --max 20 --cache <dir> --out <runs>
+```
+
+The 20 commits up to `b46798f` (#165 to #187), counted at once on an M4 Max: 179 s, with 887 of
+1,083 cases reused from the cache and 196 counted (install and Node start take most of the rest).
+Then `heisenbench history` reads 20 runs of 62 cases (45 before #176 and 58 at it: the rest call
+classes that did not exist yet): 3 s for all 3,147 lines of the compiler's `transform.ts`.
+
+Its walk that asked, once per marked import, whether a name is used (`#ast_refs_local`, made one
+walk for all names in #186):
+
+```
+heisenbench history 'packages/core/src/compiler/region/transform.ts:#ast_refs_local' --reports <runs> --rev b46798f
+packages/core/src/compiler/region/transform.ts (#ast_refs_local) at b46798f90c26, 20 runs from 8f6fd29ca6d2
+
+steps/call  last change      Δ steps                   line
+                                                       1038  	#referenced_names(skip?: Set<SvelteNode>) {
+        29  01dc5b99 (#186)  new code +87              1039  		const names = new Set<string>();
+        15  01dc5b99 (#186)  -98% (-2,707)             1040  		const walk = (node: SvelteNode) => {
+         5  01dc5b99 (#186)  -91% (-172,688) [edited]  1041  			if (!node || typeof node !== 'object') return;
+    111.56  01dc5b99 (#186)  -89% (-3,096,628.23)      1048  			for (const k of Object.keys(node)) {
+     30.28  01dc5b99 (#186)  -89% (-840,828)           1049  				if (k === 'start' || k === 'end' || k === 'loc') continue;
+...
+packages/core/src/compiler/region/transform.ts > FileCompilation > #referenced_names > walk  830,999.69 steps, 3,338 calls today
+  was packages/core/src/compiler/region/transform.ts > FileCompilation > #ast_refs_local > walk
+  01dc5b99 (#186)  -87% (-5,546,456.92)  -> 830,999.69
+```
+
+And `flags.ts > line_at`, which counted the newlines from the top of the file for every flag call
+until #187 made it a binary search: its timeline is 206,510 self steps at every commit from #165
+to #186, then 1,260 at #187 (−99%, −205,250). Its new lines are new code of #187 and its return
+line is the old one, edited. Its case was added in #187: only counting the old commits with the
+new bench files gives it a history at all.
+
+The results branch alone holds 8 full runs of main in that span, counted by 7 Heisenbench commits:
+the history it gives puts the same −89% on the same lines at #186, marked "counter changed", and
+`line_at` has no history before #187. 6 of its 7 changes are marked.
+
+**Limits.** A line that is gone has no row: what a removed line cost shows in its function's
+timeline (206,490 of `line_at`'s 206,510 steps before #187 were on its removed loop line). A function no case ran at a
+commit has no timeline row there, and lines are followed through the functions that ran. The
+pairing by text can take a rewritten line for the line it replaced when they look alike; the
+pairing is marked `edited`. Steps per line come from the runs given: commits without a run are
+told apart only by the commits a change spans.
 
 ## Proving a faster version
 

@@ -35,6 +35,7 @@ import { prove_command } from './prove/cli.ts';
 import { contracts_command } from './contracts/cli.ts';
 import { upgrade_command } from './upgrade/cli.ts';
 import { upstream_command } from './upstream/cli.ts';
+import { history_command } from './history/cli.ts';
 import { feel_command } from './models/cli.ts';
 import type { CacheSummary } from './cache/index.ts';
 import { receipt_command, registry_command, verify_receipt_command } from './receipt/cli.ts';
@@ -74,6 +75,11 @@ Counting (the counting build)
                                  line and the upstream change (written to files, never posted)
       [--case text] [--function name] [--entry specifier#export] [--input generator.ts]
       [--redact a,b] [--time-ms 1000] [--out issue.md] [--repro repro.ts] [--work dir]
+  heisenbench history <file>[:<function>] --reports <dirs or files>   git blame for steps: each
+                                 line's steps per call today, the commit that last changed its
+                                 cost and by how much (followed through edits and moves), and each
+                                 function's timeline, from one report per first-parent commit
+      [--repo dir] [--rev HEAD] [--out history.json] [--md history.md]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -363,6 +369,8 @@ const SPECS: Record<string, Spec> = {
 		args: [2, 2],
 		files: true
 	},
+	// `<file>[:<function>]`, a path in git at --rev (not on disk)
+	history: { values: ['reports', 'repo', 'rev', 'out', 'md'], args: [1, 1] },
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
 	receipt: {
 		values: ['package', 'include', 'preload', 'root', 'npm', 'work', 'jobs', 'out'],
@@ -816,6 +824,7 @@ async function main(argv: string[]): Promise<number> {
 	if (cmd === 'receipt') return receipt_command(positional, flags);
 	if (cmd === 'verify-receipt') return verify_receipt_command(positional, flags);
 	if (cmd === 'registry') return registry_command(positional, flags);
+	if (cmd === 'history') return history_command(positional, flags);
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
