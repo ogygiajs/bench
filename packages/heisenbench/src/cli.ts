@@ -26,6 +26,7 @@ import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
 import { needs_bench_repo } from './own.ts';
 import { blame_command } from './blame/cli.ts';
+import { prove_command } from './prove/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -65,6 +66,17 @@ Layers (each writes its section into --out, default heisenbench-report.json)
       [--filter text] [--out file] [--md audit.md]
   heisenbench time <bench files...> --base dir --pr dir   both trees timed in one process, in turns
       [--repeats 5] [--time-ms 300] [--filter text] [--out heisenbench-time.json] [--md time.md]
+
+Proving a faster version (on demand, not in PR CI)
+  heisenbench prove <module> <function> --candidate <file> --records dir[,dir] [--bench files]
+                                 the candidate is accepted only when it behaves the same on every
+                                 recorded, grown and edge-case input and costs fewer steps
+      [--root dir] [--deps all|none|a,b] [--sizes 1,10,100] [--cap 1e10] [--variants 160]
+      [--edge shapes|all] [--seed 1] [--tolerance 5] [--tolerance-steps 256] [--setup-tolerance 200]
+      [--out heisenbench-prove.json] [--md file]
+  heisenbench prove <module> <function> --propose [--proposals 3] [--model claude-opus-5-5] [--send-inputs]
+                                 candidates proposed by a model (ANTHROPIC_API_KEY), each proven
+                                 the same way; only proven ones are reported, each with its diff
 
 Real apps and the measurement-source gate
   heisenbench weights <app-report.json...> [--out app-weights.json]
@@ -183,6 +195,8 @@ interface Spec {
 	args: [number, number];
 	/** The positional arguments are files that must exist (`calibrate`: after its subcommand). */
 	files?: boolean;
+	/** Options of this command that take no value. */
+	switches?: readonly string[];
 }
 
 const BENCH = ['root', 'filter', 'out', 'deps', 'sha'];
@@ -308,7 +322,30 @@ const SPECS: Record<string, Spec> = {
 		args: [1, MANY],
 		files: true
 	},
-	verify: { values: ['layers', 'filter', 'jobs', 'md', 'json'], args: [0, 0] }
+	verify: { values: ['layers', 'filter', 'jobs', 'md', 'json'], args: [0, 0] },
+	prove: {
+		values: [
+			'candidate',
+			'records',
+			'bench',
+			'root',
+			'deps',
+			'out',
+			'md',
+			'sizes',
+			'cap',
+			'variants',
+			'edge',
+			'seed',
+			'tolerance',
+			'tolerance-steps',
+			'setup-tolerance',
+			'proposals',
+			'model'
+		],
+		args: [2, 2],
+		switches: ['propose', 'send-inputs']
+	}
 };
 
 /** Options that take no value. */
@@ -332,13 +369,18 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	requests: 'positive',
 	'requests-per-day': 'positive',
 	'max-recounts': 'count',
-	'min-ratio': 'positive'
+	'min-ratio': 'positive',
+	variants: 'whole',
+	'tolerance-steps': 'whole',
+	'setup-tolerance': 'whole',
+	proposals: 'count'
 };
 
 const CHOICES: Record<string, readonly string[]> = {
 	state: ['fresh', 'shared'],
 	check: ['on', 'off'],
-	scaled: ['on', 'off']
+	scaled: ['on', 'off'],
+	edge: ['shapes', 'all']
 };
 
 function check_number(name: string, v: string): void {
@@ -388,7 +430,7 @@ function parse(cmd: string, argv: string[]): Parsed {
 		if (!a.startsWith('--')) throw new UsageError(`unknown option ${a}`);
 		const eq = a.indexOf('=');
 		const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
-		if (SWITCHES.has(name)) {
+		if (SWITCHES.has(name) || spec.switches?.includes(name)) {
 			flags.set(name, '');
 			continue;
 		}
@@ -507,6 +549,7 @@ async function main(argv: string[]): Promise<number> {
 	const app = await app_command(cmd, positional, flags);
 	if (app !== null) return app;
 	if (cmd === 'verify') return verify_command(flags);
+	if (cmd === 'prove') return prove_command(positional, flags);
 	const coverage = await coverage_command(cmd, positional, flags);
 	if (coverage !== null) return coverage;
 	if (cmd === 'diff') {
