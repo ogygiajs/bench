@@ -12,8 +12,11 @@
  * --weights <app-weights.json> (a PR: rank the changed functions by main's real-app weights; a
  * missing file is said in one line), --real-weights <real-weights.json> (with --weights: rank by
  * real cost on imported production traffic when the file is there; a missing one changes nothing),
- * --requests-per-day <n> (the real cost's traffic; default the profiles' rate), --search-budget <seconds> (a PR's worst-case search over the
- * changed cases that declare an input, both sides; default 240, 0 turns it off), --recorded
+ * --requests-per-day <n> (the real cost's traffic; default the profiles' rate), --search
+ * changed|all|off (the worst-case search: a PR's changed cases that declare an input, both sides,
+ * or every case of a full run; default changed for a PR, off for a full run, all for the nightly
+ * run), --search-budget <seconds> (the whole search layer; default 240 for a PR, 1800 for a full
+ * run, 0 turns it off), --recorded
  * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
  * modules only, or none; default all for a full run, changed for a PR).
  *
@@ -46,7 +49,14 @@ import { import_graphs } from './graph.ts';
 import { FULL_COMMANDS, HEISENBENCH_DIR, empty_report, run_time, run_tree } from './run.ts';
 import { RESULT_SCHEMA, render_full_summary, render_pr_section } from './section.ts';
 import type { Meta, Result } from './section.ts';
-import { SEARCH_BUDGET_MS, cases_with_inputs, pick_cases, run_searches } from './search.ts';
+import {
+	FULL_SEARCH_BUDGET_MS,
+	SEARCH_BUDGET_MS,
+	cases_with_inputs,
+	pick_cases,
+	run_full_search,
+	run_searches
+} from './search.ts';
 import { select_all, select_changed } from './select.ts';
 import { rank_by_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
@@ -66,12 +76,15 @@ const { values } = parseArgs({
 		weights: { type: 'string' },
 		'real-weights': { type: 'string' },
 		'requests-per-day': { type: 'string' },
-		'search-budget': { type: 'string', default: String(SEARCH_BUDGET_MS / 1000) },
+		search: { type: 'string' },
+		'search-budget': { type: 'string' },
 		recorded: { type: 'string' }
 	}
 });
 if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.recorded))
 	throw new Error('--recorded takes all, changed or off');
+if (values.search !== undefined && !['all', 'changed', 'off'].includes(values.search))
+	throw new Error('--search takes all, changed or off');
 
 const LAYERS = /^(all|none|(time|bytes|leaks)(,(time|bytes|leaks))*)$/;
 
@@ -106,9 +119,13 @@ async function main(): Promise<void> {
 	const layers = values.measure ?? (mb ? 'none' : 'all');
 	if (!LAYERS.test(layers)) throw new Error('--measure takes time,bytes,leaks, all or none');
 	const measure = layers === 'none' ? null : layers;
-	const search_s = Number(values['search-budget']);
+	// a PR searches its changed cases; a full run every case only when asked (the nightly run)
+	const search = values.search ?? (mb ? 'changed' : 'off');
+	const search_s = Number(
+		values['search-budget'] ?? (mb ? SEARCH_BUDGET_MS : FULL_SEARCH_BUDGET_MS) / 1000
+	);
 	if (!(Number.isFinite(search_s) && search_s >= 0)) throw new Error('bad --search-budget');
-	const search_ms = Math.round(search_s * 1000);
+	const search_ms = search === 'off' ? 0 : Math.round(search_s * 1000);
 	const meta: Meta = {
 		kind,
 		pr,
@@ -195,7 +212,7 @@ async function main(): Promise<void> {
 					`real-app weight: ${result.weights.status}${result.weights.note ? ` (${result.weights.note})` : ''}`
 				);
 			}
-			if (result.diff && result.head && search_ms > 0) {
+			if (result.diff && result.head && search_ms > 0 && search === 'changed') {
 				const pick = pick_cases(result.diff, result.head, (file) =>
 					cases_with_inputs(file, readFileSync(join(head.dir, file), 'utf8'))
 				);
@@ -210,6 +227,20 @@ async function main(): Promise<void> {
 					base_cases
 				);
 			}
+		}
+		// every case of the selected files, on the head (the nightly run)
+		if (search === 'all' && search_ms > 0) {
+			result.full_search = await run_full_search(
+				head,
+				selection.selected,
+				join(out, 'search'),
+				log,
+				search_ms
+			);
+			const found = result.full_search.cases.filter((c) => c.finding).length;
+			log(
+				`worst-case search: ${found} findings in ${result.full_search.cases.length} cases of ${result.full_search.searched_files} files (${Math.round(result.full_search.spent_ms / 1000)} s)`
+			);
 		}
 	}
 

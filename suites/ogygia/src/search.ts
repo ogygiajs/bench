@@ -154,12 +154,93 @@ export interface SearchRun {
 	skipped: number;
 }
 
-/** Heisenbench's rule: worst at least FLAG_RATIO times typical, and at least twice the base's ratio. */
+/** The search found a pattern whose work grows superlinearly. */
+function steep(c: SearchCase | null): boolean {
+	return !!c && !c.error && (c.finding?.reasons.includes('superlinear') ?? false);
+}
+
+/**
+ * Heisenbench's rule (diff_search): worst at least FLAG_RATIO times typical and at least twice the
+ * base's ratio, or a found pattern that grows superlinearly where the base's does not.
+ */
 export function flagged(r: SearchResult): boolean {
 	const h = r.head;
 	if (!h || h.error) return false;
 	const base_ratio = r.base && !r.base.error ? r.base.ratio : 1;
-	return h.ratio >= FLAG_RATIO && h.ratio >= 2 * base_ratio;
+	return (h.ratio >= FLAG_RATIO && h.ratio >= 2 * base_ratio) || (steep(h) && !steep(r.base));
+}
+
+// ---------------------------------------------------------------- a full run: every case
+
+/** The whole layer on a full run (`--search all`, the nightly run). */
+export const FULL_SEARCH_BUDGET_MS = 30 * 60_000;
+
+export interface FullSearchRun {
+	budget_ms: number;
+	spent_ms: number;
+	/** Bench files with a case that declares an input, and how many of them were searched. */
+	files: number;
+	searched_files: number;
+	/** Every searched case, with its file. */
+	cases: SearchCase[];
+	/** Seconds each file took (loading it, searching its cases). */
+	seconds: Record<string, number>;
+	errors: Array<{ file: string; error: string }>;
+}
+
+/**
+ * Search every case that declares an input, file by file (one process each), within `budget_ms`
+ * in all: each file gets what is left of it, and the files it does not reach are counted.
+ */
+export async function run_full_search(
+	tree: Tree,
+	files: string[],
+	out_dir: string,
+	log: (line: string) => void,
+	budget_ms = FULL_SEARCH_BUDGET_MS
+): Promise<FullSearchRun> {
+	const started = Date.now();
+	mkdirSync(out_dir, { recursive: true });
+	const with_inputs = files.filter(
+		(f) => cases_with_inputs(f, readFileSync(join(tree.dir, f), 'utf8')).size > 0
+	);
+	const run: FullSearchRun = {
+		budget_ms,
+		spent_ms: 0,
+		files: with_inputs.length,
+		searched_files: 0,
+		cases: [],
+		seconds: {},
+		errors: []
+	};
+	for (const [i, file] of with_inputs.entries()) {
+		const left = budget_ms - (Date.now() - started);
+		if (left < MIN_PER_SEARCH_MS) break;
+		const out = join(out_dir, `full-${i}.json`);
+		rmSync(out, { force: true });
+		log(`${tree.sha.slice(0, 12)} heisenbench search ${file} (every case)`);
+		const t0 = Date.now();
+		const r = await spawn_group(
+			process.execPath,
+			[HEISENBENCH_CLI, 'search', file, '--root', tree.dir, '--out', out, '--sha', tree.sha],
+			{ cwd: tree.dir, env: { ...process.env, NODE_OPTIONS: node_options(tree) } },
+			left
+		);
+		run.seconds[file] = Math.round((Date.now() - t0) / 100) / 10;
+		run.searched_files++;
+		const died = r.timed_out || r.signal !== null || (r.status !== 0 && r.status !== 1);
+		if (died) {
+			run.errors.push({
+				file,
+				error: `heisenbench search ${r.timed_out ? 'did not finish in time' : `exited with ${r.signal ?? r.status}`}`
+			});
+		}
+		if (!existsSync(out)) continue;
+		const report = JSON.parse(readFileSync(out, 'utf8')) as { search?: SearchReport };
+		for (const c of report.search?.cases ?? []) run.cases.push({ ...c, file });
+	}
+	run.spent_ms = Date.now() - started;
+	return run;
 }
 
 function read_case(path: string, name: string): SearchCase | null {

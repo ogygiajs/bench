@@ -18,7 +18,7 @@ import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/
 import { calls_text, cost_text } from '@bench/heisenbench/weight';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
-import type { SearchRun } from './search.ts';
+import type { FullSearchRun, SearchRun } from './search.ts';
 import type { Selection } from './select.ts';
 import type { WeightRun } from './weights.ts';
 
@@ -36,6 +36,7 @@ export const CAPS = {
 	growth: 15,
 	growth_same: 15,
 	search: 5,
+	search_full: 20,
 	weights: 5,
 	failed: 15,
 	full_rows: 200
@@ -72,6 +73,8 @@ export interface Result {
 	weights?: WeightRun | null;
 	/** A PR's worst-case search over the changed cases that declare an input. */
 	search?: SearchRun | null;
+	/** `--search all` (the nightly run): every case that declares an input, on the head. */
+	full_search?: FullSearchRun | null;
 	/**
 	 * Growth from recorded calls (recorded.ts): the functions that grow quadratically or worse on
 	 * the inputs ogygia's tests and bench cases pass them. The whole report is in the artifact
@@ -241,15 +244,42 @@ export function search_lines(s: SearchRun): string[] {
 		];
 	const hits = s.cases.filter(flagged);
 	if (hits.length === 0)
-		return [`${head}: no input of the same size costs ${FLAG_RATIO}x the typical steps or more.`];
+		return [
+			`${head}: no input of the same size costs ${FLAG_RATIO}x the typical steps or more, or grows superlinearly.`
+		];
 	const lines = [`${head}:`, ''];
 	for (const c of hits.slice(0, CAPS.search)) {
 		const h = c.head!;
 		const base = c.base && !c.base.error ? `${c.base.ratio}x on the base` : 'not on the base';
+		if (h.ratio < FLAG_RATIO && h.finding) {
+			lines.push(`- ⚠️ ${code(c.name)}: ${h.finding.text}`);
+			continue;
+		}
 		lines.push(
 			`- ⚠️ ${code(c.name)}: an input costs ${h.ratio}x the typical steps (${Math.round(h.worst).toLocaleString('en-US')} vs ${Math.round(h.typical).toLocaleString('en-US')}; ${base}): ${code(preview(h.input))}`
 		);
 	}
+	return lines;
+}
+
+/** A full run's search of every case: one line, plus one per finding. */
+export function full_search_lines(s: FullSearchRun): string[] {
+	const found = s.cases.filter((c) => !c.error && c.finding);
+	const failed = s.cases.filter((c) => c.error).length + s.errors.length;
+	const notes = [
+		`${plural(s.cases.length, 'case')} in ${plural(s.searched_files, 'bench file')}`,
+		`${seconds(s.spent_ms)} of a ${seconds(s.budget_ms)} budget`,
+		s.searched_files < s.files ? `${s.files - s.searched_files} files not reached` : '',
+		failed > 0 ? `${failed} did not finish` : ''
+	].filter(Boolean);
+	const head = `**Worst-case search** (${notes.join(', ')})`;
+	if (found.length === 0) return [`${head}: no input worth a look.`, ''];
+	const lines = [`${head}:`, ''];
+	for (const c of found.slice(0, CAPS.search_full))
+		lines.push(`- ${code(c.name)} (${code(c.file)}): ${c.finding!.text}`);
+	if (found.length > CAPS.search_full)
+		lines.push('', `${found.length - CAPS.search_full} more findings are in result.json.`);
+	lines.push('');
 	return lines;
 }
 
@@ -495,6 +525,7 @@ export function render_full_summary(r: Result): string {
 	}
 	// The price audit: a part only when some price is suspect.
 	if (r.head?.audit) lines.push(renderAudit(r.head.audit, { quiet: true }));
+	if (r.full_search) lines.push(...full_search_lines(r.full_search));
 	lines.push(...recorded_lines(r));
 	return lines.join('\n').trimEnd() + '\n';
 }

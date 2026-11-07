@@ -1,13 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DiffResult, Report, SearchCase } from '@bench/heisenbench';
 import { HEISENBENCH_DIR } from '../src/run.ts';
-import { cases_with_inputs, flagged, pick_cases, run_searches } from '../src/search.ts';
+import {
+	cases_with_inputs,
+	flagged,
+	pick_cases,
+	run_full_search,
+	run_searches
+} from '../src/search.ts';
 import type { SearchResult, SearchRun } from '../src/search.ts';
-import { search_lines } from '../src/section.ts';
+import { full_search_lines, search_lines } from '../src/section.ts';
 
 test('the cases that declare an input are found in the bench file', () => {
 	const src = `import { bench as b } from '@bench/heisenbench/bench';
@@ -92,6 +98,15 @@ test('flagged by Heisenbench’s rule: 4x typical and twice the base’s ratio',
 	assert.equal(flagged(searched(found(3.9), null)), false);
 	assert.equal(flagged(searched(found(9, 'boom'), null)), false);
 	assert.equal(flagged(searched(null, null)), false);
+	// or a pattern that grows superlinearly where the base's does not
+	assert.equal(flagged(searched(steep(1.5), found(1))), true);
+	assert.equal(flagged(searched(steep(1.5), null)), true);
+	assert.equal(flagged(searched(steep(1.5), steep(1.5))), false);
+});
+
+const steep = (ratio: number): SearchCase => ({
+	...found(ratio),
+	finding: { reasons: ['superlinear'], text: 'grows quadratic (exponent 2) when nested deeper' }
 });
 
 const run_of = (cases: SearchResult[], over: Partial<SearchRun> = {}): SearchRun => ({
@@ -106,8 +121,10 @@ const run_of = (cases: SearchResult[], over: Partial<SearchRun> = {}): SearchRun
 test('the search is one line, plus one per flagged case', () => {
 	const quiet = search_lines(run_of([searched(found(1), found(1))]));
 	assert.deepEqual(quiet, [
-		'**Worst-case search** (1 changed case with an input, 1 min 15 s of a 4 min budget): no input of the same size costs 4x the typical steps or more.'
+		'**Worst-case search** (1 changed case with an input, 1 min 15 s of a 4 min budget): no input of the same size costs 4x the typical steps or more, or grows superlinearly.'
 	]);
+	const grows = search_lines(run_of([searched(steep(1.5), found(1))]));
+	assert.equal(grows[2], '- ⚠️ `c \\| d`: grows quadratic (exponent 2) when nested deeper');
 	const hit = search_lines(run_of([searched(found(10.5), found(1))], { skipped: 2 }));
 	assert.match(hit[0], /2 not searched \(time or the case cap\)/);
 	assert.equal(
@@ -165,4 +182,74 @@ bench('total twice', ({ xs }) => total(xs) + total(xs), { setup: () => ({ xs: [1
 		1000
 	);
 	assert.deepEqual([none.cases.length, none.skipped], [0, 1]);
+});
+
+test('a full run searches every case that declares an input, and lists only its findings', async () => {
+	// the real path: under a symlinked temp dir the bench file is outside the counted root
+	const dir = realpathSync(mkdtempSync(join(tmpdir(), 'heisenbench-full-search-')));
+	mkdirSync(join(dir, 'node_modules', '@bench'), { recursive: true });
+	symlinkSync(HEISENBENCH_DIR, join(dir, 'node_modules', '@bench', 'heisenbench'), 'dir');
+	mkdirSync(join(dir, 'packages', 'p', 'bench'), { recursive: true });
+	writeFileSync(join(dir, 'package.json'), '{"name":"t","private":true,"type":"module"}');
+	const sum = 'packages/p/bench/sum.bench.ts';
+	const nest = 'packages/p/bench/nest.bench.ts';
+	const bare = 'packages/p/bench/bare.bench.ts';
+	// the counted code lives in the package's source, as in ogygia
+	mkdirSync(join(dir, 'packages', 'p', 'src'), { recursive: true });
+	writeFileSync(
+		join(dir, 'packages', 'p', 'src', 'lib.ts'),
+		`export function total(xs: number[]): number {
+	let s = 0;
+	for (const x of xs) s += x;
+	return s;
+}
+
+export function spans(s: string): number {
+	let t = 0;
+	for (let i = 0; i < s.length; i++) {
+		if (s[i] !== '(') continue;
+		let d = 0;
+		for (let j = i; j < s.length; j++) {
+			if (s[j] === '(') d++;
+			else if (s[j] === ')' && --d === 0) {
+				t += j - i;
+				break;
+			}
+		}
+	}
+	return t;
+}
+`
+	);
+	writeFileSync(
+		join(dir, sum),
+		`import { bench } from '@bench/heisenbench/bench';
+import { total } from '../src/lib.ts';
+bench('total', ({ xs }) => total(xs), { setup: () => ({ xs: [1, 2, 3, 4] }) });
+`
+	);
+	writeFileSync(
+		join(dir, nest),
+		`import { bench } from '@bench/heisenbench/bench';
+import { spans } from '../src/lib.ts';
+bench('spans', ({ src }) => spans(src), { setup: () => ({ src: '(a b) (c d) (e f) (g h)' }), grammar: 'js' });
+`
+	);
+	writeFileSync(
+		join(dir, bare),
+		`import { bench } from '@bench/heisenbench/bench';
+bench('no input', () => 1);
+`
+	);
+	const tree = { dir, sha: 'b'.repeat(40), preload: null, benches: [sum, nest, bare] };
+	const run = await run_full_search(tree, [sum, nest, bare], join(dir, '.out'), () => {}, 120_000);
+	assert.deepEqual([run.files, run.searched_files, run.errors], [2, 2, []]);
+	assert.deepEqual(run.cases.map((c) => [c.file, c.name, !!c.finding]).sort(), [
+		[nest, 'spans', true],
+		[sum, 'total', false]
+	]);
+	const lines = full_search_lines(run);
+	assert.match(lines[0], /^\*\*Worst-case search\*\* \(2 cases in 2 bench files, .*\):$/);
+	assert.equal(lines.filter((l) => l.startsWith('- ')).length, 1);
+	assert.match(lines[2], /^- `spans` \(`packages\/p\/bench\/nest\.bench\.ts`\): .*grows quadratic/);
 });
