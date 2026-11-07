@@ -277,3 +277,118 @@ test('an upgraded dependency pairs across versions', () => {
 		[['acorn@8.14.0/dist/acorn.mjs > Parser', 'acorn@8.15.0/dist/acorn.mjs > Parser', 4]]
 	);
 });
+
+/** A report of one case per [name, file, functions], with totals that add up. */
+function cases_report(list: Array<[string, string, FunctionReport[]]>): Report {
+	const r = report([]);
+	r.cases = list.map(([name, file, functions]) => ({
+		...report(functions).cases[0],
+		name,
+		file,
+		totals: {
+			steps: functions.reduce((s, f) => s + f.self_steps, 0),
+			allocations: 0,
+			bytes: 0,
+			calls: 0
+		}
+	}));
+	return r;
+}
+
+test('a bench file that did not load on one side: its cases did not run, they are not new', () => {
+	const base = cases_report([['walk', 'a.bench.ts', [fn('a.ts', 'f', 10)]]]);
+	base.load_errors = [{ file: 'safe.bench.ts', error: "does not provide an export named 'Rule'" }];
+	const pr = cases_report([
+		['walk', 'a.bench.ts', [fn('a.ts', 'f', 10)]],
+		['safe walk', 'safe.bench.ts', [fn('s.ts', 'g', 5)]],
+		['safe map', 'safe.bench.ts', [fn('s.ts', 'h', 5)]],
+		['brand new', 'b.bench.ts', [fn('b.ts', 'k', 5)]]
+	]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(d.missing, { base: ['brand new'], pr: [] });
+	assert.deepEqual(d.did_not_run, {
+		base: [
+			{
+				file: 'safe.bench.ts',
+				error: "does not provide an export named 'Rule'",
+				cases: ['safe walk', 'safe map']
+			}
+		],
+		pr: []
+	});
+	const md = render_markdown(d);
+	assert.match(
+		md,
+		/\*\*Did not run\*\*:\n\n- `safe\.bench\.ts` did not load on the base \(2 cases not compared\): `does not provide an export named 'Rule'`/
+	);
+	assert.match(md, /New cases: `brand new`\n/);
+	// and the other way round: a file that broke on the PR has no "removed" cases
+	const back = diff_reports(
+		{ ...pr, load_errors: undefined },
+		{ ...base, load_errors: [{ file: 'safe.bench.ts', error: 'boom' }] }
+	);
+	assert.deepEqual(back.missing.pr, ['brand new']);
+	assert.deepEqual(back.did_not_run?.pr[0].cases, ['safe walk', 'safe map']);
+});
+
+test('nothing changed: the PR own counts, where the work is and how it grows', () => {
+	const make = (): Report => {
+		const r = cases_report([
+			['light', 'a.bench.ts', [fn('a.ts', 'f', 10)]],
+			['heavy', 'a.bench.ts', [fn('a.ts', 'f', 30, 1), fn('a.ts', 'g', 90, 10)]]
+		]);
+		r.growth = {
+			schema: 'heisenbench-growth/1',
+			sizes: [1, 10, 100],
+			cases: [
+				{
+					name: 'heavy',
+					file: 'a.bench.ts',
+					sizes: [1, 10, 100],
+					input_sizes: [1, 10, 100],
+					steps: [1, 100, 10000],
+					stable: true,
+					scaler: 'generic',
+					class: 'quadratic',
+					exponent: 2,
+					error: null
+				}
+			]
+		};
+		return r;
+	};
+	const d = diff_reports(make(), make());
+	assert.deepEqual(
+		d.summary?.map((s) => [s.name, s.steps, s.top_function?.id, s.top_line?.where]),
+		[
+			['heavy', 120, 'a.ts > g', 'a.ts:11'],
+			['light', 10, 'a.ts > f', 'a.ts:2']
+		]
+	);
+	const md = render_markdown(d);
+	assert.match(
+		md,
+		/No function changed its own steps, allocations or bytes\.\n\nThe PR's own counts, 2 cases:/
+	);
+	assert.match(
+		md,
+		/\| heavy \| 120 \| 0 \| `a\.ts > g` 75% \| `a\.ts:11` 75% \| quadratic \(exponent 2\) \|/
+	);
+	assert.match(md, /\*\*Grows faster than linear\*\* \(1\):/);
+});
+
+test('a changed case gets its own line: steps base to PR and the percent of the whole case', () => {
+	const base = cases_report([
+		['walk', 'a.bench.ts', [fn('a.ts', 'f', 100), fn('a.ts', 'g', 300, 10)]]
+	]);
+	const pr = cases_report([
+		['walk', 'a.bench.ts', [fn('a.ts', 'f', 125), fn('a.ts', 'g', 300, 10)]]
+	]);
+	const md = render_markdown(diff_reports(base, pr));
+	assert.match(
+		md,
+		/\| Case \| Steps \| Δ \|\n\| --- \| ---: \| ---: \|\n\| walk \| 400 → 425 \| \+25 \(\+6\.3%\) \|/
+	);
+	// the function's own percent is still in the function table
+	assert.match(md, /\| walk \| `a\.ts > f` \| 100 → 125 \| \+25 \(\+25\.0%\)/);
+});

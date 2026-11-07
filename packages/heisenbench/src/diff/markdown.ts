@@ -1,4 +1,6 @@
-import type { DiffResult, Finding, FunctionChange } from './index.ts';
+import type { CaseSummary, DiffResult, Finding, FunctionChange } from './index.ts';
+import { growth_label, is_superlinear } from '../growth/fit.ts';
+import type { GrowthClass } from '../growth/fit.ts';
 import { render_measure } from '../measure/markdown.ts';
 import { cell, code } from '../md.ts';
 
@@ -104,10 +106,12 @@ export function render_markdown(d: DiffResult): string {
 	}
 	if (flagged.length === 0) {
 		lines.push('No function changed its own steps, allocations or bytes.', '');
+		lines.push(...summary_lines(d));
 	} else {
 		lines.push(
 			`**${flagged.length}** function${flagged.length === 1 ? '' : 's'} changed in ${new Set(flagged.map((c) => c.case)).size} case(s). Steps are exact counts, not timings.`,
 			'',
+			...case_table(d, new Set(flagged.map((c) => c.case))),
 			'| Case | Function | Self steps | Δ | Δ allocs | Δ bytes | Δ inclusive |',
 			'| --- | --- | ---: | ---: | ---: | ---: | ---: |'
 		);
@@ -156,9 +160,110 @@ export function render_markdown(d: DiffResult): string {
 			''
 		);
 	}
+	lines.push(...not_run_lines(d));
 	if (d.missing.base.length > 0)
 		lines.push(`New cases: ${d.missing.base.map(code).join(', ')}`, '');
 	if (d.missing.pr.length > 0)
 		lines.push(`Removed cases: ${d.missing.pr.map(code).join(', ')}`, '');
 	return lines.join('\n');
+}
+
+/** Cases the summary and the case table show at most. */
+const TOP_CASES = 10;
+
+/**
+ * The changed cases as a whole: steps base to PR, and the percent. A function's percent says how
+ * much its own steps moved; this says how much more work the case does.
+ */
+function case_table(d: DiffResult, names: ReadonlySet<string>): string[] {
+	const rows = d.cases.filter((c) => names.has(c.name) && c.base_steps !== c.pr_steps);
+	if (rows.length === 0) return [];
+	const sorted = [...rows].sort(
+		(a, b) => Math.abs(b.pr_steps - b.base_steps) - Math.abs(a.pr_steps - a.base_steps)
+	);
+	const out = ['| Case | Steps | Δ |', '| --- | ---: | ---: |'];
+	for (const c of sorted.slice(0, MAX_ROWS)) {
+		const delta = c.pr_steps - c.base_steps;
+		out.push(
+			`| ${cell(c.name)} | ${fmt(c.base_steps)} → ${fmt(c.pr_steps)} | ${signed(delta)}${pct(c.base_steps, delta)} |`
+		);
+	}
+	if (sorted.length > MAX_ROWS)
+		out.push('', `${sorted.length - MAX_ROWS} more changed cases are in the JSON result.`);
+	out.push('', 'By function:', '');
+	return out;
+}
+
+function share(n: number): string {
+	return `${Math.round(n * 100)}%`;
+}
+
+function summary_row(s: CaseSummary): string {
+	const fn = s.top_function ? `${code(s.top_function.id)} ${share(s.top_function.share)}` : '';
+	const line = s.top_line ? `${code(s.top_line.where)} ${share(s.top_line.share)}` : '';
+	const g = s.growth
+		? `${growth_label(s.growth.class as GrowthClass, s.growth.power)} (exponent ${s.growth.exponent})`
+		: '';
+	return `| ${cell(s.name)} | ${fmt(s.steps)} | ${fmt(s.allocations)} | ${fn} | ${line} | ${g} |`;
+}
+
+/**
+ * When no function changed: the PR's own numbers, so the comment still says how heavy each case
+ * is, where its work sits and how it grows. The heaviest cases, every case that grows faster than
+ * linear, and every case collapsed.
+ */
+function summary_lines(d: DiffResult): string[] {
+	const all = d.summary ?? [];
+	if (all.length === 0) return [];
+	const head = [
+		'| Case | Steps | Allocations | Most self steps | Heaviest line | Growth |',
+		'| --- | ---: | ---: | --- | --- | --- |'
+	];
+	const out = [
+		`The PR's own counts, ${all.length} case${all.length === 1 ? '' : 's'}${all.length > TOP_CASES ? `, the ${TOP_CASES} heaviest` : ''}:`,
+		'',
+		...head,
+		...all.slice(0, TOP_CASES).map(summary_row),
+		''
+	];
+	const fast = all.filter((s) => s.growth && is_superlinear(s.growth.class as GrowthClass));
+	if (fast.length > 0) {
+		out.push(
+			`**Grows faster than linear** (${fast.length}):`,
+			'',
+			...head,
+			...fast.slice(0, MAX_ROWS).map(summary_row),
+			''
+		);
+	}
+	if (all.length > TOP_CASES) {
+		out.push(
+			`<details><summary>Every case (${all.length})</summary>`,
+			'',
+			...head,
+			...all.slice(0, MAX_ROWS * 4).map(summary_row),
+			'',
+			'</details>',
+			''
+		);
+	}
+	return out;
+}
+
+/** Bench files that did not load on one side: their cases are not compared. */
+function not_run_lines(d: DiffResult): string[] {
+	const out: string[] = [];
+	for (const [side, list] of [
+		['base', d.did_not_run?.base ?? []],
+		['PR', d.did_not_run?.pr ?? []]
+	] as const) {
+		for (const n of list) {
+			const cases =
+				n.cases.length === 0
+					? ''
+					: ` (${n.cases.length} case${n.cases.length === 1 ? '' : 's'} not compared)`;
+			out.push(`- ${code(n.file)} did not load on the ${side}${cases}: ${code(n.error)}`);
+		}
+	}
+	return out.length === 0 ? [] : ['**Did not run**:', '', ...out, ''];
 }

@@ -1,7 +1,7 @@
 import { IDENTITY, LineMap } from './git.ts';
 import type { FileDiff } from './git.ts';
 import { env_mismatch } from '../report.ts';
-import { pair_cases } from '../cases.ts';
+import { case_key, pair_cases } from '../cases.ts';
 import type { CaseReport, FunctionReport, LineReport, Report } from '../report.ts';
 import { align_prices } from '../recount.ts';
 import { measure_diff } from '../measure/diff.ts';
@@ -69,8 +69,23 @@ export interface DiffResult {
 	renames: Array<{ case: string; from: string; to: string }>;
 	unstable: string[];
 	failed: string[];
+	/**
+	 * Cases one side has and the other does not: `base` lists the PR's new cases, `pr` the removed
+	 * ones. A case of a bench file that did not load on the other side is in `did_not_run`, not here.
+	 */
 	missing: { base: string[]; pr: string[] };
+	/**
+	 * Bench files that did not load on one side (its report's `load_errors`), with the cases the
+	 * other side has in them: those cases are not compared, and are not new or removed either.
+	 * Absent in diffs from before it was kept.
+	 */
+	did_not_run?: { base: NotRun[]; pr: NotRun[] };
 	cases: Array<{ name: string; base_steps: number; pr_steps: number }>;
+	/**
+	 * The PR's own numbers, heaviest case first: what a comment shows when no function changed.
+	 * Absent in diffs from before it was kept.
+	 */
+	summary?: CaseSummary[];
 	/**
 	 * Self steps per package per case (`own code` for the project's), for the cases that count a
 	 * dependency at all: "68% of this case is in acorn". A package upgraded between the two sides
@@ -85,6 +100,59 @@ export interface DiffResult {
 	measure?: MeasureDiff;
 	/** How the two reports' environments differ (Node, V8, platform, weights): empty when alike. */
 	env?: string[];
+}
+
+export interface NotRun {
+	file: string;
+	error: string;
+	/** The cases of that file the other side ran. */
+	cases: string[];
+}
+
+export interface CaseSummary {
+	name: string;
+	steps: number;
+	allocations: number;
+	/** The function with the most self steps, and its share of the case's steps (0..1). */
+	top_function: { id: string; share: number } | null;
+	/** The line with the most steps (`module:line`), and its share. */
+	top_line: { where: string; share: number } | null;
+	/** The growth class of the case, when the report has a growth section. */
+	growth?: { class: string; exponent: number; power?: number };
+}
+
+/** Each counted case of a report with where its steps are, heaviest first. */
+export function summarize_cases(report: Report): CaseSummary[] {
+	const growth = new Map((report.growth?.cases ?? []).map((g) => [case_key(g), g]));
+	const out: CaseSummary[] = [];
+	for (const c of report.cases) {
+		if (c.error) continue;
+		let fn: FunctionReport | null = null;
+		let line: { where: string; steps: number } | null = null;
+		for (const f of c.functions) {
+			if (!fn || f.self_steps > fn.self_steps) fn = f;
+			for (const l of f.lines) {
+				if (!line || l.steps > line.steps)
+					line = { where: `${f.module}:${l.line}`, steps: l.steps };
+			}
+		}
+		const total = c.totals.steps;
+		const share = (n: number): number => (total > 0 ? n / total : 0);
+		const g = growth.get(case_key(c));
+		const s: CaseSummary = {
+			name: c.name,
+			steps: total,
+			allocations: c.totals.allocations,
+			top_function: fn ? { id: fn.id, share: share(fn.self_steps) } : null,
+			top_line: line ? { where: line.where, share: share(line.steps) } : null
+		};
+		if (g && g.class && !g.error) {
+			s.growth = { class: g.class, exponent: g.exponent };
+			if (g.power !== undefined) s.growth.power = g.power;
+		}
+		out.push(s);
+	}
+	return out.sort((a, b) => b.steps - a.steps || (a.name < b.name ? -1 : 1));
 }
 
 export interface PackageSteps {
@@ -539,8 +607,25 @@ export function diff_reports(
 		env: env_mismatch(base_report, pr_report)
 	};
 	const paired = pair_cases(base.cases, pr.cases);
-	for (const bc of paired.only_base) result.missing.pr.push(bc.name);
-	for (const pc of paired.only_pr) result.missing.base.push(pc.name);
+	// A file that did not load on one side has no cases there: its cases on the other side are
+	// not new or removed, they did not run.
+	const not_run = (errors: Report['load_errors'], other: CaseReport[]): NotRun[] =>
+		(errors ?? []).map((e) => ({
+			file: e.file,
+			error: e.error,
+			cases: other.filter((c) => c.file === e.file).map((c) => c.name)
+		}));
+	const did_not_run = {
+		base: not_run(base_report.load_errors, paired.only_pr),
+		pr: not_run(pr_report.load_errors, paired.only_base)
+	};
+	if (did_not_run.base.length > 0 || did_not_run.pr.length > 0) result.did_not_run = did_not_run;
+	const failed_on = (list: NotRun[]) => new Set(list.map((n) => n.file));
+	const base_failed = failed_on(did_not_run.base);
+	const pr_failed = failed_on(did_not_run.pr);
+	for (const bc of paired.only_base) if (!pr_failed.has(bc.file)) result.missing.pr.push(bc.name);
+	for (const pc of paired.only_pr) if (!base_failed.has(pc.file)) result.missing.base.push(pc.name);
+	result.summary = summarize_cases(pr_report);
 	for (const [bc, pc] of paired.pairs) {
 		// A case that failed on either side has no counts to compare: listed, not diffed.
 		if (bc.error || pc.error) {

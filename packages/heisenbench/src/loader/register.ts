@@ -37,9 +37,10 @@ export function register_heisenbench(config: LoaderConfig): LoaderCore {
 			const r = next(url, context);
 			if (r.source == null) return r;
 			const src =
-				typeof r.source === 'string'
+				core.source_override(url) ??
+				(typeof r.source === 'string'
 					? r.source
-					: Buffer.from(r.source as Uint8Array).toString('utf8');
+					: Buffer.from(r.source as Uint8Array).toString('utf8'));
 			const out = core.instrument(url, src, r.format);
 			if (out === null) return r;
 			return { format: out.format, source: out.code, shortCircuit: true };
