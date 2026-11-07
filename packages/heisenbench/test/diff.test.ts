@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { LineMap, check_rev, parse_diff } from '../src/diff/git.ts';
 import { diff_reports, shape_similarity } from '../src/diff/index.ts';
 import { render_markdown } from '../src/diff/markdown.ts';
+import { growth_verdict, odds_disagree } from '../src/growth/fit.ts';
 import type { CaseReport, FunctionReport, Report } from '../src/report.ts';
 
 const DIFF = `diff --git a/src/a.ts b/src/a.ts
@@ -375,6 +376,55 @@ test('nothing changed: the PR own counts, where the work is and how it grows', (
 		/\| heavy \| 120 \| 0 \| `a\.ts > g` 75% \| `a\.ts:11` 75% \| quadratic \(exponent 2\) \|/
 	);
 	assert.match(md, /\*\*Grows faster than linear\*\* \(1\):/);
+});
+
+test('own counts: when the odds back another shape than the exponent, the row says both', () => {
+	const make = (): Report => {
+		const r = cases_report([['sorts', 'a.bench.ts', [fn('a.ts', 'f', 10)]]]);
+		r.growth = {
+			schema: 'heisenbench-growth/1',
+			sizes: [1, 10, 100],
+			cases: [
+				{
+					name: 'sorts',
+					file: 'a.bench.ts',
+					sizes: [1, 10, 100],
+					input_sizes: [1, 10, 100],
+					steps: [2962201, 31730656, 339212150],
+					stable: true,
+					scaler: 'case',
+					class: 'linear',
+					exponent: 1.029,
+					odds: {
+						odds: [
+							{ shape: 'n log n', p: 0.998 },
+							{ shape: 'linear', p: 0.002 }
+						],
+						superlinear: 0,
+						points: 4
+					},
+					error: null
+				}
+			]
+		};
+		return r;
+	};
+	const md = render_markdown(diff_reports(make(), make()));
+	assert.match(md, /\| n log n by the odds \(>99%; exponent 1\.029 alone reads linear\) \|/);
+	assert.deepEqual(odds_disagree({ class: 'linear', odds: make().growth!.cases[0].odds }), {
+		shape: 'n log n',
+		p: 0.998
+	});
+	assert.equal(
+		growth_verdict({ class: 'linear', odds: make().growth!.cases[0].odds }),
+		'n log n by the odds (>99%), linear by the exponent alone'
+	);
+	// odds under 90%, or that agree: the class alone
+	const weak = { odds: [{ shape: 'n log n' as const, p: 0.7 }], superlinear: 0, points: 3 };
+	assert.equal(growth_verdict({ class: 'linear', odds: weak }), 'linear');
+	const same = { odds: [{ shape: 'linear' as const, p: 0.999 }], superlinear: 0, points: 3 };
+	assert.equal(growth_verdict({ class: 'linear', odds: same }), 'linear');
+	assert.equal(growth_verdict({ class: 'linear' }), 'linear');
 });
 
 test('a changed case gets its own line: steps base to PR and the percent of the whole case', () => {
