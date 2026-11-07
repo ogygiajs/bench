@@ -146,6 +146,14 @@ test('growth from recorded calls: the quadratic functions are flagged on the rig
 	assert.equal(total.class, 'linear');
 	assert.equal(total.grows, false);
 
+	// the odds keep every class, with at least 95% on it
+	for (const g of [dupes, tally, overlaps, total]) {
+		assert.equal(g.odds?.odds[0].shape, g.class, `${g.id}: ${JSON.stringify(g.odds)}`);
+		assert.ok(g.odds!.odds[0].p >= 0.95, `${g.id}: ${JSON.stringify(g.odds)}`);
+	}
+	assert.ok(dupes.odds!.superlinear >= 0.9 && overlaps.odds!.superlinear >= 0.9);
+	assert.ok(tally.odds!.superlinear < 0.1 && total.odds!.superlinear < 0.1);
+
 	const md = readFileSync(join(dir, 'growth.md'), 'utf8');
 	assert.match(
 		md,

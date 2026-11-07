@@ -16,6 +16,9 @@ import { DEFAULT_SIZES, run_growth } from './growth/index.ts';
 import { locate_findings, reusable_growth, run_audit } from './audit/index.ts';
 import { render_audit } from './audit/markdown.ts';
 import { render_recorded_growth, run_recorded_growth } from './growth/recorded.ts';
+import { SHAPES } from './growth/odds.ts';
+import type { OddsOptions, Shape } from './growth/odds.ts';
+import type { ShapePrior } from './growth/priors.ts';
 import { alias_records, read_record_dir } from './coverage/replay-run.ts';
 import { render_search, run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
@@ -49,13 +52,15 @@ Counting (the counting build)
 Layers (each writes its section into --out, default heisenbench-report.json)
   heisenbench health <bench files...>   V8 tiers, deopts and inline caches on the plain build
       [--warmup 20] [--runs 3] [--check on|off] [--root dir] [--filter text] [--out file]
-  heisenbench growth <bench files...>   steps at 1x, 10x, 100x the input; the curve class
+  heisenbench growth <bench files...>   steps at 1x, 10x, 100x the input; the curve class and the
+                                 odds of each shape (one more size when the top two are close)
       [--sizes 1,10,100] [--scaled on|off] [--cap 1e10] [--deps all|none|a,b] [--root dir]
-      [--filter text] [--out file]
+      [--filter text] [--out file] [--superlinear-odds 0.9] [--growth-prior prior.json]
   heisenbench growth --recorded <dir>   growth from a test run's recorded calls (no bench files):
-                                 every recorded function's steps over its input sizes
+                                 every recorded function's steps over its input sizes; a finding
+                                 needs --superlinear-odds (default 0.9) of quadratic or worse
       [--modules a.ts,b.ts] [--alias built-to-source.json] [--cap 5e8] [--budget-steps n]
-      [--root dir] [--out file] [--md file]
+      [--root dir] [--out file] [--md file] [--superlinear-odds 0.9] [--growth-prior prior.json]
   heisenbench search <bench files...>   the input that costs the most work per unit of input:
                                  shrunk, grown 1x to 8x, blamed by line
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
@@ -168,7 +173,8 @@ async function recorded_growth_command(
 		records,
 		modules: modules === undefined ? undefined : new Set(modules.split(',').filter(Boolean)),
 		cap: num('cap'),
-		budget_steps: num('budget-steps')
+		budget_steps: num('budget-steps'),
+		odds: odds_options(flags)
 	});
 	write_section(out, 'recorded_growth', r, info);
 	const md = render_recorded_growth(r);
@@ -176,6 +182,43 @@ async function recorded_growth_command(
 	if (md_out) writeFileSync(md_out, md);
 	console.log(md);
 	return 0;
+}
+
+/**
+ * `--superlinear-odds 0.9` (the odds of quadratic or worse a growth finding needs) and
+ * `--growth-prior file.json` (shape -> weight, in place of the default prior of growth/priors.ts).
+ */
+function odds_options(flags: Map<string, string>): OddsOptions {
+	const out: OddsOptions = {};
+	const bar = flags.get('superlinear-odds');
+	if (bar !== undefined) {
+		const v = Number(bar);
+		if (!(v > 0 && v <= 1))
+			throw new UsageError(
+				`--superlinear-odds takes a number in (0, 1], not ${JSON.stringify(bar)}`
+			);
+		out.min_odds = v;
+	}
+	const file = flags.get('growth-prior');
+	if (file !== undefined) {
+		if (!existsSync(file)) throw new UsageError(`--growth-prior ${file}: no such file`);
+		const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+		const prior = {} as ShapePrior;
+		for (const s of SHAPES) prior[s] = 0;
+		for (const [k, v] of Object.entries(raw)) {
+			if (!SHAPES.includes(k as Shape))
+				throw new UsageError(
+					`--growth-prior: ${JSON.stringify(k)} is not a shape (${SHAPES.join(', ')})`
+				);
+			if (typeof v !== 'number' || !(v >= 0))
+				throw new UsageError(`--growth-prior: ${k} takes a weight of 0 or more`);
+			prior[k as Shape] = v;
+		}
+		if (!SHAPES.some((s) => prior[s] > 0))
+			throw new UsageError('--growth-prior: every weight is 0');
+		out.prior = prior;
+	}
+	return out;
 }
 
 /** `--deps all|none|a,b`: which dependencies are counted (`fallback` when the flag is absent). */
@@ -212,7 +255,17 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	diff: {
-		values: ['repo', 'base', 'head', 'out', 'json', 'time', 'weights', 'requests-per-day'],
+		values: [
+			'repo',
+			'base',
+			'head',
+			'out',
+			'json',
+			'time',
+			'weights',
+			'requests-per-day',
+			'superlinear-odds'
+		],
 		args: [2, 2],
 		files: true
 	},
@@ -256,7 +309,9 @@ const SPECS: Record<string, Spec> = {
 			'alias',
 			'modules',
 			'budget-steps',
-			'md'
+			'md',
+			'superlinear-odds',
+			'growth-prior'
 		],
 		args: [0, MANY],
 		files: true
@@ -567,7 +622,7 @@ async function main(argv: string[]): Promise<number> {
 				? git_diff(resolve(repo), base_sha, head_sha)
 				: null;
 		const result = diff_reports(base, pr, { files });
-		const sections = diff_sections(base, pr, files);
+		const sections = diff_sections(base, pr, files, odds_options(flags));
 		const extra = render_sections(sections);
 		const time = time_section(flags);
 		const ranking = diff_ranking(result, base, pr, flags);
@@ -653,7 +708,8 @@ async function main(argv: string[]): Promise<number> {
 				...common,
 				sizes,
 				cap: num('cap'),
-				scaled: flags.get('scaled') === 'on'
+				scaled: flags.get('scaled') === 'on',
+				odds: odds_options(flags)
 			});
 			write_section(out, 'growth', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;

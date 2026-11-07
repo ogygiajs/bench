@@ -412,6 +412,7 @@ function capped_sections(d: SectionsDiff): string {
 				better: g.better.slice(0, CAPS.growth),
 				same: g.same.slice(0, CAPS.growth_same),
 				unclear: (g.unclear ?? []).slice(0, CAPS.growth),
+				unsure: (g.unsure ?? []).slice(0, CAPS.growth),
 				failed: g.failed.slice(0, CAPS.failed)
 			},
 			search: d.search && d.search.slice(0, CAPS.search)
@@ -422,6 +423,7 @@ function capped_sections(d: SectionsDiff): string {
 					Math.max(0, g.better.length - CAPS.growth) +
 					Math.max(0, g.same.length - CAPS.growth_same) +
 					Math.max(0, (g.unclear ?? []).length - CAPS.growth) +
+					Math.max(0, (g.unsure ?? []).length - CAPS.growth) +
 					Math.max(0, g.failed.length - CAPS.failed)
 				: 0) + Math.max(0, (d.search?.length ?? 0) - CAPS.search);
 		parts.push(cut > 0 ? `${growth}\n${cut} more growth entries are in result.json.\n` : growth);

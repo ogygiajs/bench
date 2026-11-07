@@ -6,6 +6,7 @@ import { diff_engine, render_engine_markdown } from './engine/diff.ts';
 import type { EngineDiff } from './engine/diff.ts';
 import { diff_growth } from './growth/index.ts';
 import type { GrowthDiff } from './growth/index.ts';
+import type { OddsOptions } from './growth/odds.ts';
 import { diff_search } from './search/index.ts';
 import type { SearchFinding } from './search/index.ts';
 import { load_prices } from './prices.ts';
@@ -83,7 +84,12 @@ export interface SectionsDiff {
 	audit?: AuditReport | null;
 }
 
-export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null): SectionsDiff {
+export function diff_sections(
+	base: Report,
+	pr: Report,
+	files: FileDiff[] | null,
+	odds: OddsOptions = {}
+): SectionsDiff {
 	// What V8 did is only comparable on one V8: across Node versions the engine part is left out.
 	const same_engine = base.node === pr.node && base.env?.v8 === pr.env?.v8;
 	return {
@@ -95,7 +101,7 @@ export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null
 						pr_prefix: pr.git.prefix
 					})
 				: null,
-		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth) : null,
+		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth, odds) : null,
 		search: base.search && pr.search ? diff_search(base.search, pr.search) : null,
 		audit: pr.audit ?? null
 	};
@@ -123,6 +129,11 @@ export function render_sections(d: SectionsDiff): string {
 			if ((g.unclear ?? []).length > 0) {
 				lines.push('Steps that fell as the input grew (the scaled input may be invalid):', '');
 				for (const f of g.unclear) lines.push(`- ${f.text}`);
+				lines.push('');
+			}
+			if ((g.unsure ?? []).length > 0) {
+				lines.push('Class changes the odds do not back (not findings):', '');
+				for (const f of g.unsure!) lines.push(`- ${f.text}`);
 				lines.push('');
 			}
 			if (g.same.length > 0) {
