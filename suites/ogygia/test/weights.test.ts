@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { REPORT_SCHEMA, environment } from '@bench/heisenbench';
 import type { DiffResult, Report } from '@bench/heisenbench';
 import type { AppReport } from '@bench/heisenbench/app';
+import type { AppWeights } from '@bench/heisenbench/weight';
 import { main_weights, rank_by_weights } from '../src/weights.ts';
 import type { StoredWeights } from '../src/weights.ts';
 import { weight_lines } from '../src/section.ts';
@@ -163,4 +164,93 @@ test('the main run’s weights carry the commit and the environment that counted
 	assert.deepEqual(w.env, environment());
 	assert.equal(w.functions['core/router/match > match_one']['dashboard server request'].calls, 15);
 	assert.throws(() => main_weights([{ ...report, node: 'v1.0.0' }], SHA), /Node v1\.0\.0/);
+});
+
+/** Weights of real traffic as `heisenbench weights import` writes them: 100 requests in 10 s. */
+function real(): AppWeights {
+	return {
+		schema: 'heisenbench-app-weights/1',
+		source: { sha: null, ogygia: {}, scenarios: [] },
+		units: {
+			'real request': {
+				steps: 0,
+				units: 100,
+				side: 'server',
+				traffic: {
+					profiles: { cpuprofile: 1 },
+					requests: 100,
+					window_ms: 10_000,
+					start: null,
+					end: null,
+					sampled_ms: 100,
+					mapped_ms: 82,
+					unmatched: [{ frame: 'parse (native):0', reason: 'no file', self_ms: 18 }]
+				}
+			}
+		},
+		functions: {
+			'router/match > rare': {
+				'real request': {
+					calls: 0,
+					self_steps: 0,
+					inclusive_steps: 0,
+					self_ns: 50_000,
+					total_ns: 50_000,
+					samples: 400,
+					calls_counted: false
+				}
+			}
+		}
+	};
+}
+
+test('with real traffic on the results branch, findings are ranked by real cost', () => {
+	const diff = diff_of([
+		['match_path', 'match_one', 4],
+		['match_path', 'rare', 200]
+	]);
+	const w = rank_by_weights(file_of(stored()), diff, head, { real_path: file_of(real()) });
+	assert.equal(w.basis, 'real traffic');
+	assert.equal(w.real?.status, 'used');
+	// `rare` runs once per scenario request, but real traffic spends 50 µs a request in it
+	assert.deepEqual(
+		w.ranked.map((r) => [r.function, r.cost ? 'real' : 'none']),
+		[
+			['packages/router/src/match.ts > rare', 'real'],
+			['packages/router/src/match.ts > match_one', 'none']
+		]
+	);
+	assert.equal(w.ranked[0].cost?.requests_per_day_from, 'profiles');
+	const md = weight_lines(w).join('\n');
+	assert.match(md, /\*\*Real cost\*\*; app weights of main `bbbbbbb`/);
+	assert.match(md, /82% of sampled self time mapped to counted functions/);
+	assert.match(
+		md,
+		/\| `packages\/router\/src\/match\.ts > rare:140` \| \+200 steps per call \| .*≈ .*CPU-.*\/day at 864K requests\/day/
+	);
+	assert.match(
+		md,
+		/match_one:140` \| \+4 steps per call \| not in the imported traffic \| \+1200 steps per dashboard server request/
+	);
+	// no file: today's ranking, never a failure
+	const none = rank_by_weights(file_of(stored()), diff, head, {
+		real_path: '/nonexistent/real-weights.json'
+	});
+	assert.equal(none.basis, 'app weights');
+	assert.equal(none.real?.status, 'missing');
+	assert.match(weight_lines(none).join('\n'), /\*\*Real-app weight\*\* \(main `bbbbbbb`\)/);
+	// unreadable: said, and today's ranking
+	const bad = rank_by_weights(file_of(stored()), diff, head, { real_path: file_of('{nope') });
+	assert.equal(bad.real?.status, 'unreadable');
+	assert.equal(bad.basis, 'app weights');
+	// app weights from another environment: real traffic still ranks, and the section says why
+	const other = rank_by_weights(file_of(stored({ node: 'v25.0.0' })), diff, head, {
+		real_path: file_of(real())
+	});
+	assert.equal(other.status, 'ranked');
+	assert.equal(other.basis, 'real traffic');
+	assert.match(
+		weight_lines(other).join('\n'),
+		/App weights not used: they were counted in another environment/
+	);
 });

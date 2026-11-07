@@ -15,6 +15,7 @@ import {
 	renderSections
 } from '@bench/heisenbench';
 import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
+import { calls_text, cost_text } from '@bench/heisenbench/weight';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { SearchRun } from './search.ts';
@@ -118,12 +119,66 @@ function time_text(ns: number): string {
 	return `${ns.toFixed(0)} ns`;
 }
 
+/**
+ * Ranked by real cost (real-traffic weights on the results branch): the change times the calls
+ * of the imported traffic, in CPU time per day, with its range; the growth cases and recorded
+ * growth findings among them. A change the traffic does not run is ranked after, by app weight.
+ */
+function real_cost_lines(w: WeightRun): string[] {
+	const from = w.sha ? `; app weights of main ${short(w.sha)}` : '';
+	const lines = [
+		`**Real cost**${from}: ranked by what each finding costs the imported production traffic, in CPU time per day.${w.real?.coverage ? ` ${markdownCell(w.real.coverage)}.` : ''}${w.note ? ` App weights not used: ${markdownCell(w.note)}.` : ''}`,
+		''
+	];
+	const shown = w.ranked.filter((r) => r.show);
+	const recorded = (w.recorded ?? []).filter((r) => r.cost);
+	if (shown.length === 0 && recorded.length === 0) {
+		lines.push('Nothing changed that the imported traffic or the app scenarios run.', '');
+		return lines;
+	}
+	if (shown.length > 0) {
+		lines.push(
+			'| Finding | Δ | Real cost | Per unit of the app scenarios |',
+			'| --- | ---: | --- | --- |'
+		);
+		for (const r of shown.slice(0, CAPS.weights)) {
+			const name =
+				r.kind === 'growth'
+					? `${code(r.function)} (growth of ${code(r.case)})`
+					: code(`${r.function}:${r.line}`);
+			const per = r.kind === 'growth' ? 'steps per run, at its own input' : 'steps per call';
+			const cost = r.cost
+				? markdownCell(`${calls_text(r.cost)} → ${cost_text(r.cost)}`)
+				: 'not in the imported traffic';
+			const t = r.top;
+			const unit = t
+				? `${steps_text(t.steps)} steps per ${markdownCell(t.unit)} (${Math.round(t.calls * 100) / 100} calls)`
+				: '—';
+			lines.push(`| ${name} | ${steps_text(r.delta_per_call)} ${per} | ${cost} | ${unit} |`);
+		}
+		const rest = shown.length - Math.min(shown.length, CAPS.weights);
+		if (rest > 0) lines.push('', `${rest} more in result.json.`);
+		lines.push('');
+	}
+	if (recorded.length > 0) {
+		lines.push(
+			'Growth from recorded calls, by what the growing function takes on the traffic now:',
+			''
+		);
+		for (const r of recorded.slice(0, CAPS.weights))
+			lines.push(`- ${code(r.function)}: takes ${markdownCell(cost_text(r.cost!))}`);
+		lines.push('');
+	}
+	return lines;
+}
+
 /** Changed functions ranked by real-app weight: a short table, or one line saying why not. */
 export function weight_lines(w: WeightRun): string[] {
 	const from = w.sha ? ` (main ${short(w.sha)})` : '';
 	if (w.status !== 'ranked') {
 		return [`**Real-app weight**: not ranked, ${markdownCell(w.note ?? w.status)}${from}.`, ''];
 	}
+	if (w.basis === 'real traffic') return real_cost_lines(w);
 	// no function changed: nothing to rank, nothing to say
 	if (w.ranked.length === 0) return [];
 	const shown = w.ranked.filter((r) => r.show);

@@ -10,7 +10,9 @@
  * --measure <layers> (the plain-build layers every `heisenbench run` adds: `time,bytes,leaks`, `all` or
  * `none`; default none for a PR, all for a full run), --time on|off (a PR's time layer, default on),
  * --weights <app-weights.json> (a PR: rank the changed functions by main's real-app weights; a
- * missing file is said in one line), --search-budget <seconds> (a PR's worst-case search over the
+ * missing file is said in one line), --real-weights <real-weights.json> (with --weights: rank by
+ * real cost on imported production traffic when the file is there; a missing one changes nothing),
+ * --requests-per-day <n> (the real cost's traffic; default the profiles' rate), --search-budget <seconds> (a PR's worst-case search over the
  * changed cases that declare an input, both sides; default 240, 0 turns it off), --recorded
  * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
  * modules only, or none; default all for a full run, changed for a PR).
@@ -62,6 +64,8 @@ const { values } = parseArgs({
 		measure: { type: 'string' },
 		time: { type: 'string', default: 'on' },
 		weights: { type: 'string' },
+		'real-weights': { type: 'string' },
+		'requests-per-day': { type: 'string' },
 		'search-budget': { type: 'string', default: String(SEARCH_BUDGET_MS / 1000) },
 		recorded: { type: 'string' }
 	}
@@ -180,7 +184,13 @@ async function main(): Promise<void> {
 				result.time = await run_time(head, base_tree, base_files, join(out, 'time'), log);
 			}
 			if (result.diff && result.head && values.weights !== undefined) {
-				result.weights = rank_by_weights(resolve(values.weights), result.diff, result.head);
+				result.weights = rank_by_weights(resolve(values.weights), result.diff, result.head, {
+					base: result.base,
+					real_path: values['real-weights'] && resolve(values['real-weights']),
+					requests_per_day: values['requests-per-day']
+						? Number(values['requests-per-day'])
+						: undefined
+				});
 				log(
 					`real-app weight: ${result.weights.status}${result.weights.note ? ` (${result.weights.note})` : ''}`
 				);
@@ -222,6 +232,16 @@ async function main(): Promise<void> {
 				`growth from recorded calls: ${result.recorded.findings.length} findings of ${result.recorded.grown} grown (build ${run.seconds.build} s, record ${run.seconds.record} s, grow ${run.seconds.grow} s)${run.error ? `; ${run.error}` : ''}`
 			);
 		}
+	}
+
+	// with real traffic, the recorded findings are ranked too: by what each takes on it now
+	if (result.weights?.real?.status === 'used' && result.recorded?.findings.length && result.diff) {
+		result.weights = rank_by_weights(resolve(values.weights!), result.diff, result.head!, {
+			base: result.base,
+			real_path: resolve(values['real-weights']!),
+			recorded: result.recorded.findings,
+			requests_per_day: values['requests-per-day'] ? Number(values['requests-per-day']) : undefined
+		});
 	}
 
 	const md = mb ? render_pr_section(result) : render_full_summary(result);
