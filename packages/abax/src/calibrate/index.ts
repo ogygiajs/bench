@@ -1,5 +1,5 @@
-import { fileURLToPath } from 'node:url';
 import { run_child } from '../measure/spawn.ts';
+import { package_file } from '../own.ts';
 import { DEFAULT_SIZES, fit_curve, prices_from_fits, priced_keys, write_prices } from './prices.ts';
 import type { CurveFit, PricePoint } from './prices.ts';
 import { fit_weights, measure_corpus, write_weights } from './weights.ts';
@@ -12,11 +12,10 @@ import type { Machine } from './points.ts';
  * Run them on a quiet machine: the numbers they write are what every later count is priced with.
  */
 
-export const CORPUS_ROOT = fileURLToPath(new URL('../../calibration/', import.meta.url));
-export const CORPUS_FILES = [
-	fileURLToPath(new URL('../../calibration/corpus.bench.ts', import.meta.url))
-];
-export const DEFAULT_PRICES_PATH = fileURLToPath(new URL('../../prices.json', import.meta.url));
+/** The calibration corpus: only a clone of the bench repo has it (`calibrate` says so from npm). */
+export const CORPUS_ROOT = package_file('calibration/');
+export const CORPUS_FILES = [package_file('calibration/corpus.bench.ts')];
+export const DEFAULT_PRICES_PATH = package_file('prices.json');
 
 export interface CalibrateWeightsOptions {
 	root?: string;

@@ -1,6 +1,6 @@
 import MagicString from 'magic-string';
 import { parseSync } from 'oxc-parser';
-import { fileURLToPath } from 'node:url';
+import { own_file } from '../own.ts';
 import { find_token, instrument } from '../transform/instrument.ts';
 import { load_prices } from '../prices.ts';
 
@@ -23,7 +23,7 @@ import { load_prices } from '../prices.ts';
  * `export const __abax_rec = { name: fn }` hands the top-level ones to a replay.
  */
 
-const RECORDER = fileURLToPath(new URL('./recorder.ts', import.meta.url));
+const RECORDER = own_file('coverage/recorder');
 import { INJECTED_CLOSE, INJECTED_OPEN } from './markers.ts';
 
 interface Node {

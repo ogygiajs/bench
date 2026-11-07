@@ -5,7 +5,7 @@ import type { LoaderConfig } from './core.ts';
  * Loader hooks for `module.register`:
  *
  *   import { register } from 'node:module';
- *   register('@bench/abax/hooks', import.meta.url, { data: { root: process.cwd() } });
+ *   register('abax/hooks', import.meta.url, { data: { root: process.cwd() } });
  *
  * The hooks run off-thread; the counter modules they serve import the runtime on the main thread.
  */

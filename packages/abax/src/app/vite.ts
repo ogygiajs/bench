@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { abax_plugin } from '../plugin.ts';
+import { OWN_DIR, own_file } from '../own.ts';
 import { module_id } from '../transform/index.ts';
 
 /*
@@ -18,9 +18,9 @@ import { module_id } from '../transform/index.ts';
  *   it to the unpatched build function by function.
  */
 
-const RUNTIME_PATH = fileURLToPath(new URL('../runtime/index.ts', import.meta.url));
-const PAGE_RUNTIME = fileURLToPath(new URL('./page.ts', import.meta.url));
-const ABAX_SRC = fileURLToPath(new URL('../', import.meta.url));
+const RUNTIME_PATH = own_file('runtime/index');
+const PAGE_RUNTIME = own_file('app/page');
+const ABAX_SRC = OWN_DIR;
 const SHIM = '\0abax-shim:';
 const SOURCE_EXT = ['.js', '.mjs', '.svelte', '.ts', '.mts'];
 

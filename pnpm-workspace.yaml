@@ -13,6 +13,9 @@ catalog:
   # graph); exact, because a parser update can move the AST positions blocks are keyed by.
   oxc-parser: 0.157.0
   rolldown: 1.2.2
+  # Builds Abax's npm package (built JavaScript and .d.ts; Node does not strip types in
+  # node_modules). The same builder ogygia uses.
+  tsdown: ^0.23.7
 catalogs:
   # Exact on purpose: a new Lighthouse, Playwright, Chrome launcher or autocannon changes the
   # numbers the app benchmark reports, so they move only by hand. Playwright also matches the
@@ -24,3 +27,6 @@ catalogs:
     lighthouse: 13.6.0
     playwright: 1.62.1
     tinybench: 6.2.3
+minimumReleaseAgeExclude:
+  - rolldown-plugin-dts@0.30.0
+  - tsdown@0.23.7

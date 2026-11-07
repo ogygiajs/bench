@@ -1,6 +1,6 @@
 import '../warnings.ts';
 import { createHash } from 'node:crypto';
-import { createRequire, stripTypeScriptTypes } from 'node:module';
+import { stripTypeScriptTypes } from 'node:module';
 import { relative, sep } from 'node:path';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import remapping from '@jridgewell/remapping';
@@ -9,6 +9,8 @@ import type { InstrumentResult } from './instrument.ts';
 import { load_prices } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import type { ModuleMeta } from '../meta.ts';
+import { own_url } from '../own.ts';
+import { require_peer, require_typescript } from '../peer.ts';
 
 export { instrument } from './instrument.ts';
 export type { InstrumentOptions, InstrumentResult } from './instrument.ts';
@@ -16,7 +18,7 @@ export type { InstrumentOptions, InstrumentResult } from './instrument.ts';
 export const VIRTUAL_PREFIX = 'abax:module/';
 
 /** Absolute file URL of the runtime, imported by every virtual counter module. */
-export const RUNTIME_URL = new URL('../runtime/index.ts', import.meta.url).href;
+export const RUNTIME_URL = own_url('runtime/index').href;
 
 export interface TransformOptions {
 	/** Absolute path of the file (also used to pick the parser language). */
@@ -96,26 +98,12 @@ interface TypeScriptCompiler {
 	): { outputText: string; sourceMapText?: string };
 }
 
-const typescripts = new Map<string, TypeScriptCompiler>();
-
-/** The project's TypeScript (resolved from the file), else Abax's own; null when neither exists. */
-function typescript_for(filename: string): TypeScriptCompiler | null {
-	let path: string | null = null;
-	for (const from of [filename, import.meta.url]) {
-		try {
-			path = createRequire(from).resolve('typescript');
-			break;
-		} catch {
-			// next
-		}
-	}
-	if (path === null) return null;
-	let ts = typescripts.get(path);
-	if (!ts) {
-		ts = createRequire(import.meta.url)(path) as TypeScriptCompiler;
-		typescripts.set(path, ts);
-	}
-	return ts;
+/** The project's TypeScript (resolved from the file), else Abax's own; an error when neither exists. */
+function typescript_for(filename: string): TypeScriptCompiler {
+	return require_typescript<TypeScriptCompiler>(
+		`${filename} uses TypeScript that type stripping cannot run (enum, namespace or parameter properties); compiling it`,
+		filename
+	);
 }
 
 /**
@@ -133,11 +121,6 @@ export function ts_to_js(
 		if ((e as { code?: unknown }).code !== 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX') throw e;
 	}
 	const ts = typescript_for(filename);
-	if (ts === null) {
-		throw new Error(
-			`abax: ${filename} uses TypeScript that type stripping cannot run (enum, namespace or parameter properties), and the typescript package to compile it is not installed`
-		);
-	}
 	const out = ts.transpileModule(source, {
 		fileName: filename,
 		compilerOptions: {
@@ -169,26 +152,13 @@ interface SvelteCompiler {
 	compileModule(source: string, options: Record<string, unknown>): SvelteCompiled;
 }
 
-const compilers = new Map<string, SvelteCompiler>();
-
 /**
  * The Svelte compiler of the project the file belongs to (its output imports that project's
  * `svelte/internal/*`, so compiler and runtime must be one version); Abax's own when the project
  * has none.
  */
 function svelte_compiler(filename: string): SvelteCompiler {
-	let path: string;
-	try {
-		path = createRequire(filename).resolve('svelte/compiler');
-	} catch {
-		path = createRequire(import.meta.url).resolve('svelte/compiler');
-	}
-	let c = compilers.get(path);
-	if (!c) {
-		c = createRequire(import.meta.url)(path) as SvelteCompiler;
-		compilers.set(path, c);
-	}
-	return c;
+	return require_peer<SvelteCompiler>('svelte/compiler', `compiling ${filename}`, filename);
 }
 
 /**

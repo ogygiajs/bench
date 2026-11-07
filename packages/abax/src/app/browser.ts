@@ -4,6 +4,7 @@ import type { PageCounts } from './snapshot.ts';
 import type { Snapshot } from '../runtime/index.ts';
 import type { ModuleMeta } from '../meta.ts';
 import type { AppRequest } from './server.ts';
+import { require_peer } from '../peer.ts';
 
 /*
  * A counted browser session (spec 8): a page of the counted client build loaded in Chromium under
@@ -189,12 +190,12 @@ export interface PwBrowser {
 
 /** Chromium from Playwright (an optional dependency: only app runs need it). */
 export async function launch_browser(): Promise<PwBrowser> {
-	const { chromium } = (await import('playwright')) as unknown as {
+	const { chromium } = require_peer<{
 		chromium: {
 			launch(o: Record<string, unknown>): Promise<PwBrowser>;
 			executablePath(): string;
 		};
-	};
+	}>('playwright', 'the app layer (Chromium)');
 	const { existsSync } = await import('node:fs');
 	let executable: string | undefined;
 	try {

@@ -10,6 +10,7 @@ import { run_child } from '../measure/spawn.ts';
 import type { CaseResult } from '../measure/child.ts';
 import type { TimeStats } from '../measure/time.ts';
 import { nnls, r_squared } from './nnls.ts';
+import { package_url } from '../own.ts';
 
 /*
  * Steps -> nanoseconds (spec 6). A corpus of bench cases is counted (instrumented, in this
@@ -57,7 +58,7 @@ export interface CorpusPoint {
 	ns: number;
 }
 
-export const DEFAULT_WEIGHTS_PATH = new URL('../../weights.json', import.meta.url);
+export const DEFAULT_WEIGHTS_PATH = package_url('weights.json');
 
 export function family_of(name: string): string {
 	const at = name.lastIndexOf(' @');

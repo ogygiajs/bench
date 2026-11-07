@@ -1,8 +1,8 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { run_process } from '../proc.ts';
+import { own_file } from '../own.ts';
 import type { ProcessError } from '../proc.ts';
 
 /**
@@ -17,7 +17,7 @@ const CHILD_LIMIT_MS = 12 * 60_000;
  * inlining for real bytes). A job goes in as a JSON file; the result comes back as one.
  */
 
-const CHILD = fileURLToPath(new URL('./child.ts', import.meta.url));
+const CHILD = own_file('measure/child');
 
 /** Engine flags per job kind. */
 const FLAGS: Record<string, string[]> = {

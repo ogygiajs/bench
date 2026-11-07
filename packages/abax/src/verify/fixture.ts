@@ -2,9 +2,9 @@ import { execFile, execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { Report } from '../report.ts';
+import { own_file, package_file } from '../own.ts';
 
 /*
  * What every planted case needs: two sides of a change as two directories (measured apart, the
@@ -14,10 +14,13 @@ import type { Report } from '../report.ts';
 
 const exec = promisify(execFile);
 
-export const CLI = fileURLToPath(new URL('../cli.ts', import.meta.url));
-export const BENCH_API = fileURLToPath(new URL('../bench.ts', import.meta.url));
-/** The answer keys: one directory per layer, `base/` and one directory per planted change. */
-export const KEYS = fileURLToPath(new URL('../../test/', import.meta.url));
+export const CLI = own_file('cli');
+export const BENCH_API = own_file('bench');
+/**
+ * The answer keys: one directory per layer, `base/` and one directory per planted change. Only a
+ * clone of the bench repo has them (`abax verify` says so from npm).
+ */
+export const KEYS = package_file('test/');
 
 export type Files = Record<string, string>;
 
