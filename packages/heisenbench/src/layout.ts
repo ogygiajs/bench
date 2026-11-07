@@ -18,7 +18,10 @@
  * - Generator object: 40 B, plus a register FixedArray (8 B + 4 B per local).
  * - Regexp literal (a fresh JSRegExp each evaluation): 28 B.
  * - Strings: sequential one-byte string = 12 B header (map + hash + length) + 1 B/char, rounded up
- *   to 4 B. Two-byte strings and cons strings are not told apart (estimated as flat one-byte).
+ *   to 4 B. Two-byte strings are not told apart (estimated as flat one-byte).
+ * - Joins (`a + b`, `s += x`, template literals): a ConsString of 20 B (header + first + second)
+ *   from 13 characters on, a flat copy below that. V8 links the two halves without copying them,
+ *   so building a long string piece by piece costs per piece, not per character so far.
  * - Substrings (slice, substring, trim, the parts of split, regex captures): a SlicedString of 20 B
  *   (header + parent + offset) from 13 characters on, a copy below that.
  * - Map / Set: JSMap/JSSet header 16 B plus the initial OrderedHashMap/OrderedHashSet table.
@@ -75,6 +78,10 @@ export const SLICED_STRING = 20;
 export function substring_bytes(length: number): number {
 	return length >= SLICED_MIN ? SLICED_STRING : string_bytes(length);
 }
+
+/** V8 joins strings of at least this many characters as ConsStrings (ConsString::kMinLength). */
+export const CONS_MIN = 13;
+export const CONS_STRING = 20;
 
 /** A regex match array (index, input and groups are in-object fields). */
 export function match_bytes(captures: number): number {

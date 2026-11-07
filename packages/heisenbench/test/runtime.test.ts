@@ -2,7 +2,13 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { fn_of, load_module, measure } from './helpers.ts';
 import type { CaseReport } from '../src/report.ts';
-import { array_bytes, closure_bytes, object_bytes, string_bytes } from '../src/layout.ts';
+import {
+	array_bytes,
+	closure_bytes,
+	CONS_STRING,
+	object_bytes,
+	string_bytes
+} from '../src/layout.ts';
 
 function edge(r: CaseReport, from: string, to: string): number {
 	const short = (id: string) => (id === '<root>' ? id : id.slice(id.indexOf(' > ') + 3));
@@ -184,6 +190,29 @@ test('allocation sites: exact counts and V8-layout byte estimates', async () => 
 	}
 	assert.equal(f.allocations, 18);
 	assert.equal(f.bytes, 2 * expect.reduce((s, [, , b]) => s + b, 0));
+});
+
+test('joins: a long result is a ConsString, so building a string piece by piece is linear', async () => {
+	const m = await load_module(`export function build(n: number) {
+	let out = '';
+	for (let i = 0; i < n; i++) out += '<p>one piece</p>';
+	return out.length;
+}
+export function short(a: string) { return a + '!'; }
+export function long(a: string) { return \`<p>\${a}</p>\`; }
+`);
+	const at = async (n: number) => fn_of(await measure(() => m.build(n as never)), 'build');
+	const [none, small, big] = [await at(0), await at(1000), await at(2000)];
+	assert.equal(
+		big.self_steps - small.self_steps,
+		small.self_steps - none.self_steps,
+		'the second thousand pieces cost what the first did'
+	);
+	assert.equal(big.bytes, 2 * small.bytes, 'one ConsString per piece');
+	const s = fn_of(await measure(() => m.short('abc' as never)), 'short');
+	assert.equal(s.bytes, string_bytes(4), 'below 13 characters the join is a flat copy');
+	const l = fn_of(await measure(() => m.long('a long enough body' as never)), 'long');
+	assert.equal(l.bytes, CONS_STRING);
 });
 
 test('new, rest parameters and arguments are sized', async () => {

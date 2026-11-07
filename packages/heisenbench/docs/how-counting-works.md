@@ -97,7 +97,12 @@ Some costs depend on sizes only known at run time. The runtime adds them when th
 | each element of an array spread  |     2 |
 | each element of a rest parameter |     1 |
 | each element of `arguments`      |     1 |
-| each character of a built string |  0.25 |
+| each character of a short join   |  0.25 |
+
+A join (`a + b`, `s += x`, a template literal) whose result has 13 characters or more costs no
+characters: V8 makes a cons string that points at the two halves and copies neither, so a page
+built piece by piece in a loop costs per piece. Below 13 characters V8 copies, and so does the
+count.
 
 **Steps** of a function are `sum(block count × block price)` plus these dynamic costs plus the
 built-ins it called.
@@ -226,6 +231,7 @@ The size model is V8 on 64 bits with pointer compression, Node's default:
 | Generator                | 40 + 8 + 4 per local                                                          |
 | Regex literal            | 28                                                                            |
 | One-byte string          | 12 + 1 per character, rounded up to 4                                         |
+| Join of 13+ characters   | 20 (a cons string: it points at its two halves, nothing is copied)            |
 | `Map` / `Set` (empty)    | 88 / 72                                                                       |
 
 A priced built-in that returns something new adds it too, charged to the line that called it:
