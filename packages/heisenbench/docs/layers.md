@@ -17,6 +17,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
 | Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | nightly: every case  |
 | Blame             | `heisenbench blame`                                  | counting | regressed cases, 60 recounts or 5 min      | no                   |
+| Proof             | `heisenbench prove`                                  | counting | no (on demand)                             | no (on demand)       |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
 | Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
 | Coverage          | `heisenbench coverage`                               | counting | no                                         | no                   |
@@ -736,6 +737,134 @@ this change in `packages/core/src/server/document-assembly.ts` L29–30 (+137.3K
 
 with `locate` in the table at "1 call/request (app scenarios) or 201 µs/request of real time × 37:
 1756x apart", the same row the ranked findings show for it. 8 recounts, 3 s.
+
+## Proving a faster version
+
+Growth from recorded calls finds a function that grows too fast. `heisenbench prove` decides
+whether a replacement for it is a proven improvement: the same behavior, and fewer steps.
+
+```bash
+heisenbench prove packages/core/src/insights/page-insights.ts lcp_rivals \
+  --candidate faster.ts --records .heisenbench/unmeasured/records [--bench bench/insights.bench.ts]
+```
+
+The candidate is a file of top-level declarations. Each replaces the declaration of the same
+name in the module (all its overloads); a name the module does not have is added before the
+first one replaced. So a candidate can be one function, the function and a helper it needs, or
+the whole fixed module (declarations that did not change change nothing). An import is accepted
+only when the module already has it word for word. The function must be top level; a fix inside
+a closure is proven through the function that holds it.
+
+**Same behavior.** The original and the candidate run on the counting build, one fresh copy of
+each input per side:
+
+- every recorded input of the function: the test run's recordings (`--records`, the gate's
+  sample files), `heisenbench record`'s, and the bench cases of `--bench`, recorded at 1x, 10x
+  and 100x when a case declares `scale`
+- the three largest of them grown by the generic scaler at 1x, 10x and 100x, one argument at a
+  time
+- seeded edge cases of each recorded input's shape, one change each: an array empty, of one
+  element, with its first element twice more, every element twice, reversed, sorted, shuffled,
+  with ties; a string empty, of one character, doubled, with accented, combining and astral
+  characters, its lines doubled, reversed, cut, with CRLF ends; a number 0, -0, ±1, NaN,
+  ±Infinity, 2^53 - 1; a boolean flipped; a Map or Set empty, of one entry, reversed. Each keeps
+  the value's type and every key. `--edge all` also deletes keys and sets them to undefined:
+  inputs the function's types rule out.
+
+Each pair of runs is compared: the result deeply (NaN is NaN, -0 is not 0, a key set to
+undefined is not a missing key, Map and Set entries and object keys in order, Dates, typed
+arrays, class instances by their class's name), or the error by its name and message, and the
+arguments and `this` after the call (a candidate that sorts its caller's array differs there).
+One difference rejects the candidate. The input it differs on is shrunk (elements removed,
+strings halved, numbers made 0, while the two still differ) and reported.
+
+**Fewer steps.** The same runs are counted: steps, allocations and bytes per input, and the
+curve over the grown sizes, fitted as growth fits a case. A recorded or grown input may not
+cost more than the original's steps plus 5% plus 256 (`--tolerance`, `--tolerance-steps`), and
+the total must fall by 1% or the curve must be better (a lower class, or an exponent 0.25 lower).
+A fix that changes the curve usually builds something first (a Map of the list it used to
+search): on a short input that costs more than the loop did. When the candidate's curve is
+better and it is cheaper at every size of the steepest grown curve, an input may cost up to 3x
+the original's steps (`--setup-tolerance 200`); those inputs and the most they cost are in the
+headline. Edge cases decide behavior only: their steps are shown, never a regression.
+
+The five functions ogygia PR #187 made linear, each proven on the parent commit (`01dc5b9`, the
+test recordings of `packages/core` and `packages/devtools` for these functions) against the
+fixed declarations from `b46798f`:
+
+```
+PROVEN   packages/core/src/compiler/flags.ts > collect_flag_sites  proven: n^1.55 -> n^1.01, 1.70e7 -> 3.59e6 steps at 100x, identical on 101 inputs
+PROVEN   packages/core/src/insights/page-insights.ts > lcp_rivals  proven: n^1.88 -> n^0.98, 2.73e6 -> 83,484 steps at 100x, identical on 777 inputs
+PROVEN   packages/devtools/src/profiler/gc.ts > attribute_gc  proven: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, identical on 2,238 inputs; up to +162% on 18 input(s) up to size 35,250
+PROVEN   packages/devtools/src/profiler/patterns.ts > find_wait_patterns  proven: n^1.83 -> n^1.17, 8.47e6 -> 1.08e6 steps at 100x, identical on 775 inputs; up to +37% on 6 input(s) up to size 261
+PROVEN   packages/devtools/src/profiler/source-scan.ts > constant_work  proven: n^1.72 -> n^0.98, 1.11e8 -> 1.12e7 steps at 100x, identical on 68 inputs; up to +18% on 7 input(s) up to size 55,900
+```
+
+`line_at` changed its parameters (the newline offsets instead of the text), so its fix is proven
+through `collect_flag_sites`, the exported function that calls it; `running_at`, `batched` and
+`impure` are closures, proven through `attribute_gc`, `find_wait_patterns` and `constant_work`.
+With `--edge all`, `attribute_gc` is rejected: the fix differs from the original on a running
+segment without `t1`, which `t1: number` rules out:
+
+```
+REJECTED packages/devtools/src/profiler/gc.ts > attribute_gc  rejected: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, differs on 2 of 1,942 inputs; up to +162% on 18 input(s) up to size 35,250
+           rejected: behaves differently on 2 of 1942 inputs
+           differs on: [   { slices: [], events: [ { t: 38.73 } ], running: [ {}, { t1: 37.26 } ] } ]
+           out.pauses[0].running: present vs missing
+```
+
+`lcp_rivals` with its `files` list left without its dedupe is rejected on an image named twice:
+`out.files.length: 1 vs 2`.
+
+The JSON report goes to `--out` (default `heisenbench-prove.json`, schema `heisenbench-prove/1`):
+the verdict, the headline, every input's steps and outcome, the growth rows, the line blame of
+both sides at the largest input, and the patch. `--md` writes the section, the patch under it
+ready for `git apply`. Exit 0 when proven, 1 when not.
+
+### Where a candidate runs
+
+A candidate's code runs only in a child process, on the counting build, under Node's permission
+model: reads under the project root and Heisenbench, a write to its one result file, native
+addons (the parser the transform uses is one), and nothing else: no network, no child
+processes, no workers, no inspector. Every call has a step cap: the original's 10¹⁰ (`--cap`), the
+candidate's 20 times the original's steps on that input plus 10⁶, so a candidate that loops
+forever is stopped where it loops. Before it runs, its source is checked: it may not read
+`process`, `require`, `module`, `globalThis`, `global`, `self`, `window`, `fetch`, `WebSocket`,
+`eval`, `Function`, `WebAssembly` and the like as variables, may not import (an import the module
+already has excepted), use `import()` or `import.meta`, and may not name `constructor` or
+`__proto__` as a property or in a string (they reach the Function constructor from any value).
+The check is syntactic: a name built at run time (`x['con' + 'structor']`) passes it, and the
+permissions stop what it reaches (`test/prove.test.ts` plants one that tries to write a file).
+
+### Proposals
+
+`heisenbench prove <module> <function> --propose` asks a model for candidates and proves each
+one; only proven ones are reported, each with its patch. Up to `--proposals` (default 3), one at a
+time: each request says why the ones before it were not proven. It uses the Claude API through
+the Anthropic SDK, which the project installs (`npm i -D @anthropic-ai/sdk`; Heisenbench does not
+depend on it), with `ANTHROPIC_API_KEY` set; the model is `claude-opus-5-5` unless `--model` names
+another. Without a key it prints how to set one, sends nothing and runs nothing.
+
+What is sent: the function's source, its lines with the most steps (the original counted on its
+own inputs) and its growth. Recorded inputs can hold secrets (a token in a test fixture, a
+customer page): three of the smallest are sent only with `--send-inputs`, and so is the input a
+rejected proposal differed on. What comes back is source only, checked and run as above.
+
+### Running it on a finding
+
+`heisenbench prove` is not part of PR CI: a proof runs a function thousands of times and is for
+the one finding someone is fixing. On ogygia, a finding of growth from recorded calls names the
+function; its inputs are in the gate's records (`node internal/heisenbench/src/unmeasured.ts`
+writes them to `.heisenbench/unmeasured/records`, for functions no bench runs), or record them
+for that function alone: a targets file `{ "<module>": ["<function>"] }`, the package's tests
+run with `HEISENBENCH_RECORD=<targets> HEISENBENCH_RECORD_OUT=<dir>`, then `--records <dir>`.
+`--bench` adds the bench files that call it.
+
+Limits: inputs are only as varied as the recordings; a function of one source string (a
+compiler pass) gets few edge cases, since a string's variants rarely stay valid source. Behavior
+is what the function returns, throws and does to its arguments: a candidate that changes module
+state, a global or a closure differently is not caught. The candidate's module is a second copy
+of the module: work it moves to module scope runs at import, uncounted.
 
 ## Real-app weight
 
