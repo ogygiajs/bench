@@ -312,6 +312,37 @@ it is not counted: growth stops there and falls back to a doubling ladder of the
 ok       exponential  exponential (exponent 7.999; 89 / 341 / 5381 / 1376261 steps; exceeded the cap at 16x, grown on 1x / 2x / 4x / 8x)
 ```
 
+A size that overflows the call stack (code that recurses as deep as its input) stops growing the
+same way: the sizes below it are counted on the same ladder and fitted, and the line says where it
+overflowed. That is a finding of its own. neotraverse's `forEach` on a 32-level chain, before the
+case had a `scale` of its own:
+
+```
+ok       forEach · deep  quadratic (exponent 1.907; 22299 / 51439 / 132783 / 387727 / 561327 / 1266639 / 4500559 / 16872783 steps; odds quadratic >99%; overflowed the call stack at 100x, grown on 1x / 2x / 4x / 8x / 10x / 16x / 32x / 64x)
+```
+
+Two more notes keep a class from reading as more than it is:
+
+- **No step moved.** When the generic scaler grew the input but every size counted the same
+  steps, the class is `constant` and the line says the scaler did not grow what the work follows.
+  A walk over a flat object of 64 keys is constant in the length of its string values, which is
+  all the scaler grows there:
+
+  ```
+  ok       forEach · wide  constant (exponent 0; 10523 / 10523 / 10523 steps; odds constant 96%, linear 2%, log 1%; no step moved while the generic scaler grew the input from 169 to 6307: it grows strings, arrays, Maps, Sets and chains, not an object's keys or a number. If the work follows those, give the case a `scale`)
+  ```
+
+  The report marks the case `unmoved`.
+
+- **A fixed part.** Each class is fitted as `a + b f(k)`. When the fixed part `a` is half the steps
+  or more at the largest size, the exponent between the two largest sizes reads low, and the line
+  gives the share (`fixed_share` in the report). A `find` whose hit stays near the front of the
+  grown array:
+
+  ```
+  ok       find · array(256), hit near the end  linear (exponent 0.142; 343456 / 357280 / 495520 steps; odds linear 96%, n log n 3%; 69% of the steps at 100x are a fixed part, the rest grows linear)
+  ```
+
 Exact steps of one input scaled up never fall. When they do, the scaled input is most likely not
 valid input any more (a parser that stops at its first error, a function that refuses a repeated
 element): the class is `shrinks` (only down) or `irregular` (down and up), `shrinks: the scaled
@@ -340,9 +371,10 @@ in a PR names the function and the shares too.
 
 The input is grown by a generic scaler: arrays and strings repeated k times, `Map` and `Set`
 entries repeated with distinct keys, linked chains made k times deeper, plain objects scaled
-property by property. Each collection grows once, so the input grows linearly in k. An input that
-cannot grow that way (a size given as a number, a structure that must stay valid) declares its
-own:
+property by property. Each collection grows once, so the input grows linearly in k. A link back
+to an object being scaled (`o.self = o`, a parent pointer) points at that object's copy, so a
+cycle stays a cycle and is never followed round. An input that cannot grow that way (a size given
+as a number, an object's key count, a structure that must stay valid) declares its own:
 
 ```ts
 bench('match_path: every request against a 300-route table', ({ table, paths }) => ..., {

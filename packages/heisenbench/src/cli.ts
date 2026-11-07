@@ -21,7 +21,7 @@ import type { OddsOptions, Shape } from './growth/odds.ts';
 import type { ShapePrior } from './growth/priors.ts';
 import { alias_records, read_record_dir } from './coverage/replay-run.ts';
 import { render_search, run_search } from './search/index.ts';
-import { diff_sections, render_sections, write_section } from './sections.ts';
+import { diff_sections, existing_report_text, render_sections, write_section } from './sections.ts';
 import { measure_command, measure_run, time_section } from './measure/cli.ts';
 import { app_command, app_diff_sections, diff_ranking } from './app/cli.ts';
 import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
@@ -691,7 +691,7 @@ async function main(argv: string[]): Promise<number> {
 		}
 		if (cmd === 'audit') {
 			const sizes = flags.get('sizes')?.split(',').map(Number) ?? DEFAULT_SIZES;
-			const existing = existsSync(out) ? read_report(out) : null;
+			const existing = existing_report_text(out) !== null ? read_report(out) : null;
 			const growth = reusable_growth(existing, sizes);
 			if (growth) console.log(`audit   steps at every size from the growth section of ${out}`);
 			const r = await run_audit({

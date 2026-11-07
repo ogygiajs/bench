@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import type { FileDiff } from './diff/git.ts';
 import { diff_engine, render_engine_markdown } from './engine/diff.ts';
@@ -39,6 +39,16 @@ function git(root: string, args: string[]): string | null {
 	}
 }
 
+/**
+ * The report text already at `out`, or null when there is none to merge into: no file, an empty
+ * one, or not a regular file (`--out /dev/null` prints the lines and keeps nothing).
+ */
+export function existing_report_text(out: string): string | null {
+	if (!existsSync(out) || !statSync(out).isFile()) return null;
+	const text = readFileSync(out, 'utf8');
+	return text.trim() === '' ? null : text;
+}
+
 /** Write one section into `out` (an heisenbench report), keeping everything else in it. */
 export function write_section<K extends Section>(
 	out: string,
@@ -47,8 +57,13 @@ export function write_section<K extends Section>(
 	info: { root: string; sha?: string | null }
 ): Report {
 	let report: Report;
-	if (existsSync(out)) {
-		report = JSON.parse(readFileSync(out, 'utf8')) as Report;
+	const text = existing_report_text(out);
+	if (text !== null) {
+		try {
+			report = JSON.parse(text) as Report;
+		} catch {
+			throw new Error(`heisenbench: ${out} is not JSON (write to another --out)`);
+		}
 		if (report.schema !== REPORT_SCHEMA)
 			throw new Error(`heisenbench: ${out} is not an heisenbench report`);
 		// One report holds one environment: its layers must not mix Node versions.

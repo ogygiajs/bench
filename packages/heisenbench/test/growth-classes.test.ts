@@ -111,3 +111,88 @@ test('growth names every shape: cubic, quartic, exponential past the cap, and st
 	}
 	assert.equal(shrinks.odds, null);
 });
+
+const VERDICT_LIB = `
+// recursion as deep as the input: overflows the call stack at the largest size
+export function depth(xs, i = 0) {
+	return i === xs.length ? 0 : 1 + depth(xs, i + 1);
+}
+// walks an object's keys: the generic scaler lengthens the string, not the key count
+export function count_keys(o) {
+	let n = 0;
+	for (const k in o) if (o[k] !== undefined) n++;
+	return n;
+}
+// a fixed loop, then one step per element
+export function warm_then_sum(xs) {
+	let s = 0;
+	for (let i = 0; i < 40000; i++) s += i & 1;
+	for (const x of xs) s += x;
+	return s;
+}
+`;
+
+const VERDICT_BENCH = `
+import { bench } from 'HEISENBENCH_BENCH';
+import { depth, count_keys, warm_then_sum } from './lib.js';
+bench('deep', ({ xs }) => depth(xs), { setup: () => ({ xs: Array.from({ length: 60 }, (_, i) => i) }) });
+bench('keys', ({ o }) => count_keys(o), { setup: () => ({ o: { a: 1, b: 2, c: 'x' } }) });
+bench('fixed', ({ xs }) => warm_then_sum(xs), { setup: () => ({ xs: [1, 2, 3] }) });
+`;
+
+test('growth verdicts: an overflow at 100x keeps the sizes below it; steps that never moved, and a fixed part, are said', async () => {
+	const dir = temp_dir('heisenbench-growth-verdicts-');
+	write_files(dir, {
+		'lib.js': VERDICT_LIB,
+		'lib.bench.ts': VERDICT_BENCH.replace('HEISENBENCH_BENCH', BENCH_API)
+	});
+	// --out /dev/null: the lines are printed, nothing is kept, and nothing is read back
+	const { stdout } = await run(
+		process.execPath,
+		[
+			'--no-warnings',
+			CLI,
+			'growth',
+			'lib.bench.ts',
+			'--root',
+			dir,
+			'--sizes',
+			'1,10,2000',
+			'--out',
+			'/dev/null'
+		],
+		{ cwd: dir }
+	);
+	// 120,000 frames deep at 2000x is past any stack; where the ladder below it stops depends on
+	// the frame size (and the tier V8 runs it in), so only that it stopped and kept 1x to 10x
+	assert.match(
+		stdout,
+		/deep {2}linear \(.*overflowed the call stack at \d+x, grown on 1x \/ 2x \/ 4x \/ 8x \/ 10x/
+	);
+	assert.match(
+		stdout,
+		/keys {2}constant \(.*no step moved while the generic scaler grew the input from \d+ to \d+: .*give the case a `scale`\)/
+	);
+	assert.match(
+		stdout,
+		/fixed {2}linear \(.*; \d+% of the steps at 2000x are a fixed part, the rest grows linear\)/
+	);
+
+	await run(
+		process.execPath,
+		['--no-warnings', CLI, 'growth', 'lib.bench.ts', '--root', dir, '--sizes', '1,10,2000'],
+		{
+			cwd: dir
+		}
+	);
+	const report = JSON.parse(readFileSync(join(dir, 'heisenbench-report.json'), 'utf8')) as Report;
+	const by = new Map<string, GrowthCase>(report.growth!.cases.map((c) => [c.name, c]));
+	const deep = by.get('deep')!;
+	assert.equal(deep.error, null);
+	assert.ok(deep.overflowed_at! > 10 && deep.overflowed_at! <= 2000, String(deep.overflowed_at));
+	assert.equal(deep.capped_at, undefined);
+	assert.ok(deep.sizes.includes(10) && !deep.sizes.includes(2000), JSON.stringify(deep.sizes));
+	assert.equal(by.get('keys')!.unmoved, true);
+	assert.equal(by.get('fixed')!.unmoved, undefined);
+	assert.ok(by.get('fixed')!.fixed_share! >= 0.5, JSON.stringify(by.get('fixed')));
+});
