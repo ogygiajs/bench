@@ -1,4 +1,6 @@
 import { code } from '../md.ts';
+import { fmt_ns } from '../measure/time.ts';
+import { range_text } from '../ranges/text.ts';
 import { fmt_factor } from './fit.ts';
 import type { AuditReport } from './fit.ts';
 
@@ -30,8 +32,13 @@ export function render_audit(r: AuditReport, o: { quiet?: boolean } = {}): strin
 			`- **price suspect: ${code(f.kind)}**: ${what}; time matches at ${fmt_factor(f.factor)} its steps`
 		);
 		for (const c of f.cases.slice(0, CASES_SHOWN)) {
+			// what the counts say the largest size takes, next to what it took (extra text only)
+			const at =
+				c.model && c.ns !== undefined
+					? `; at ${r.sizes[r.sizes.length - 1]}x it took ${fmt_ns(c.ns)} (model ${range_text(c.model)})`
+					: '';
 			lines.push(
-				`  - ${code(c.name)}: its ${f.term ?? 'steps'} grow${f.term ? 's' : ''} ${c.kind_class ?? '?'} (exponent ${c.kind_exponent.toFixed(2)}), the case's time ${c.time_class ?? '?'} (${c.time_exponent.toFixed(2)})`
+				`  - ${code(c.name)}: its ${f.term ?? 'steps'} grow${f.term ? 's' : ''} ${c.kind_class ?? '?'} (exponent ${c.kind_exponent.toFixed(2)}), the case's time ${c.time_class ?? '?'} (${c.time_exponent.toFixed(2)})${at}`
 			);
 		}
 		if (f.cases.length > CASES_SHOWN) lines.push(`  - and ${f.cases.length - CASES_SHOWN} more`);

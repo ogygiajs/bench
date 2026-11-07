@@ -4,6 +4,10 @@ import type { GrowthClass } from '../growth/fit.ts';
 import { BUILTIN_TERMS, price_units } from '../units.ts';
 import type { Units } from '../units.ts';
 import type { BuiltinModel, Prices, SizeTerm } from '../prices.ts';
+import { units_range, usable } from '../ranges/apply.ts';
+import { load_ranges } from '../ranges/model.ts';
+import type { RangesModel } from '../ranges/model.ts';
+import type { RangeValue } from '../ranges/text.ts';
 
 /*
  * The price audit: do the prices say what the engine does? Steps are units times prices. When the
@@ -129,6 +133,11 @@ export interface AuditCase {
 	/** The explanations of an ambiguous case, the least change first. */
 	candidates?: string[];
 	suspect: AuditSuspect | null;
+	/**
+	 * The range model's estimate at each size, with its 10-90% range (ranges/): what the counts
+	 * say the time should be, next to `ns`. It takes no part in the verdict.
+	 */
+	model?: RangeValue[];
 }
 
 export interface AuditFinding {
@@ -147,6 +156,9 @@ export interface AuditFinding {
 		steps_exponent: number;
 		time_exponent: number;
 		time_class: GrowthClass | null;
+		/** Measured ns at the largest size, and the range model's estimate there. */
+		ns?: number;
+		model?: RangeValue;
 	}>;
 	/** Where the kind's units are, at 1x (`module:line`), when a report gives the lines. */
 	lines?: string[];
@@ -415,7 +427,11 @@ function candidates_of(
 }
 
 /** Audit one case: the verdict of every round, and the suspect when every round agrees. */
-export function audit_case(input: AuditInput, prices: Prices): AuditCase {
+export function audit_case(
+	input: AuditInput,
+	prices: Prices,
+	ranges: RangesModel | null = null
+): AuditCase {
 	const { sizes } = input;
 	const per_size = input.units.map((u) => kind_steps(u, prices));
 	const steps = per_size.map((m) => [...m.values()].reduce((s, v) => s + v, 0));
@@ -491,7 +507,8 @@ export function audit_case(input: AuditInput, prices: Prices): AuditCase {
 		misfit: round3(misfit),
 		explained_by,
 		...(rivals.length > 0 && c ? { candidates: [c.id, ...rivals] } : {}),
-		suspect
+		suspect,
+		...(ranges ? { model: input.units.map((u) => units_range(ranges, u, prices)) } : {})
 	};
 }
 
@@ -553,7 +570,8 @@ export function findings_of(cases: AuditCase[]): AuditFinding[] {
 				kind_class: c.suspect!.kind_class,
 				steps_exponent: c.steps_exponent,
 				time_exponent: c.time_exponent,
-				time_class: c.time_class
+				time_class: c.time_class,
+				...(c.model ? { ns: c.ns[c.ns.length - 1], model: c.model[c.model.length - 1] } : {})
 			}))
 		};
 		out.push({ ...f, text: finding_text(f, s) });
@@ -569,9 +587,13 @@ export function analyze_audit(
 		rounds: number;
 		prices: { prices: Prices; hash: string };
 		failed?: AuditReport['failed'];
+		/** The range model (default: ranges.json, when it was trained with these prices). */
+		ranges?: RangesModel | null;
 	}
 ): AuditReport {
-	const cases = inputs.map((i) => audit_case(i, o.prices.prices));
+	const m = o.ranges === undefined ? load_ranges() : o.ranges;
+	const ranges = usable(m, o.prices.hash) ? m : null;
+	const cases = inputs.map((i) => audit_case(i, o.prices.prices, ranges));
 	return {
 		schema: AUDIT_SCHEMA,
 		sizes: o.sizes,

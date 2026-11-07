@@ -473,6 +473,11 @@ timed on a busy machine, so they lean low, and pass or fail never uses them.
 [docs/feel-odds.md](docs/feel-odds.md) has the model, its held-out scores and what the busy
 machine means.
 
+**The model next to the ns** (`model +18 ns, likely +2.3 to +150`) is a second estimate with a range,
+from small boosted trees trained on measured changes (`ranges.json`,
+[docs/calibration.md](docs/calibration.md#ranges-steps-to-ms-with-a-range)): on held-out commits,
+80% or more of measured times fell inside the range. It never changes a verdict.
+
 **The same code with the same input always counts the same.** Inside the measuring window:
 
 - `Date`, `performance.now` and `process.hrtime` read a clock that starts at 2024-01-01 and moves

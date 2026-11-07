@@ -21,6 +21,9 @@ import {
 	traffic_unit
 } from './cost.ts';
 import type { RealCost } from './cost.ts';
+import { change_range } from '../ranges/apply.ts';
+import { range_text } from '../ranges/text.ts';
+import type { RangeValue } from '../ranges/text.ts';
 
 /*
  * Ranking findings by what they cost (spec 11). Three bases, the best one there is:
@@ -140,6 +143,8 @@ export interface RankedChange {
 	line: number;
 	delta_per_call: number;
 	ns_per_call: number | null;
+	/** The range model's estimate of one call's change, with its 10-90% range (ranges/). */
+	ns_model?: RangeValue;
 	judgement: Judgement;
 	/** What it costs on real traffic, when real-traffic weights are given and run it. */
 	cost?: RealCost | null;
@@ -216,6 +221,10 @@ export function rank_changes(
 		const delta = per_call(c.pr) - per_call(c.base);
 		const key = canonical_function(c.module, c.function);
 		const ns = ns_of(c, ns_weights);
+		const model =
+			ctx.ranges && (has_units(c.pr) || has_units(c.base))
+				? change_range(ctx.ranges, units_per_call(c.base), units_per_call(c.pr), ctx.prices)
+				: null;
 		const w = app?.functions[key];
 		let cost: RealCost | null = null;
 		if (traffic && w) {
@@ -247,6 +256,7 @@ export function rank_changes(
 				.line,
 			delta_per_call: Math.round(delta * 1e4) / 1e4,
 			ns_per_call: ns === null ? null : Math.round(ns * 1e3) / 1e3,
+			...(model ? { ns_model: model } : {}),
 			judgement: judge(delta, w, app?.units ?? {}, ns, cost),
 			cost
 		});
@@ -394,6 +404,11 @@ export function format_ns(ns: number, signed = false): string {
 
 const signed = (n: number) => (n > 0 ? '+' : '') + format_steps(n);
 
+const scaled = (r: RangeValue, k: number): RangeValue => ({
+	ns: r.ns * k,
+	range: [r.range[0] * k, r.range[1] * k]
+});
+
 export const WEIGHTED_MARKER = '<!-- heisenbench:weighted -->';
 
 /** `+3.1M steps per call in `f`, ~40 calls/request on the imported traffic → ≈ 12 CPU-minutes/day ...` */
@@ -440,8 +455,19 @@ export function render_weighted(
 		);
 		for (const r of shown) {
 			const t = r.judgement.top;
+			// the weights' ns, then the range model's (extra text: the ranking stays on steps)
+			const m = t && r.ns_model ? scaled(r.ns_model, t.calls) : null;
+			const est =
+				t && (t.ns !== null || m)
+					? ` (${[
+							t.ns !== null ? format_ns(t.ns, true) : null,
+							m ? `model ${range_text(m, true)}` : null
+						]
+							.filter((x) => x !== null)
+							.join('; ')})`
+					: '';
 			const impact = t
-				? `${signed(t.steps)} steps${t.ns !== null ? ` (${format_ns(t.ns, true)})` : ''} per ${t.unit} (${format_steps(t.calls)} calls)`
+				? `${signed(t.steps)} steps${est} per ${t.unit} (${format_steps(t.calls)} calls)`
 				: 'no scenario runs it';
 			const id = `\`${r.module} > ${r.function}\``;
 			const name =
