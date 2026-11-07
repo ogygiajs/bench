@@ -340,30 +340,33 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
 `heisenbench --help` prints every command with its flags. Each command reads bench files or reports and
 writes JSON; `diff` and a few others also write markdown.
 
-| Command                                                                                | What it does                                                                                                       |
-| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
-| `heisenbench run <bench files> --cache <dir>`                                          | Count only the cases whose code or inputs changed; reuse the rest. `--cache-verify n` counts n reused ones again.  |
-| `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
-| `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
-| `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.     |
-| `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.  |
-| `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
-| `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
-| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input, the fitted curve class and the odds of each shape.                               |
-| `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
-| `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
-| `heisenbench contracts <source files> --reports <a.json,b.json>`                       | Each `@heisenbench` complexity contract held against the growth the reports measured; exit 1 when one fails.       |
-| `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.              |
-| `heisenbench prove <module> <function> --candidate <file>`                             | Accepts a faster version only when it behaves the same on every input and costs fewer steps.                       |
-| `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
-| `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |
-| `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
-| `heisenbench weights import <profiles>`                                                | Weights of real traffic from production profiles; `diff --weights` then ranks findings by CPU time per day.        |
-| `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
-| `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
-| `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
-| `heisenbench feel train\|check`                                                        | Fit the odds a step change shows on the clock; `check` fits `feel.json` again, byte for byte.                      |
+| Command                                                                                | What it does                                                                                                                                   |
+| -------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.                                      |
+| `heisenbench run <bench files> --cache <dir>`                                          | Count only the cases whose code or inputs changed; reuse the rest. `--cache-verify n` counts n reused ones again.                              |
+| `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables.                             |
+| `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.                               |
+| `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.                                 |
+| `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.                              |
+| `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                                                     |
+| `heisenbench receipt <bench files> --package <tarball \| name@version>`                | A release's receipt: the published tarball counted in a scratch tree, each case in a process of its own, with everything the counts depend on. |
+| `heisenbench verify-receipt <receipt.json> <tarball>`                                  | Counts the tarball again the way the receipt was made: `matches`, or the first case that differs.                                              |
+| `heisenbench registry <receipts> --out index.html`                                     | A static page comparing receipts: each package across versions, and packages with each other.                                                  |
+| `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                                                     |
+| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input, the fitted curve class and the odds of each shape.                                                           |
+| `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                                             |
+| `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                                                     |
+| `heisenbench contracts <source files> --reports <a.json,b.json>`                       | Each `@heisenbench` complexity contract held against the growth the reports measured; exit 1 when one fails.                                   |
+| `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.                                          |
+| `heisenbench prove <module> <function> --candidate <file>`                             | Accepts a faster version only when it behaves the same on every input and costs fewer steps.                                                   |
+| `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                                             |
+| `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                                                          |
+| `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                                                      |
+| `heisenbench weights import <profiles>`                                                | Weights of real traffic from production profiles; `diff --weights` then ranks findings by CPU time per day.                                    |
+| `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.                               |
+| `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.                                        |
+| `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                                                    |
+| `heisenbench feel train\|check`                                                        | Fit the odds a step change shows on the clock; `check` fits `feel.json` again, byte for byte.                                                  |
 
 `health`, `growth`, `search`, `audit` and `contracts` write their section into the report given by `--out`, so
 one JSON file per commit holds everything `diff` needs.
@@ -686,3 +689,5 @@ handles, and 369 corpus files. What it found is fixed, each with a test in
 - [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.
 - [Odds it shows on the clock](docs/feel-odds.md): the model behind the odds next to a step
   change, its held-out scores, and why a busy machine makes them lean low.
+- [Release receipts](docs/receipts.md): a release's counts that anyone can check by counting
+  again, and the registry page that compares them.
