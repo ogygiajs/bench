@@ -146,8 +146,23 @@ export function scale_input<T>(v: T, k: number): T {
 	return scale(v, Math.max(1, Math.round(k)), false) as T;
 }
 
-/** Size of an input: string chars + array elements + map/set entries + object keys, recursively. */
-export function input_size(v: unknown, seen = new Set<unknown>()): number {
+/** How many values a size walk visits before it stops (one call's arguments). */
+export const SIZE_BUDGET = 1 << 20;
+
+/**
+ * Size of an input: string chars + array elements + map/set entries + object keys, recursively
+ * (an AST counts its nodes and their fields). A value shared twice counts once. With a `budget` the
+ * walk stops after that many values, so sizing a huge input costs a bounded walk; what it returns
+ * then is a lower bound, the same on every run.
+ */
+export function input_size(v: unknown, seen = new Set<unknown>(), budget = Infinity): number {
+	const left = { n: budget };
+	return size_of(v, seen, left);
+}
+
+function size_of(v: unknown, seen: Set<unknown>, left: { n: number }): number {
+	if (left.n <= 0) return 0;
+	left.n--;
 	if (typeof v === 'string') return v.length;
 	if (v === null || typeof v !== 'object') return 1;
 	if (seen.has(v)) return 0;
@@ -155,19 +170,58 @@ export function input_size(v: unknown, seen = new Set<unknown>()): number {
 	let n = 0;
 	if (Array.isArray(v)) {
 		n += v.length;
-		for (const x of v) n += input_size(x, seen);
+		for (let i = 0; i < v.length && left.n > 0; i++) n += size_of(v[i], seen, left);
 	} else if (v instanceof Map) {
 		n += v.size;
-		for (const [key, x] of v) n += input_size(key, seen) + input_size(x, seen);
+		for (const [key, x] of v) {
+			if (left.n <= 0) break;
+			n += size_of(key, seen, left) + size_of(x, seen, left);
+		}
 	} else if (v instanceof Set) {
 		n += v.size;
-		for (const x of v) n += input_size(x, seen);
+		for (const x of v) {
+			if (left.n <= 0) break;
+			n += size_of(x, seen, left);
+		}
 	} else if (is_plain(v)) {
 		const keys = Object.keys(v);
 		n += keys.length;
-		for (const key of keys) n += input_size((v as Obj)[key], seen);
+		for (const key of keys) {
+			if (left.n <= 0) break;
+			n += size_of((v as Obj)[key], seen, left);
+		}
 	} else {
 		n += 1;
 	}
 	return n;
+}
+
+/**
+ * Each argument's size (input_size), sharing one walk budget and one `seen` set: an object two
+ * arguments share counts for the first. Getters or proxies that throw make that argument size 0.
+ */
+export function arg_sizes(
+	args: readonly unknown[],
+	budget = SIZE_BUDGET
+): { sizes: number[]; visits: number } {
+	const seen = new Set<unknown>();
+	const left = { n: budget };
+	const sizes = args.map((a) => {
+		try {
+			return size_of(a, seen, left);
+		} catch {
+			return 0;
+		}
+	});
+	return { sizes, visits: budget - left.n };
+}
+
+/** What an argument's size counts, in words: `string length`, `array length`, `object size`... */
+export function size_kind(v: unknown): string {
+	if (typeof v === 'string') return 'string length';
+	if (Array.isArray(v)) return 'array size';
+	if (v instanceof Map) return 'Map size';
+	if (v instanceof Set) return 'Set size';
+	if (is_plain(v)) return 'object size';
+	return 'size';
 }

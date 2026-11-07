@@ -43,17 +43,18 @@ with the same input.
 Counting cannot see everything the engine does, so Heisenbench adds layers that run the plain build (the
 code as it ships, nothing counted) next to the count:
 
-| Layer             | What it answers                                                                 |
-| ----------------- | ------------------------------------------------------------------------------- |
-| Steps             | How much work each function and line does. Exact.                               |
-| Engine health     | Did V8 stop optimizing a function, drop its optimized code, or see more shapes? |
-| Time              | How long it takes on the plain build, PR and base taking turns in one process.  |
-| Real bytes        | What V8 really allocates per function, next to the count's estimate.            |
-| Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?  |
-| Growth            | Is the case constant, linear, n log n or quadratic in its input size?           |
-| Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?   |
-| Worst-case search | Which input of the same size costs the most steps?                              |
-| Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.  |
+| Layer             | What it answers                                                                    |
+| ----------------- | ---------------------------------------------------------------------------------- |
+| Steps             | How much work each function and line does. Exact.                                  |
+| Engine health     | Did V8 stop optimizing a function, drop its optimized code, or see more shapes?    |
+| Time              | How long it takes on the plain build, PR and base taking turns in one process.     |
+| Real bytes        | What V8 really allocates per function, next to the count's estimate.               |
+| Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?     |
+| Growth            | Is the case constant, linear, n log n, quadratic or worse in its input size?       |
+| Recorded growth   | Which function grows quadratically on its tests' real inputs, with no growth case? |
+| Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?      |
+| Worst-case search | Which input of the same size costs the most steps?                                 |
+| Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
 
 [docs/layers.md](docs/layers.md) explains each one.
 
@@ -283,6 +284,8 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
 | `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
+| `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
+| `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
 | `heisenbench search <bench files>`                                                     | Mutates the input and keeps what costs more steps; reports the worst input found.                                  |
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
 | `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |

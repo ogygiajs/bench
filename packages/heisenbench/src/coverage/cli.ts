@@ -15,6 +15,7 @@ import {
 import type { SourceInventory } from './gate.ts';
 import { read_record_dir, replay_records } from './replay-run.ts';
 import type { ReplayResult } from './recorder.ts';
+import { read_targets, record_benches } from './record-benches.ts';
 
 /*
  * The CLI of the measurement-source gate (gate.ts):
@@ -23,6 +24,9 @@ import type { ReplayResult } from './recorder.ts';
  *                  [--reports a.json,b.json --targets targets.json]
  *       Every function of the files; with counted reports, also the record targets: the functions
  *       no bench ran (`module -> [paths]`, what the test-run recorder wraps).
+ *   heisenbench record <bench files...> --targets targets.json --root dir --out samples.bin
+ *       Every bench case run once with the recorder on the targets: their calls as samples, like
+ *       a recorded test run's (record-benches.ts).
  *   heisenbench replay --records dir --root dir --out replay.json
  *       Merge the sample files a recorded test run wrote and replay them.
  *   heisenbench unmeasured --inventory inventory.json [--reports a.json,b.json] [--records dir]
@@ -33,6 +37,7 @@ import type { ReplayResult } from './recorder.ts';
  */
 
 export const COVERAGE_USAGE = `heisenbench inventory [files...] [--list files.txt] --root dir --out inventory.json [--reports a.json,b.json --targets targets.json]
+heisenbench record <bench files...> --targets targets.json --root dir --out samples.bin
 heisenbench replay --records dir --root dir --out replay.json
 heisenbench unmeasured --inventory inventory.json [--reports a.json] [--records dir] [--replay replay.json] [--skipped skipped.json] [--base-inventory base.json] [--repo dir --base sha --head sha] [--exempt file] [--out gate.json] [--md gate.md]`;
 
@@ -75,6 +80,21 @@ export async function coverage_command(
 			console.log(`${n} functions no bench ran -> ${targets}`);
 		}
 		return 0;
+	}
+	if (cmd === 'record') {
+		const out = flags.get('out');
+		const targets = flags.get('targets');
+		if (!out) throw new UsageError('--out <samples.bin> is required');
+		if (!targets) throw new UsageError('--targets <targets.json> is required');
+		const r = await record_benches({
+			files: positional,
+			root: flags.get('root') ?? process.cwd(),
+			targets: read_targets(targets),
+			out,
+			log: (l) => console.log(l)
+		});
+		console.log(`${r.ran} cases ran with the recorder on (${r.failed} failed) -> ${out}`);
+		return r.ran > 0 ? 0 : 1;
 	}
 	if (cmd === 'replay') {
 		const dir = flags.get('records');

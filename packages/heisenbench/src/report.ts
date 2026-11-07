@@ -8,6 +8,7 @@ import type { Units } from './units.ts';
 import type { CaseMeasure } from './measure/types.ts';
 import type { EngineReport } from './engine/types.ts';
 import type { GrowthReport } from './growth/index.ts';
+import type { RecordedGrowthReport } from './growth/recorded.ts';
 import type { SearchReport } from './search/index.ts';
 import type { AuditReport } from './audit/fit.ts';
 import { package_url } from './own.ts';
@@ -130,6 +131,8 @@ export interface Report {
 	engine?: EngineReport;
 	/** `heisenbench growth`: steps over scaled inputs and their curve class (spec 9). */
 	growth?: GrowthReport;
+	/** `heisenbench growth --recorded`: steps over the sizes of recorded test calls (growth/recorded.ts). */
+	recorded_growth?: RecordedGrowthReport;
 	/** `heisenbench search`: the slowest input of each case's size found (spec 9). */
 	search?: SearchReport;
 	/** `heisenbench audit`: the prices checked against time at every growth size (audit/fit.ts). */

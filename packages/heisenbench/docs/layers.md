@@ -10,6 +10,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Steps             | `heisenbench run`                                    | counting | yes                                        | yes                  |
 | Engine health     | `heisenbench health`                                 | plain    | yes                                        | yes                  |
 | Growth            | `heisenbench growth`                                 | counting | cases with `scale`                         | cases with `scale`   |
+| Recorded growth   | `heisenbench growth --recorded`                      | counting | the changed source files                   | every source file    |
 | Price audit       | `heisenbench audit`                                  | both     | no                                         | cases with `scale`   |
 | Time              | `heisenbench time`, `heisenbench run --measure time` | plain    | yes                                        | yes                  |
 | Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
@@ -272,12 +273,34 @@ calls) are not flagged. On ogygia main, two full runs of all 57 cases flag none.
 ## Growth
 
 How steps grow with the input. `heisenbench growth` counts each case at 1x, 10x and 100x its input
-(`--sizes`) and fits `steps = a + b × f(k)` for constant, log, linear, n log n and quadratic,
-picking the best fit and the simpler class on a tie. Counts are exact, so three sizes are enough.
+(`--sizes`) and fits `steps = a + b × f(k)` for constant, log, linear, n log n, quadratic, cubic
+and quartic, picking the best fit and the simpler class on a tie. Counts are exact, so three sizes
+are enough.
 
 ```
 ok       rank: twenty rows  linear (exponent 0.999; 897 / 8817 / 88017 steps)
 ```
+
+Past quartic the class is `polynomial n^p`, with p the best power of `a + b × k^p` (a grid up to
+12). Exponential is told from a high power by the local slopes: on four sizes or more, the log-log
+slope between neighbouring sizes keeps rising, by half again or more at each of the last two steps
+(a polynomial's settles toward its power), and `a + b × e^(ck)` must fit better than every power.
+
+A size at 100x of an exponential input would never finish. Every run has a step cap (`--cap`,
+default 10¹⁰ steps; the runtime stops a run past it where it loops). The first size that passes
+it is not counted: growth stops there and falls back to a doubling ladder of the sizes below it
+(1, 2, 4, 8 …), each under the same cap, and fits those. The line says so:
+
+```
+ok       exponential  exponential (exponent 7.999; 89 / 341 / 5381 / 1376261 steps; exceeded the cap at 16x, grown on 1x / 2x / 4x / 8x)
+```
+
+Exact steps of one input scaled up never fall. When they do, the scaled input is most likely not
+valid input any more (a parser that stops at its first error, a function that refuses a repeated
+element): the class is `shrinks` (only down) or `irregular` (down and up), `shrinks: the scaled
+input may be invalid`, and a PR is never judged on it. The planted cases of each class (cubic,
+quartic, every subset of the input, a function that refuses repeats) are in
+`test/growth-classes.test.ts`.
 
 Under each case it says where the steps are at the largest size: each package's share, and the
 functions with the most self steps, each with its own curve. ogygia's compiler case on `57882cc`:
@@ -312,8 +335,70 @@ bench('match_path: every request against a 300-route table', ({ table, paths }) 
 ```
 
 PR against base, a class change (linear to quadratic) is a finding. The same class with more
-steps is not: the step table already shows that. CI grows only the cases that declare `scale`
-(`--scaled on`).
+steps is not: the step table already shows that. A side that `shrinks` or is `irregular` is listed
+under "Steps that fell as the input grew", never a finding. CI grows only the cases that declare
+`scale` (`--scaled on`).
+
+## Growth from recorded calls
+
+A function nobody wrote a growth case for still has a size curve: the calls its tests make.
+`heisenbench growth --recorded <dir>` grows every function a recorded run called, from the
+recorder's sample files (the measurement-source gate's recorder, below), no `scale` anywhere.
+
+The recorder sizes each call's arguments (string length, array, `Map` and `Set` entries, object
+keys, recursively: an AST counts its nodes; a walk stops after 2²⁰ values per call and 2²¹ per
+function per process, so a hot function costs a bounded walk). Besides the first five distinct
+inputs, it keeps one input per half octave of the summed size, up to 24, so the samples span the
+sizes the run saw. Bench cases are a second source: `heisenbench record <bench files>` runs each
+case once with the recorder on, often at sizes no test reaches. Merged, the samples are the same
+whatever order the files come in.
+
+Inputs that hold functions are kept too. A function that reads only its own names and the
+language's globals is kept as its source (`readFile: () => null`), a Node module or one of its
+functions by name (`path`, `fs.readFileSync`). A callback that closes over state is kept as a
+stand-in that returns `undefined`: such a sample serves growth only, never the gate's replay. A
+stand-in throws past 10,000 calls in one replay (a loop that waits for `removeChild` to empty a
+fake node never ends with one), and that sample is left out.
+
+Each sample is replayed on the counting build, once (a curve is many exact points; the two-run
+check of a bench case would triple the cost and decide nothing), under a step cap of 5×10⁸, and
+the function's inclusive steps are read
+against each argument's size in turn. Different inputs of one size cost different steps (a page
+with one island and a page with twenty), so the curve is read the robust way: the power is the
+slope of log(steps) over log(size), r² says how much of it that line explains, and Kendall's tau
+between size and steps per unit of size says whether the work per unit rises. The argument whose
+size explains the steps best (highest r²) is the one growth is over. A curve needs four distinct
+sizes spanning 4x or more; with less, or when no argument explains the steps, the largest
+recorded input is grown instead, one argument at a time, by the generic scaler at 1x, 4x, 16x,
+with the cap and the ladder above, and fitted exactly.
+
+A function **grows** (a finding) when its own steps are superlinear, or when a function its calls
+spend 5% or more of their steps in at the largest size is: the part that grows fastest is the part
+that takes over at sizes no test reached. Superlinear on recorded points means a power of 1.5 or
+more, r² of 0.8 or more and a rising work per unit, all with any one call left out (one trivial
+call at the smallest size does not make a line steep); on scaled points, quadratic or worse.
+
+ogygia at `57882cc`, with the `scale` of `transformHost: a route page as its island count grows`
+removed: its tests and bench cases called `transformHost` 280 times, on sources of 157 to 7,956
+characters. The largest come from the bench cases' own inputs (a page of three and of twenty
+islands, `heisenbench record`); the tests' sources stop at 1,309 characters.
+
+```
+GROWS    packages/core/src/compiler/region/transform.ts > transformHost grows n log n in argument 0 (string length); its steps in acorn@8.18.0/dist/acorn.mjs > Parser grow n^2.52 (cubic) (62% at the largest size), packages/core/src/compiler/region/transform.ts > FileCompilation > #ast_refs_local > walk grow n^2.23 (quadratic) (11% at the largest size); seen in 280 recorded calls, sizes 196..8,096; 9 replayed, sizes 157..7,956
+```
+
+On ogygia main (`01dc5b9`, the walk made one pass) the same function grows only through acorn's
+`Parser`, a dependency; `#ast_refs_local > walk` is gone from the findings.
+
+`--md` writes only the findings, grouped by the function whose steps grow: one quadratic parser
+under twenty entry points is one item. The report section is `recorded_growth`. The planted case
+(a quadratic function driven by its second argument, a linear one, and two recorded over too
+narrow a range, no `scale` anywhere) is `test/recorded-growth.test.ts`.
+
+Limits: only top-level functions replay (a class method or a closure is seen through its
+caller's parts); a sample a test built with state the replay lacks throws and is left out; the
+generic scaler cannot grow a source text into a valid larger one, so a compiler's curve comes from
+the sizes its tests and bench cases pass it.
 
 ## Price audit
 

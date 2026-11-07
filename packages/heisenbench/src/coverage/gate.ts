@@ -149,7 +149,10 @@ export function measurement_sources(
 			if (!r) reason = skipped.has(f.id) ? 'not recorded' : 'never ran';
 			else if (r.calls === 0) reason = 'never ran';
 			else if (p?.status === 'hidden state') reason = 'hidden state';
-			else if (p?.status === 'not cloneable' || (r.samples.length === 0 && r.uncloneable > 0))
+			else if (
+				p?.status === 'not cloneable' ||
+				(r.samples.every((s) => s.stand_ins) && r.uncloneable > 0)
+			)
 				reason = 'not cloneable';
 			else reason = 'not replayable';
 		}

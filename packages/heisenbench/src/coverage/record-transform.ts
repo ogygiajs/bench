@@ -1,7 +1,7 @@
 import MagicString from 'magic-string';
 import { parseSync } from 'oxc-parser';
 import { own_file } from '../own.ts';
-import { find_token, instrument } from '../transform/instrument.ts';
+import { find_token, instrument, private_bindings } from '../transform/instrument.ts';
 import { load_prices } from '../prices.ts';
 
 /*
@@ -56,6 +56,11 @@ export interface RecordTransformOptions {
 	targets?: ReadonlySet<string>;
 	/** Specifier the recorder runtime is imported from. */
 	runtime?: string;
+	/**
+	 * Also export `__heisenbench`, the module's private top-level bindings, as the counting build
+	 * does: a bench file that imports them loads on the recording build too.
+	 */
+	expose?: boolean;
 }
 
 export interface RecordTransformResult {
@@ -269,6 +274,14 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 		.filter(([path]) => wrapped.includes(`${o.id} > ${path}`))
 		.map(([path, name]) => `${JSON.stringify(`${o.id} > ${path}`)}:${name}`);
 	s.append(`\nexport const __heisenbench_rec_fns = {${fns.join(',')}};\n`);
+	if (o.expose) {
+		// what a bench file imports from the module's private bindings, as the counting build has it
+		const bindings = private_bindings(ast as Parameters<typeof private_bindings>[0]);
+		if (!bindings.some((b) => b.name === '__heisenbench')) {
+			const props = bindings.map((b) => (b.live ? `get ${b.name}(){return ${b.name}}` : b.name));
+			s.append(`export const __heisenbench={${props.join(',')}};\n`);
+		}
+	}
 	return {
 		code: s.toString(),
 		map: s.generateMap({ hires: true, source: o.filename }),

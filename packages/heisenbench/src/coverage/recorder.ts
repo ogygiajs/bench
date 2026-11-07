@@ -3,6 +3,8 @@ import { createHash } from 'node:crypto';
 import { deserialize, serialize } from 'node:v8';
 import { isDeepStrictEqual } from 'node:util';
 import { INJECTED_OPEN, original_source } from './markers.ts';
+import { clone_with_stand_ins, portable_clone, revive } from './portable.ts';
+import { SIZE_BUDGET, arg_sizes } from '../growth/scale.ts';
 
 /*
  * The input recorder (spec 8, leftovers). Code transformed by record-transform.ts reports each
@@ -28,6 +30,13 @@ export interface Sample {
 	/** The output, unless the call threw. */
 	out?: unknown;
 	threw?: { name: string; message: string };
+	/** Each argument's size at entry (growth/scale.ts input_size). Absent in older sample files. */
+	sizes?: number[];
+	/**
+	 * A callback in the inputs closed over state and is kept as a stand-in that returns undefined
+	 * (portable.ts): the sample serves growth, never a replay of the output (no `out` is kept).
+	 */
+	stand_ins?: true;
 }
 
 export interface FunctionRecord {
@@ -38,7 +47,28 @@ export interface FunctionRecord {
 	/** Calls with the inputs of an earlier sample but another output: state the inputs miss. */
 	inconsistent: number;
 	samples: Sample[];
+	/**
+	 * The input sizes every call came with (sum over the arguments), smallest and largest, over the
+	 * `sized` calls whose arguments were walked (each function has a walk budget). Absent in older
+	 * sample files.
+	 */
+	sizes?: { sized: number; min: number; max: number };
 }
+
+/**
+ * Samples are kept two ways. The first `max_samples` distinct inputs (what a replay checks), and
+ * one input per size band (half an octave of the summed argument sizes, at most SIZE_BANDS bands):
+ * the ladder of sizes growth fits steps over (growth/recorded.ts).
+ */
+export const SIZE_BANDS = 24;
+
+/** The size band of a summed input size: half octaves (1, 1.4, 2, 2.8, 4 ...). */
+export function size_band(size: number): number {
+	return Math.floor(2 * Math.log2(size + 1));
+}
+
+/** Values one function's size walks may visit in a process, over all its calls. */
+const FUNCTION_SIZE_BUDGET = 1 << 21;
 
 export type ReplayStatus =
 	| 'reproduced'
@@ -60,6 +90,9 @@ interface Frame {
 	args: unknown[];
 	this_value: unknown;
 	key: string;
+	sizes: number[] | null;
+	/** The inputs were cloned with stand-ins for callbacks (portable.ts clone_with_stand_ins). */
+	stood: boolean;
 	out?: unknown;
 	threw?: { name: string; message: string };
 	done: boolean;
@@ -67,6 +100,12 @@ interface Frame {
 }
 
 const NOT_CLONED = Symbol('not cloned');
+
+function sum(xs: readonly number[]): number {
+	let s = 0;
+	for (const x of xs) s += x;
+	return s;
+}
 
 function error_of(e: unknown): { name: string; message: string } {
 	const err = e as { name?: unknown; message?: unknown } | null;
@@ -86,23 +125,28 @@ function same_result(a: Sample, b: Sample): boolean {
 	return b.out !== NOT_CLONED && a.out !== NOT_CLONED && isDeepStrictEqual(a.out, b.out);
 }
 
+/** structuredClone, keeping functions that close over nothing and Node modules (portable.ts). */
 function clone(v: unknown): unknown {
 	if (v === globalThis) return undefined;
 	try {
-		return structuredClone(v);
+		return portable_clone(v);
 	} catch {
 		return NOT_CLONED;
 	}
 }
 
 export class Recorder {
-	/** Distinct samples kept per function. */
+	/** Distinct samples kept per function (besides one per size band). */
 	max_samples = 5;
 	/** While true (a replay runs), calls are not recorded. */
 	replaying = false;
 	#records = new Map<string, FunctionRecord>();
 	/** Per function: inputs key -> the sample kept for those inputs. */
 	#keys = new Map<string, Map<string, Sample>>();
+	/** Per function: the size bands it holds a sample of. */
+	#bands = new Map<string, Set<number>>();
+	/** Per function: what its size walks may still visit. */
+	#budget = new Map<string, number>();
 
 	#record(id: string): FunctionRecord {
 		let r = this.#records.get(id);
@@ -110,18 +154,70 @@ export class Recorder {
 			r = { id, calls: 0, uncloneable: 0, inconsistent: 0, samples: [] };
 			this.#records.set(id, r);
 			this.#keys.set(id, new Map());
+			this.#bands.set(id, new Set());
+			this.#budget.set(id, FUNCTION_SIZE_BUDGET);
 		}
 		return r;
 	}
 
+	/** Each argument's size, within the function's walk budget (null once it is spent). */
+	#sizes(rec: FunctionRecord, args: ArrayLike<unknown>): number[] | null {
+		const left = this.#budget.get(rec.id)!;
+		if (left <= 0) return null;
+		const walk = arg_sizes(Array.from(args), Math.min(SIZE_BUDGET, left));
+		this.#budget.set(rec.id, left - walk.visits);
+		const total = sum(walk.sizes);
+		const s = (rec.sizes ??= { sized: 0, min: total, max: total });
+		s.sized++;
+		if (total < s.min) s.min = total;
+		if (total > s.max) s.max = total;
+		return walk.sizes;
+	}
+
+	/**
+	 * Sizing and cloning read the inputs, which can run recorded code (a getter, a toJSON): those
+	 * calls are the recorder's own reading, never recorded (else a getter would record itself
+	 * while being read, without end).
+	 */
+	#busy = false;
+
 	enter(id: string, args: ArrayLike<unknown>, this_value: unknown): Frame | null {
-		if (this.replaying) return null;
+		if (this.replaying || this.#busy) return null;
+		this.#busy = true;
+		try {
+			return this.#enter(id, args, this_value);
+		} finally {
+			this.#busy = false;
+		}
+	}
+
+	#enter(id: string, args: ArrayLike<unknown>, this_value: unknown): Frame | null {
 		const rec = this.#record(id);
 		rec.calls++;
-		if (rec.samples.length >= this.max_samples) return null;
-		const a = clone(Array.from(args));
-		const t = clone(this_value);
-		const bad = a === NOT_CLONED || t === NOT_CLONED;
+		const sizes = this.#sizes(rec, args);
+		const bands = this.#bands.get(id)!;
+		const new_band = sizes !== null && bands.size < SIZE_BANDS && !bands.has(size_band(sum(sizes)));
+		const faithful = this.#faithful(id);
+		if (faithful >= this.max_samples && !new_band) return null;
+		let a = clone(Array.from(args));
+		let t = clone(this_value);
+		let stood = false;
+		if ((a === NOT_CLONED || t === NOT_CLONED) && new_band) {
+			// growth still wants this size: the callbacks that close over state stood in
+			try {
+				const sa = clone_with_stand_ins(Array.from(args));
+				const st =
+					this_value === globalThis
+						? { value: undefined, stand_ins: false }
+						: clone_with_stand_ins(this_value);
+				a = sa.value;
+				t = st.value;
+				stood = sa.stand_ins || st.stand_ins;
+			} catch {
+				// not even with stand-ins (a class instance holding a function, a DOM node...)
+			}
+		}
+		let bad = a === NOT_CLONED || t === NOT_CLONED;
 		let key = '';
 		if (!bad) {
 			try {
@@ -129,7 +225,8 @@ export class Recorder {
 					.update(serialize([a, t]))
 					.digest('hex');
 			} catch {
-				key = '';
+				// structuredClone takes some host objects (a KeyObject) a sample file cannot hold
+				bad = true;
 			}
 		}
 		return {
@@ -137,17 +234,33 @@ export class Recorder {
 			args: bad ? [] : (a as unknown[]),
 			this_value: bad ? undefined : t,
 			key,
+			sizes,
+			stood,
 			done: false,
 			bad
 		};
 	}
 
+	/** Samples of `id` that are its inputs as they came (no stand-ins). */
+	#faithful(id: string): number {
+		let n = 0;
+		for (const s of this.#records.get(id)!.samples) if (!s.stand_ins) n++;
+		return n;
+	}
+
 	out<T>(f: Frame | null, v: T): T {
 		if (f && !f.done) {
 			f.done = true;
-			const o = clone(v);
-			if (o === NOT_CLONED) f.bad = true;
-			else f.out = o;
+			// a sample with stand-ins serves growth alone, which needs no output
+			const was = this.#busy;
+			this.#busy = true;
+			try {
+				const o = f.stood ? undefined : clone(v);
+				if (o === NOT_CLONED) f.bad = true;
+				else f.out = o;
+			} finally {
+				this.#busy = was;
+			}
 		}
 		return v;
 	}
@@ -165,21 +278,25 @@ export class Recorder {
 			f.done = true;
 			f.out = undefined;
 		}
-		if (f.bad) {
-			f.rec.uncloneable++;
-			return;
-		}
+		if (f.bad || f.stood) f.rec.uncloneable++;
+		if (f.bad) return;
 		const keys = this.#keys.get(f.rec.id)!;
 		const s: Sample = { args: f.args, this_value: f.this_value };
 		if (f.threw) s.threw = f.threw;
 		else s.out = f.out;
+		if (f.sizes) s.sizes = f.sizes;
+		if (f.stood) s.stand_ins = true;
 		const earlier = keys.get(f.key);
 		if (earlier) {
-			if (!same_result(earlier, s)) f.rec.inconsistent++;
+			if (!f.stood && !earlier.stand_ins && !same_result(earlier, s)) f.rec.inconsistent++;
 			return;
 		}
-		if (f.rec.samples.length >= this.max_samples) return;
+		const bands = this.#bands.get(f.rec.id)!;
+		const band = f.sizes ? size_band(sum(f.sizes)) : null;
+		const new_band = band !== null && bands.size < SIZE_BANDS && !bands.has(band);
+		if ((f.stood || this.#faithful(f.rec.id) >= this.max_samples) && !new_band) return;
 		keys.set(f.key, s);
+		if (band !== null) bands.add(band);
 		f.rec.samples.push(s);
 	}
 
@@ -190,10 +307,32 @@ export class Recorder {
 	reset(): void {
 		this.#records.clear();
 		this.#keys.clear();
+		this.#bands.clear();
+		this.#budget.clear();
 	}
 
 	save(path: string): void {
-		writeFileSync(path, serialize(this.records()));
+		const records = this.records();
+		let bytes: Buffer;
+		try {
+			bytes = serialize(records);
+		} catch {
+			// an output only structuredClone could hold: those samples go, counted as uncloneable
+			bytes = serialize(
+				records.map((r) => {
+					const samples = r.samples.filter((s) => {
+						try {
+							serialize(s);
+							return true;
+						} catch {
+							return false;
+						}
+					});
+					return { ...r, samples, uncloneable: r.uncloneable + r.samples.length - samples.length };
+				})
+			);
+		}
+		writeFileSync(path, bytes);
 	}
 }
 
@@ -243,8 +382,10 @@ export function replay(
 	try {
 		for (const r of records) {
 			const fn = fns[r.id];
-			const base = { id: r.id, samples: r.samples.length, mismatches: 0 };
-			if (r.samples.length === 0) {
+			// samples with stand-ins do not carry the call's inputs: they never stand for its output
+			const samples = r.samples.filter((s) => !s.stand_ins);
+			const base = { id: r.id, samples: samples.length, mismatches: 0 };
+			if (samples.length === 0) {
 				out.push({ ...base, status: r.uncloneable > 0 ? 'not cloneable' : 'no samples' });
 				continue;
 			}
@@ -256,11 +397,15 @@ export function replay(
 			// Twice per sample: a function that keeps state of its own answers differently the
 			// second time even when the first replay happens to match.
 			for (let round = 0; round < 2; round++) {
-				for (const s of r.samples) {
+				for (const s of samples) {
 					const got: Sample = { args: s.args, this_value: s.this_value };
 					try {
 						got.out = clone(
-							Reflect.apply(fn, structuredClone(s.this_value), structuredClone(s.args) as unknown[])
+							Reflect.apply(
+								fn,
+								revive(structuredClone(s.this_value)),
+								revive(structuredClone(s.args)) as unknown[]
+							)
 						);
 					} catch (e) {
 						got.threw = error_of(e);
