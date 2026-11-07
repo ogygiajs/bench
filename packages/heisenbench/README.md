@@ -350,7 +350,6 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.                               |
 | `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.                                 |
 | `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.                              |
-| <<<<<<< HEAD                                                                           |
 | `heisenbench mutate <bench files> --root <dir> --list <sources>`                       | Plants slowdowns that keep the output in every function; scores what the cases catch, a case for each miss.                                    |
 | `heisenbench history <file>[:<function>] --reports <dir>`                              | `git blame` for steps: the commit that last changed each line's cost, by how much; a timeline per function.                                    |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                                                     |
