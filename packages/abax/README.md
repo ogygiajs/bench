@@ -7,7 +7,13 @@ run of its base are enough to tell which line got slower.
 The name comes from the abax, the Greek counting board.
 
 Abax was built for [ogygia](https://github.com/ogygiajs/ogygia) and runs on every ogygia PR. It
-lives in this repository as `packages/abax` and is not on npm yet.
+lives in this repository as `packages/abax` and is on npm as `abax`.
+
+```bash
+npm i -D abax
+```
+
+It needs Node 26.4 or newer.
 
 ## The problem
 
@@ -82,24 +88,21 @@ The full comment is in [docs/sample-comment.md](docs/sample-comment.md).
 
 ## Quick start
 
-You need Node 26.4 or newer and pnpm. CI runs the tests on Node 26.4.0 and on the newest 26, and
-counts on the newest 26. Node 22 does not work: on 22.18, 6 of the 166 tests fail (`using`
-declarations, which its V8 does not parse, and engine health).
+You need Node 26.4 or newer. CI runs the tests on Node 26.4.0 and on the newest 26, and counts on
+the newest 26. Node 22 does not work: on 22.18, 6 of the 166 tests fail (`using` declarations,
+which its V8 does not parse, and engine health).
+
+In a new project:
 
 ```bash
-git clone https://github.com/ogygiajs/bench.git
-cd bench && pnpm install
+npm init -y
+npm i -D abax typescript@6
 ```
 
-In your project, next to `bench`, link the package in `package.json` and install:
-
-```json
-{ "devDependencies": { "@bench/abax": "link:../bench/packages/abax" } }
-```
-
-```bash
-pnpm install
-```
+TypeScript is optional. `abax dts` needs it, and so does TypeScript that type stripping cannot
+run (`enum`, `namespace`, parameter properties). It must be TypeScript 5 or 6: TypeScript 7 is the
+native compiler and has no JavaScript API. The other optional peers are `svelte` (for `.svelte`
+files) and `playwright` (for the app layer). Abax says which one is missing when a command needs it.
 
 A function to measure, `src/rank.ts`:
 
@@ -129,7 +132,7 @@ export function rank(rows: Row[]): number[] {
 A bench file, `bench/rank.bench.ts`. `setup` builds the input outside the measuring window:
 
 ```ts
-import { bench } from '@bench/abax/bench';
+import { bench } from 'abax/bench';
 import { rank } from '../src/rank.ts';
 
 bench('rank: twenty rows', ({ rows }) => rank(rows), {
@@ -144,7 +147,7 @@ Commit it (a report records the commit it was counted at), and count it:
 ```bash
 git init && echo node_modules > .gitignore
 git add . && git commit -m base
-pnpm exec abax run bench/rank.bench.ts --out base.json
+npx abax run bench/rank.bench.ts --out base.json
 ```
 
 ```
@@ -163,8 +166,8 @@ Commit, and count again:
 
 ```bash
 git commit -am pr
-pnpm exec abax run bench/rank.bench.ts --out pr.json
-pnpm exec abax diff base.json pr.json --repo .
+npx abax run bench/rank.bench.ts --out pr.json
+npx abax diff base.json pr.json --repo .
 ```
 
 ```md
@@ -216,7 +219,7 @@ with every top-level binding the module does not export. A bench file imports pr
 from it:
 
 ```ts
-import { bench } from '@bench/abax/bench';
+import { bench } from 'abax/bench';
 import { __abax } from '../src/rank.ts';
 
 bench('score: one row with three tags', ({ row }) => __abax.score(row), {
@@ -227,7 +230,7 @@ bench('score: one row with three tags', ({ row }) => __abax.score(row), {
 TypeScript does not know about `__abax`. `abax dts` writes the types, from the TS checker:
 
 ```bash
-pnpm exec abax dts src/rank.ts --out bench/__abax.d.ts
+npx abax dts src/rank.ts --out bench/__abax.d.ts
 ```
 
 ```ts
@@ -283,6 +286,9 @@ writes JSON; `diff` and a few others also write markdown.
 
 `health`, `growth` and `search` write their section into the report given by `--out`, so one JSON
 file per commit holds everything `diff` needs.
+
+`calibrate` and `verify` run only in a clone of this repository. The npm package does not ship
+the calibration corpus or the planted cases, and from npm both commands say so and stop.
 
 Exit codes: 0 when everything ran, 1 when a case, a bench file or a layer failed (the report
 says which), 2 when the command line is wrong. Errors are one line; `--debug` adds the stack.
@@ -475,7 +481,7 @@ how the machine was checked for quiet first.
 
 ### The fuzzer
 
-`pnpm --filter @bench/abax fuzz -- --seed N --runs M --time T` generates programs from a seed and
+In a clone of this repository, `pnpm --filter abax fuzz -- --seed N --runs M --time T` generates programs from a seed and
 checks the counting build against things it does not control:
 
 - **Semantics.** The counted program logs the same values, in the same order, and returns or

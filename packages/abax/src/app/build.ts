@@ -10,8 +10,8 @@ import {
 	writeFileSync
 } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { CountedPluginOptions } from './vite.ts';
+import { own_file } from '../own.ts';
 
 /*
  * A counted build of an installed app (spec 8): a copy of the app's sources next to a link to its
@@ -19,7 +19,7 @@ import type { CountedPluginOptions } from './vite.ts';
  * itself is not touched: its normal build stays what the app benchmark measures.
  */
 
-const VITE_PLUGINS = fileURLToPath(new URL('./vite.ts', import.meta.url));
+const VITE_PLUGINS = own_file('app/vite');
 
 /** What a copy leaves out: installs, build output, files a build writes. */
 const NOT_COPIED = new Set([

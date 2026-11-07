@@ -2,8 +2,8 @@ import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import type { CaseReport } from '../report.ts';
+import { own_file } from '../own.ts';
 import { track } from '../proc.ts';
 import type { UnstableFunction } from './stability.ts';
 import type { LoadedModules } from './types.ts';
@@ -58,7 +58,7 @@ export type ChildMessage =
 	| { type: 'counted'; out: string }
 	| { type: 'error'; message: string };
 
-const CHILD = fileURLToPath(new URL('./server-child.ts', import.meta.url));
+const CHILD = own_file('app/server-child');
 
 export class CountedServer {
 	#child: ChildProcess;

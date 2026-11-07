@@ -10,7 +10,7 @@ import { coverage_of } from './coverage.ts';
 import { check_corpus } from './corpus.ts';
 
 /*
- * The fuzzer: `pnpm --filter @bench/abax fuzz -- --seed N --runs M --time T`.
+ * The fuzzer: `pnpm --filter abax fuzz -- --seed N --runs M --time T`.
  *
  *   --seed N        first seed (default 1); program i is seed N + i, so a run is reproducible
  *   --runs M        programs per suite (default 100)

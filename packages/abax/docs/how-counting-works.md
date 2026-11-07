@@ -9,7 +9,7 @@ keeps the count the same from run to run, and how the count is mapped back to so
 `abax run` registers a module loader (`module.registerHooks`) and imports the bench file. Every
 module loaded after that goes through the transform: oxc-parser reads it, magic-string edits it,
 and the edits keep a source map. The same transform is also a Vite, Rolldown and Rollup plugin
-(`@bench/abax/plugin`), used for the counted app builds.
+(`abax/plugin`), used for the counted app builds.
 
 This module:
 

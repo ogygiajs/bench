@@ -1,8 +1,8 @@
-import { fileURLToPath } from 'node:url';
 import { resolve, sep } from 'node:path';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { VIRTUAL_PREFIX, module_id, transform } from './transform/index.ts';
 import { load_prices } from './prices.ts';
+import { OWN_DIR, own_file } from './own.ts';
 
 /*
  * The counting transform as a Vite / Rolldown / Rollup plugin. It runs last (`enforce: 'post'`), so
@@ -22,16 +22,15 @@ export interface AbaxPluginOptions {
 	runtime?: string;
 }
 
-interface TransformContext {
+export interface TransformContext {
 	getCombinedSourcemap?: () => unknown;
 }
 
-const RUNTIME_PATH = fileURLToPath(new URL('./runtime/index.ts', import.meta.url));
-const ABAX_DIR = fileURLToPath(new URL('./', import.meta.url));
+const RUNTIME_PATH = own_file('runtime/index');
 const SOURCE_EXT = ['.js', '.mjs', '.ts', '.mts', '.svelte', '.jsx', '.tsx'];
 
 function default_include(file: string): boolean {
-	if (file.includes(`${sep}node_modules${sep}`) || file.startsWith(ABAX_DIR)) return false;
+	if (file.includes(`${sep}node_modules${sep}`) || file.startsWith(OWN_DIR)) return false;
 	return (
 		SOURCE_EXT.some((e) => file.endsWith(e)) && !file.endsWith('.d.ts') && !file.includes('.bench.')
 	);

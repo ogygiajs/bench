@@ -53,7 +53,7 @@ jobs:
       # TypeScript and Svelte, runs cut short by the step cap. The same programs every run; the
       # nightly fuzz workflow draws new ones.
       - name: Abax fuzz (fixed seeds)
-        run: pnpm --filter @bench/abax fuzz -- --seed 1 --runs 60 --jobs 4 --out "$RUNNER_TEMP/fuzz"
+        run: pnpm --filter abax fuzz -- --seed 1 --runs 60 --jobs 4 --out "$RUNNER_TEMP/fuzz"
       - name: Fuzz repros
         if: failure()
         uses: actions/upload-artifact@v7

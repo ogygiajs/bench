@@ -3,7 +3,7 @@
  * whose return value is handed to the function. Setup and teardown run outside the measuring
  * window, before and after every run.
  *
- *   import { bench } from '@bench/abax/bench';
+ *   import { bench } from 'abax/bench';
  *   import { __abax } from '../src/router/match.ts';
  *
  *   bench('match a nested route', ({ routes }) => __abax.match(routes, '/a/b'), {

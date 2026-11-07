@@ -15,6 +15,7 @@ import {
 import { agree_files } from '../calibrate/agree.ts';
 import { measure_points, read_points, write_points } from '../calibrate/points.ts';
 import { DEFAULT_WEIGHTS_PATH } from '../calibrate/weights.ts';
+import { needs_bench_repo } from '../own.ts';
 
 /*
  * The CLI parts of the plain-build layers and calibration (cli.ts hands these over):
@@ -91,6 +92,8 @@ export async function measure_command(
 		return t.errors.length > 0 ? 1 : 0;
 	}
 	if (cmd === 'calibrate') {
+		// Calibration writes the package's own prices.json / weights.json and fits the corpus.
+		needs_bench_repo('calibration/corpus.bench.ts');
 		const [what, ...files] = positional;
 		const log = (l: string) => console.log(l);
 		if (what === 'prices') {

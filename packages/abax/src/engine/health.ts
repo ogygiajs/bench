@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { own_file } from '../own.ts';
 import { LEAST_UPPER_BOUND, TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { instrument } from '../transform/instrument.ts';
@@ -24,7 +24,7 @@ import type {
 } from './types.ts';
 import { is_cold } from './diff.ts';
 
-const CHILD = fileURLToPath(new URL('./child.ts', import.meta.url));
+const CHILD = own_file('engine/child');
 
 /**
  * Flags of the health child. Single-threaded, no concurrent recompilation and no bytecode flushing:

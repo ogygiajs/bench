@@ -12,6 +12,7 @@ import {
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
 import { GENERATION } from '../loader/core.ts';
+import { OWN_DIR } from '../own.ts';
 
 /*
  * The plain build: the code as it ships, for the layers that need the real engine (time, real
@@ -25,7 +26,7 @@ import { GENERATION } from '../loader/core.ts';
  * (heap profiles, snapshots) are the positions the counting transform saw.
  */
 
-const ABAX_DIR = fileURLToPath(new URL('../', import.meta.url));
+const ABAX_DIR = OWN_DIR;
 const EXTENSIONS = ['.js', '.mjs', '.ts', '.mts', '.svelte'];
 
 export interface PlainConfig {

@@ -13,6 +13,7 @@ import {
 } from '../transform/index.ts';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { load_prices } from '../prices.ts';
+import { OWN_DIR } from '../own.ts';
 
 export interface LoaderConfig {
 	/** Report paths are relative to this directory. */
@@ -30,7 +31,7 @@ export interface LoaderConfig {
 	expose?: boolean;
 }
 
-const ABAX_DIR = fileURLToPath(new URL('../', import.meta.url));
+const ABAX_DIR = OWN_DIR;
 /** Query parameter of a fresh module graph (`?abax_gen=3`). */
 export const GENERATION = 'abax_gen=';
 const EXTENSIONS = ['.js', '.mjs', '.ts', '.mts', '.svelte'];

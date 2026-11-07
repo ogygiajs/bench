@@ -20,6 +20,7 @@ import { app_command, app_diff_sections } from './app/cli.ts';
 import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
 import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
+import { needs_bench_repo } from './own.ts';
 
 const HELP = `abax: count the work a function does, per line, the same on every run.
 
@@ -54,20 +55,23 @@ Real apps and the measurement-source gate
       [--replay replay.json] [--skipped skipped.json] [--base-inventory base.json]
       [--repo dir --base sha --head sha] [--exempt unmeasured.json] [--out gate.json] [--md gate.md]
 
-Calibration
+Calibration and proof (from a clone of github.com/ogygiajs/bench only: the npm package does not
+ship the calibration corpus or the planted cases)
   abax calibrate prices [--keys a,b] [--sizes 16,64,256] [--out prices.json] [--time-ms 100]
   abax calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   abax calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   abax calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
-
-Proof
   abax verify [--layers steps,elision,leak,engine,growth,search,app,time] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
 
-Docs: packages/abax/README.md in github.com/ogygiajs/bench`;
+Optional peer dependencies, installed in the project when needed: typescript (abax dts, and
+TypeScript that type stripping cannot run), svelte (.svelte files), playwright (the app layer).
+
+Docs: https://github.com/ogygiajs/bench/tree/main/packages/abax#readme`;
 
 /** `abax verify`: every planted case of every layer; exit 1 when any fails. */
 async function verify_command(flags: Map<string, string>): Promise<number> {
+	needs_bench_repo('test/answer-key');
 	const layers = flags.get('layers')?.split(',') as VerifyLayer[] | undefined;
 	const bad = layers?.filter((l) => !VERIFY_LAYERS.includes(l));
 	if (bad && bad.length > 0) {

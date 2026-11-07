@@ -1,8 +1,8 @@
 import { readFileSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { dirname, relative, resolve, sep } from 'node:path';
 import { parseSync } from 'oxc-parser';
 import { private_bindings } from './transform/instrument.ts';
+import { require_typescript } from './peer.ts';
 
 /*
  * Types for private functions (spec 7). The bench transform appends
@@ -23,7 +23,7 @@ type TS = typeof import('typescript');
 const NS = '__abax_private';
 
 function load_ts(): TS {
-	return createRequire(import.meta.url)('typescript') as TS;
+	return require_typescript<TS>('abax dts');
 }
 
 function rel_specifier(from_dir: string, to_file: string): string {

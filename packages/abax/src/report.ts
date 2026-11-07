@@ -9,6 +9,7 @@ import type { CaseMeasure } from './measure/types.ts';
 import type { EngineReport } from './engine/types.ts';
 import type { GrowthReport } from './growth/index.ts';
 import type { SearchReport } from './search/index.ts';
+import { package_url } from './own.ts';
 
 /*
  * The report (JSON, versioned). One entry per bench case; inside, every function the case ran.
@@ -146,7 +147,7 @@ export interface Environment {
 	weights: { version: number; hash: string } | null;
 }
 
-const WEIGHTS = new URL('../weights.json', import.meta.url);
+const WEIGHTS = package_url('weights.json');
 
 /** The environment of this process. */
 export function environment(): Environment {
