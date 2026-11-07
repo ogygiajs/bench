@@ -186,9 +186,11 @@ npx heisenbench diff base.json pr.json --repo .
 
 **1** function changed in 1 case(s). Steps are exact counts, not timings.
 
-| Case | Steps | Δ |
-| --- | ---: | ---: |
-| rank: twenty rows | 897 → 1,417 | +520 (+58.0%) |
+| Case | Steps | Δ | Odds it shows on the clock |
+| --- | ---: | ---: | ---: |
+| rank: twenty rows | 897 → 1,417 | +520 (+58.0%) | 57% |
+
+<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from 475 timed changes (dataset v1). They were timed on a busy machine, so the odds lean low. Pass or fail never uses them.</sub>
 
 By function:
 
@@ -356,12 +358,14 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
 | `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
 | `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
+| `heisenbench feel train\|check`                                                        | Fit the odds a step change shows on the clock; `check` fits `feel.json` again, byte for byte.                      |
 
 `health`, `growth`, `search`, `audit` and `contracts` write their section into the report given by `--out`, so
 one JSON file per commit holds everything `diff` needs.
 
-`calibrate` and `verify` run only in a clone of this repository. The npm package does not ship
-the calibration corpus or the planted cases, and from npm both commands say so and stop.
+`calibrate`, `verify` and `feel` run only in a clone of this repository. The npm package does not
+ship the calibration corpus, the training dataset or the planted cases, and from npm these
+commands say so and stop. It does ship the fitted `feel.json`.
 
 Every command that loads bench files (`run`, `health`, `growth`, `search`, `audit`, `time`,
 `blame`, `record`, `prove`) takes `--import <file>[,<file>]`: a preload imported before the
@@ -432,6 +436,12 @@ display. Counts are still exact.
 
 **The ns next to a Δ** (`≈ +21 ns`) is an estimate: the change in each kind of operation times its
 fitted cost in ns. It is not a measurement. Only the time layer measures.
+
+**The odds it shows on the clock** (`57%` above) are a bet from a small model fitted on timed
+changes: of step changes like this one, how many the time layer saw beyond noise. They were
+timed on a busy machine, so they lean low, and pass or fail never uses them.
+[docs/feel-odds.md](docs/feel-odds.md) has the model, its held-out scores and what the busy
+machine means.
 
 **The same code with the same input always counts the same.** Inside the measuring window:
 
@@ -636,3 +646,5 @@ handles, and 369 corpus files. What it found is fixed, each with a test in
 - [CI for any repo](docs/ci-any-repo.md): one workflow that counts a PR and its base and posts
   the diff.
 - [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.
+- [Odds it shows on the clock](docs/feel-odds.md): the model behind the odds next to a step
+  change, its held-out scores, and why a busy machine makes them lean low.
