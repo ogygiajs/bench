@@ -224,7 +224,9 @@ A report places every block on a line of the original source:
   offsets and lines stay the same. A module stripping cannot run (`enum`, `namespace`,
   parameter properties) is compiled with the TypeScript compiler (the project's, else Heisenbench's own),
   and the compiler's source map takes its blocks back to their lines. Bench files get the same
-  treatment, so an `enum` in one does not stop the run.
+  treatment, so an `enum` in one does not stop the run. Either way, a named import that nothing
+  in the module reads (a type imported without `type`) is blanked out with spaces, as `tsc`
+  elides it, so it keeps offsets too (`src/transform/elide.ts`).
 - **`.svelte` and `.svelte.ts`** are compiled with the project's own Svelte compiler (server
   output by default). The compiler's source map is combined with the transform's, so a block in
   compiled output reports the `.svelte` line.

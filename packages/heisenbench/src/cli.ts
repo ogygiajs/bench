@@ -2,6 +2,7 @@
 import './warnings.ts';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { exit_on_signals } from './proc.ts';
 import { UsageError } from './usage.ts';
 import { REPORT_SCHEMA, one_line } from './report.ts';
@@ -115,6 +116,12 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
   heisenbench verify [--layers steps,elision,leak,engine,growth,contract,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
+
+Every command that loads bench files (run, health, growth, search, audit, time, blame, record,
+prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
+process it starts (resolve hooks for path aliases, Vite-only modules, globals the code expects).
+Relative imports of TypeScript sources (./x.js for x.ts, ./x for x.ts or x/index.ts) resolve
+without one.
 
 Optional peer dependencies, installed in the project when needed: typescript (heisenbench dts, and
 TypeScript that type stripping cannot run), svelte (.svelte files), playwright (the app layer).
@@ -250,7 +257,7 @@ interface Spec {
 	switches?: readonly string[];
 }
 
-const BENCH = ['root', 'filter', 'out', 'deps', 'sha'];
+const BENCH = ['root', 'filter', 'out', 'deps', 'sha', 'import'];
 const MANY = Number.POSITIVE_INFINITY;
 
 const SPECS: Record<string, Spec> = {
@@ -291,7 +298,8 @@ const SPECS: Record<string, Spec> = {
 			'weights',
 			'requests-per-day',
 			'out',
-			'md'
+			'md',
+			'import'
 		],
 		args: [2, 2],
 		files: true
@@ -344,7 +352,7 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	time: {
-		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md'],
+		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md', 'import'],
 		args: [1, MANY]
 	},
 	// app reports, or `import` and production profiles
@@ -356,7 +364,7 @@ const SPECS: Record<string, Spec> = {
 	coverage: { values: ['app', 'packages', 'out', 'md'], args: [1, MANY], files: true },
 	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
 	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
-	record: { values: ['targets', 'root', 'out'], args: [1, MANY], files: true },
+	record: { values: ['targets', 'root', 'out', 'import'], args: [1, MANY], files: true },
 	unmeasured: {
 		values: [
 			'inventory',
@@ -410,7 +418,8 @@ const SPECS: Record<string, Spec> = {
 			'setup-tolerance',
 			'weights',
 			'proposals',
-			'model'
+			'model',
+			'import'
 		],
 		args: [2, 2],
 		switches: ['propose', 'send-inputs']
@@ -590,6 +599,7 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	check_dirs(cmd, flags);
+	await preload(flags.get('import'));
 	if (cmd === 'run') {
 		const deps = deps_of(flags.get('deps'), true);
 		const report = await run_benches({
@@ -600,7 +610,8 @@ async function main(argv: string[]): Promise<number> {
 			filter: flags.get('filter'),
 			sha: flags.get('sha') ?? null,
 			fresh: flags.get('state') !== 'shared',
-			log: (l) => console.log(l)
+			log: (l) => console.log(l),
+			debug: flags.has('debug') || process.env.HEISENBENCH_DEBUG === '1'
 		});
 		await measure_run(report, positional, flags);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
@@ -753,6 +764,26 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	throw new UsageError(`unknown command ${cmd}`);
+}
+
+/**
+ * `--import a.ts,b.ts`: each file imported here, before any bench file, and added to
+ * NODE_OPTIONS as `--import=<absolute path>`, so every process this one starts (health, time,
+ * bytes and leak children, blame recounts) loads it first too. The same as setting
+ * `NODE_OPTIONS=--import=./a.ts` by hand.
+ */
+async function preload(list: string | undefined): Promise<void> {
+	if (list === undefined) return;
+	for (const f of list.split(',').filter(Boolean)) {
+		const abs = resolve(f);
+		if (!existsSync(abs) || !statSync(abs).isFile())
+			throw new UsageError(`--import ${f}: no such file`);
+		if (/\s/.test(abs))
+			throw new UsageError(`--import ${f}: a path with a space cannot go in NODE_OPTIONS`);
+		await import(pathToFileURL(abs).href);
+		const opts = process.env.NODE_OPTIONS ?? '';
+		process.env.NODE_OPTIONS = `${opts} --import=${abs}`.trim();
+	}
 }
 
 /** `--root` must be a directory, and the directories `--out`, `--md` and `--json` write into must exist. */

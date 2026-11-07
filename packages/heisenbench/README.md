@@ -97,6 +97,11 @@ You need Node 26.4 or newer. CI runs the tests on Node 26.4.0 and on the newest 
 the newest 26. Node 22 does not work: on 22.18, 6 of the 166 tests fail (`using` declarations,
 which its V8 does not parse, and engine health).
 
+That is the Node Heisenbench runs on, not the Node your library supports. A library tested on
+Node 20 or 24 counts its benches in a separate CI job on Node 26, and the counts are as valid: a
+count depends on the code and its input, not on the Node version (two Node 26 releases gave the
+same steps for all of ogygia's cases, see [Reading the numbers](#reading-the-numbers)).
+
 In a new project:
 
 ```bash
@@ -277,6 +282,16 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
 - TypeScript. Types are stripped, as Node does it. A module that stripping cannot run (`enum`,
   `namespace`, parameter properties) is compiled with the project's TypeScript, and its lines map
   back through the compiler's source map.
+- Relative imports the way TypeScript projects write them. When Node cannot find one, the source
+  file it names is tried: `./clone.js` loads `clone.ts` (`.mjs` loads `.mts`), and `./core` with
+  no extension loads `core.ts`, `core.mts`, `core.js`, `core.mjs`, `core/index.ts` or
+  `core/index.js`. Packages in `node_modules` resolve the way they ship.
+- A type imported without `type` (`import { Rule, apply } from './rules.js'`, where `Rule` is an
+  `export type`). Node's type stripping keeps that import and the module would not link ("does
+  not provide an export named 'Rule'"); a named import that nothing in the module reads is
+  dropped instead, as `tsc` does. The module it names still loads.
+- Anything else Node cannot load by itself (path aliases, modules only a bundler serves, globals
+  the code expects) through a preload: `--import <file>` (below).
 - A bench file that throws, does not parse or defines no cases is reported on its own; the other
   files still run.
 - `.svelte` components and `.svelte.ts` modules, compiled with the project's own Svelte (server
@@ -325,9 +340,39 @@ one JSON file per commit holds everything `diff` needs.
 `calibrate` and `verify` run only in a clone of this repository. The npm package does not ship
 the calibration corpus or the planted cases, and from npm both commands say so and stop.
 
+Every command that loads bench files (`run`, `health`, `growth`, `search`, `audit`, `time`,
+`blame`, `record`, `prove`) takes `--import <file>[,<file>]`: a preload imported before the
+bench files, in that process and in every process it starts (engine health, time, real bytes
+and leak children, blame's recounts). A preload that registers a resolve hook
+([`module.registerHooks`](https://nodejs.org/api/module.html#customization-hooks)) maps the
+imports only a bundler knows, like ogygia's `virtual:ogygia/*` and `$app/*`:
+
+```ts
+// bench/preload.ts
+import { registerHooks } from 'node:module';
+
+registerHooks({
+	resolve(specifier, context, next) {
+		if (specifier.startsWith('~/')) {
+			return next(new URL(`../src/${specifier.slice(2)}`, import.meta.url).href, context);
+		}
+		return next(specifier, context);
+	}
+});
+```
+
+```bash
+npx heisenbench run bench/*.bench.ts --import bench/preload.ts
+```
+
+It is the same as `NODE_OPTIONS=--import=./bench/preload.ts`, which works too.
+
 Exit codes: 0 when everything ran, 1 when a case, a bench file or a layer failed (the report
 says which), 2 when the command line is wrong. Errors are one line; `--debug` adds the stack.
-Ctrl-C stops the run and every process it started.
+A case or a bench file that throws keeps where it threw: the line says `(at helper
+(src/lib.ts:7:34))`, the report keeps the frames of the code under test (`error_stack` of the
+case, `stack` of a load error), and `--debug` prints them all. Ctrl-C stops the run and every
+process it started.
 
 ## The PR comment
 
