@@ -19,6 +19,9 @@ import { mirror_tree, remove_tree, write_tree } from '../src/blame/tree.ts';
 import { move_args } from '../src/blame/index.ts';
 import type { BlameResult } from '../src/blame/index.ts';
 import { parse_diff } from '../src/diff/git.ts';
+import { WEIGHTS_SCHEMA, canonical_function } from '../src/weight/weights.ts';
+import type { AppWeights } from '../src/weight/weights.ts';
+import { round_sig, sum_costs } from '../src/weight/cost.ts';
 import { temp_dir, write_files } from './helpers.ts';
 
 const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
@@ -61,7 +64,8 @@ function heisenbench(args: string[], cwd: string) {
 /** A fixture repo with a base and a head commit; both counted; then blamed. */
 function blame_fixture(
 	base: Record<string, string>,
-	head: Record<string, string>
+	head: Record<string, string>,
+	extra: string[] = []
 ): { result: BlameResult; md: string; dir: string } {
 	const dir = temp_dir('heisenbench-blame-');
 	git(dir, 'init', '-q');
@@ -89,7 +93,8 @@ function blame_fixture(
 			'--out',
 			out,
 			'--md',
-			md_file
+			md_file,
+			...extra
 		],
 		dir
 	);
@@ -207,6 +212,84 @@ test('blame names exactly the hunk that doubles the work, among six', () => {
 	console.log(md);
 	console.log(
 		`recounts ${result.spent.recounts}, reused ${result.spent.reused}, ${result.spent.ms} ms`
+	);
+});
+
+test('with real-traffic weights the blamed hunk gets the cost function’s estimate and range', () => {
+	const scratch = temp_dir('heisenbench-blame-weights-');
+	// a unit of real traffic: 200 requests over 10 s; `total` runs 3 times a request (counted)
+	const weights: AppWeights = {
+		schema: WEIGHTS_SCHEMA,
+		source: { sha: null, ogygia: {}, scenarios: [] },
+		units: {
+			'real request': {
+				steps: 0,
+				units: 200,
+				side: 'server',
+				traffic: {
+					profiles: { cpuprofile: 1 },
+					requests: 200,
+					window_ms: 10_000,
+					start: null,
+					end: null,
+					sampled_ms: 100,
+					mapped_ms: 100,
+					unmatched: []
+				}
+			}
+		},
+		functions: {
+			[canonical_function('lib/work.ts', 'total')]: {
+				'real request': {
+					calls: 3,
+					calls_counted: true,
+					self_steps: 0,
+					inclusive_steps: 0,
+					self_ns: 900,
+					total_ns: 900,
+					samples: 400
+				}
+			}
+		}
+	};
+	const file = join(scratch, 'real-weights.json');
+	writeFileSync(file, JSON.stringify(weights));
+	const { result, md } = blame_fixture(
+		{ 'work.bench.ts': BENCH, 'lib/work.ts': WORK_BASE, 'lib/fmt.ts': FMT_BASE },
+		{ 'lib/work.ts': WORK_HEAD, 'lib/fmt.ts': FMT_HEAD },
+		['--weights', file, '--requests-per-day', '1000000']
+	);
+	const c = result.cases[0];
+	const slow = result.units.find((u) => u.file === 'lib/work.ts' && u.lines[0] === 4)!;
+	assert.deepEqual(c.revert.units, [slow.id]);
+	const k = c.cost!;
+	assert.ok(k.total, 'priced');
+	// the same estimate the ranked findings give that function: the cost function, not a second model
+	const total_fn = c.functions.find((f) => f.function === 'total')!;
+	assert.deepEqual(k.total, total_fn.cost);
+	assert.deepEqual(k.hunks, [{ unit: slow.id, cost: total_fn.cost }]);
+	assert.equal(k.total!.requests_per_day, 1_000_000);
+	assert.ok(k.total!.cpu_s_range[0] < k.total!.cpu_s_per_day);
+	assert.ok(k.total!.cpu_s_per_day < k.total!.cpu_s_range[1]);
+	// two functions' costs add, estimates and range ends alike
+	const twice = sum_costs([k.total!, k.total!])!;
+	assert.equal(twice.ns, round_sig(2 * k.total!.ns));
+	assert.deepEqual(twice.range, [
+		round_sig(2 * k.total!.range[0]),
+		round_sig(2 * k.total!.range[1])
+	]);
+	assert.equal(sum_costs([]), null);
+	assert.match(
+		md,
+		/\*\*Real cost\*\* of this change on the imported traffic: ≈ .+ at 1M requests\/day \(range /
+	);
+	assert.match(md, /\| Function \| Δ self steps \| Lines \| Real cost \|/);
+	assert.match(md, /3 calls\/request/);
+	console.log(
+		md
+			.split('\n')
+			.filter((l) => l.includes('Real cost') || l.includes('total'))
+			.join('\n')
 	);
 });
 

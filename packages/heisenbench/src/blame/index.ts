@@ -14,6 +14,13 @@ import type { Outcome, Tester } from './ddmin.ts';
 import { diff_units } from './hunks.ts';
 import type { TreeFiles, Unit, Units } from './hunks.ts';
 import { mirror_tree, remove_tree, write_tree } from './tree.ts';
+import type { FunctionChange } from '../diff/index.ts';
+import { load_weights } from '../calibrate/weights.ts';
+import { rank_changes } from '../weight/rank.ts';
+import type { RankedChange } from '../weight/rank.ts';
+import { coverage_line, sum_costs, traffic_unit } from '../weight/cost.ts';
+import type { RealCost } from '../weight/cost.ts';
+import type { AppWeights } from '../weight/weights.ts';
 
 /*
  * Which part of a PR made a case slower (spec: blame). Counts are exact, so a tree made of the
@@ -113,6 +120,28 @@ export interface BlameOptions {
 	node_args?: readonly string[];
 	env?: NodeJS.ProcessEnv;
 	log?: (line: string) => void;
+	/**
+	 * App and real-traffic weights (merged, as `heisenbench diff --weights` takes them): the
+	 * blamed change is priced with the comment's cost function (weight/cost.ts).
+	 */
+	weights?: AppWeights | null;
+	/** Requests per day for the real cost (default: the profiles' rate). */
+	requests_per_day?: number;
+}
+
+/** What a blamed change costs on the imported traffic (weight/cost.ts), per hunk and in all. */
+export interface BlameCost {
+	/** The unit of traffic (`real request`). */
+	unit: string;
+	/** Every changed function the traffic runs, added up; null when it runs none. */
+	total: RealCost | null;
+	/** The same per hunk: each function goes to the hunk holding most of its changed steps. */
+	hunks: Array<{ unit: number; cost: RealCost | null }>;
+	/** Changed functions priced, and those the traffic does not run. */
+	priced: number;
+	not_in_traffic: number;
+	/** How much of the traffic's sampled time mapped to counted functions. */
+	coverage: string | null;
 }
 
 export interface BlameUnit {
@@ -141,6 +170,8 @@ export interface BlameFunction {
 	/** `with`: the function exists only with the change; `without`: only without it (its lines are that tree's). */
 	only: 'with' | 'without' | null;
 	lines: BlameLine[];
+	/** With weights: this function's change on the imported traffic (null: the traffic does not run it). */
+	cost?: RealCost | null;
 }
 
 export type BlameStatus =
@@ -191,6 +222,8 @@ export interface CaseBlame {
 	interacts: boolean;
 	/** Where the steps went, from the head against the head with the revert set undone. */
 	functions: BlameFunction[];
+	/** With real-traffic weights: what the revert set's change costs that traffic (absent: no weights). */
+	cost?: BlameCost | null;
 	/** Trees that did not load or run for this case. */
 	invalid: number;
 }
@@ -609,7 +642,7 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 			const without = revert_state(revert.set);
 			const c_without = await count(without)?.p;
 			if (c_without && c1 && c_without.steps.get(key) != null) {
-				blame.functions = where(
+				const w = where(
 					rc,
 					c_without.file,
 					c1.file,
@@ -617,8 +650,12 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 					without,
 					head_set,
 					new Set([...revert.set, ...apply.set]),
-					prefix
+					prefix,
+					o.weights ?? null,
+					o.requests_per_day
 				);
+				blame.functions = w.functions;
+				if (o.weights) blame.cost = w.cost;
 			}
 			blame.invalid = seen_invalid.size;
 		}
@@ -648,7 +685,13 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 	return result;
 }
 
-/** The functions and lines whose steps changed between two counted trees, biggest first. */
+/**
+ * The functions and lines whose steps changed between two counted trees, biggest first, and, with
+ * weights, what the change costs: every changed function ranked by the same `rank_changes` the
+ * comment's other findings go through (real cost on imported traffic, with its range), and those
+ * costs added up per hunk (a function goes to the hunk that holds most of its changed steps) and
+ * for the whole set.
+ */
 function where(
 	rc: RegressedCase,
 	from_file: string,
@@ -657,8 +700,10 @@ function where(
 	from: ReadonlySet<number>,
 	to: ReadonlySet<number>,
 	changed: ReadonlySet<number>,
-	prefix: string
-): BlameFunction[] {
+	prefix: string,
+	weights: AppWeights | null,
+	requests_per_day: number | undefined
+): { functions: BlameFunction[]; cost: BlameCost | null } {
 	const read = (f: string) => {
 		const r = JSON.parse(readFileSync(f, 'utf8')) as Report;
 		r.cases = r.cases.filter((c) => c.file === rc.file && c.name === rc.name);
@@ -675,8 +720,24 @@ function where(
 		}
 		return null;
 	};
-	return d.changes
-		.filter((c) => c.findings.length > 0 && c.delta.self_steps !== 0)
+	const moved = d.changes.filter((c) => c.findings.length > 0 && c.delta.self_steps !== 0);
+	const ranked = weights
+		? rank_changes(d, weights, load_weights(), { requests_per_day })
+		: ([] as RankedChange[]);
+	const cost_of = new Map(ranked.map((r) => [`${r.module} > ${r.function}`, r.cost ?? null]));
+	/** The hunk with most of a function's changed steps (lines of the tree with the change). */
+	const home = (c: FunctionChange): number | null => {
+		if (c.pr === null) return null;
+		const by = new Map<number, number>();
+		for (const f of c.findings) {
+			const u = unit_at(f.module, f.line);
+			if (u !== null) by.set(u, (by.get(u) ?? 0) + Math.abs(f.delta.steps));
+		}
+		let best: number | null = null;
+		for (const [u, s] of by) if (best === null || s > by.get(best)!) best = u;
+		return best;
+	};
+	const functions = [...moved]
 		.sort((a, b) => Math.abs(b.delta.self_steps) - Math.abs(a.delta.self_steps))
 		.slice(0, MAX_FUNCTIONS)
 		.map((c) => ({
@@ -693,6 +754,35 @@ function where(
 					line: f.line,
 					delta_steps: f.delta.steps,
 					unit: c.pr === null ? null : unit_at(f.module, f.line)
-				}))
+				})),
+			...(weights ? { cost: cost_of.get(`${c.module} > ${c.function}`) ?? null } : {})
 		}));
+	const traffic = traffic_unit(weights);
+	if (!weights || !traffic) return { functions, cost: null };
+	const all: RealCost[] = [];
+	const per_unit = new Map<number, RealCost[]>();
+	let outside = 0;
+	for (const c of moved) {
+		const cost = cost_of.get(`${c.module} > ${c.function}`) ?? null;
+		if (!cost) {
+			outside++;
+			continue;
+		}
+		all.push(cost);
+		const u = home(c);
+		if (u !== null) per_unit.set(u, [...(per_unit.get(u) ?? []), cost]);
+	}
+	return {
+		functions,
+		cost: {
+			unit: traffic.key,
+			total: sum_costs(all),
+			hunks: [...per_unit]
+				.sort((a, b) => a[0] - b[0])
+				.map(([unit, cs]) => ({ unit, cost: sum_costs(cs) })),
+			priced: all.length,
+			not_in_traffic: outside,
+			coverage: coverage_line(weights)
+		}
+	};
 }

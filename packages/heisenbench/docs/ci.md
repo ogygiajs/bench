@@ -132,7 +132,9 @@ In this repository:
     `0` turns it off); past the budget the comment says "narrowed to these hunks". A recount costs
     one `heisenbench run` of the regressed cases (2.1 s for the compiler's transformHost cases on an
     M4 Max), so a regression in one hunk of ten takes about 10 to 30 recounts: well under a minute
-    on 4 cores. A PR with no case over the threshold costs nothing here.
+    on 4 cores. A PR with no case over the threshold costs nothing here. With the weights step 9
+    ranks by, the blamed change gets the same real cost as the ranked findings: CPU time per day on
+    the imported traffic, with its range, for the change and per hunk.
 13. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
     job checks it (below), then `result.json` goes to the `results` branch and `section.md`
     becomes the `heisenbench` section of the PR's comment.

@@ -61,7 +61,7 @@ import {
 } from './search.ts';
 import { select_all, select_changed } from './select.ts';
 import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
-import { rank_by_weights } from './weights.ts';
+import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
 
 const { values } = parseArgs({
@@ -235,6 +235,15 @@ async function main(): Promise<void> {
 				);
 			}
 			if (result.diff && result.head && blame_ms > 0) {
+				// the weights the ranking used: the blamed change gets the same real cost
+				const weights =
+					values.weights === undefined
+						? null
+						: ranking_weights(
+								resolve(values.weights),
+								result.head,
+								values['real-weights'] && resolve(values['real-weights'])
+							).weights;
 				result.blame = await run_blame(
 					repo,
 					head,
@@ -244,7 +253,13 @@ async function main(): Promise<void> {
 					selection,
 					work,
 					log,
-					blame_ms
+					blame_ms,
+					{
+						weights,
+						requests_per_day: values['requests-per-day']
+							? Number(values['requests-per-day'])
+							: undefined
+					}
 				);
 			}
 		}

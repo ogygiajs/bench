@@ -6,6 +6,7 @@ import type { Report } from '../report.ts';
 import { UsageError } from '../usage.ts';
 import { blame_regressions, regressed_cases } from './index.ts';
 import { render_blame } from './markdown.ts';
+import { load_weights_list } from '../weight/weights.ts';
 
 /**
  * `heisenbench blame <base.json> <pr.json> --root <dir>`: the hunks of the PR that made its
@@ -57,6 +58,9 @@ export async function blame_command(
 		budget_ms: num('budget-ms'),
 		jobs: num('jobs'),
 		work: flags.get('work'),
+		// the same weights `heisenbench diff --weights` ranks by: the change gets its real cost
+		weights: flags.has('weights') ? load_weights_list(flags.get('weights')!) : null,
+		requests_per_day: num('requests-per-day'),
 		log: (l) => console.log(l)
 	});
 	const md = render_blame(result);

@@ -11,10 +11,15 @@
  * regressed cases alone (2 s for the compiler's transformHost cases on an M4 Max), side by side
  * on half the cores: a PR whose regression is one hunk among ten needs about 10 recounts. Past
  * the budget the answer is "narrowed to these hunks".
+ *
+ * With the weights the ranking uses (main's app weights and, when the owner uploaded them, real
+ * traffic), the blamed change is priced by the same cost function as every other finding: CPU
+ * time per day on the imported traffic, with its range, in all and per hunk.
  */
 import { join } from 'node:path';
 import { BLAME_MAX_RECOUNTS, blameRegressions, regressedCases } from '@bench/heisenbench';
 import type { BlameResult, DiffResult, Report } from '@bench/heisenbench';
+import type { AppWeights } from '@bench/heisenbench/weight';
 import type { Tree } from './checkout.ts';
 import { node_options } from './run.ts';
 import type { Selection } from './select.ts';
@@ -44,7 +49,8 @@ export async function run_blame(
 	sel: Selection,
 	work: string,
 	log: (line: string) => void,
-	budget_ms: number
+	budget_ms: number,
+	cost: { weights?: AppWeights | null; requests_per_day?: number } = {}
 ): Promise<BlameRun | null> {
 	const cases = regressedCases(diff, report);
 	if (cases.length === 0) return null;
@@ -65,7 +71,9 @@ export async function run_blame(
 			work: join(work, 'blame'),
 			node_args: [],
 			env: { ...process.env, NODE_OPTIONS: node_options(head) },
-			log
+			log,
+			weights: cost.weights ?? null,
+			requests_per_day: cost.requests_per_day
 		});
 		return { result, error: null };
 	} catch (e) {

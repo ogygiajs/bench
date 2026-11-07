@@ -680,7 +680,13 @@ heisenbench blame base.json pr.json --root <the PR's checkout, installed> [--rep
    for its share of `E`; when the two sets differ, or the shares do not add up to the set's
    effect, the case is marked `interacts` and the comment says so with the numbers.
 7. **Where.** The head against the head with the revert set undone, through `heisenbench diff`: the
-   functions and lines whose steps changed, each line marked with the hunk it is in.
+   functions and lines whose steps changed, each line marked with the hunk it is in. With
+   `--weights app-weights.json,real-weights.json` (and `--requests-per-day`), the same weights
+   `heisenbench diff` ranks by, every one of those functions goes through `rank_changes` and so
+   through the [real-traffic cost function](#real-traffic): its CPU time per day with its range,
+   the same estimate the ranked findings give it. The costs add up per hunk (a function goes to the
+   hunk that holds most of its changed steps) and for the whole change, estimates and the ends of
+   their ranges alike (`sum_costs`). A function the traffic does not run is said to be outside it.
 8. **Budget.** At most 60 recounts and 10 minutes (`--max-recounts`, `--budget-ms`; the ogygia
    suite gives it 5 minutes), counted side by side in up to 4 scratch copies (`--jobs`; half the
    cores by default). When either runs out, each search stops with the smallest set it has proven,
@@ -711,7 +717,25 @@ L1058–1073 and L2143–2153, and none of the harmless ones, for both cases as 
 only load together (the walk's method is renamed across them), so 20 of the 28 trees counted did
 not load. 28 recounts, 46 reused, 21 s on an M4 Max with 4 side by side (2.1 s per tree that
 loads, 0.65 s per tree that does not). The whole PR flow of the ogygia suite on the same two
-commits found the same answer in the same 28 recounts.
+commits found the same answer in the same 28 recounts. With main's app weights and the palaestra
+traffic of [On ogygia](#on-ogygia) the blame says "not in the imported traffic: it runs none of the
+6 functions this change moves": the compiler runs when a page is built, not when it is served.
+
+A change on the served path is priced. On `01dc5b9` with `locate` lowercasing the whole document
+(the plant of [On ogygia](#on-ogygia)), plus a comment in the same file, a renamed variable in
+`hole-urls.ts` and an unused function in `html-scan.ts` (4 hunks, `markup.bench.ts`), at 1M
+requests per day:
+
+```md
+**+3706.2%** in `assemble: inject the head and the tail into a document` (+137.3K steps) comes from
+this change in `packages/core/src/server/document-assembly.ts` L29–30 (+137.3K steps by itself).
+
+**Real cost** of this change on the imported traffic: ≈ 3 CPU-minutes/day at 1M requests/day
+(range 3.6 CPU-seconds to 3.2 CPU-hours).
+```
+
+with `locate` in the table at "1 call/request (app scenarios) or 201 µs/request of real time × 37:
+1756x apart", the same row the ranked findings show for it. 8 recounts, 3 s.
 
 ## Real-app weight
 

@@ -302,6 +302,36 @@ export function exposure_cost(
 	};
 }
 
+/**
+ * Several changes' costs on one traffic as one (blame: the functions one hunk changed): the
+ * estimates add, and so do the ends of their ranges. Null when there are none, or when they are
+ * not on the same unit and rate.
+ */
+export function sum_costs(costs: readonly RealCost[]): RealCost | null {
+	if (costs.length === 0) return null;
+	const [first] = costs;
+	if (costs.some((c) => c.unit !== first.unit || c.requests_per_day !== first.requests_per_day))
+		return null;
+	if (costs.length === 1) return first;
+	let ns = 0;
+	let lo = 0;
+	let hi = 0;
+	for (const c of costs) {
+		ns += c.ns;
+		lo += c.range[0];
+		hi += c.range[1];
+	}
+	const conversions = new Set(costs.map((c) => c.conversion));
+	return priced(
+		first.what,
+		first.unit,
+		{ n: first.requests_per_day, from: first.requests_per_day_from },
+		{ ns, range: ordered(lo, hi), disagree: null },
+		[],
+		conversions.size === 1 ? first.conversion : 'weights fit'
+	);
+}
+
 /** Four significant digits: estimates read the same from the same inputs on any machine. */
 export function round_sig(n: number): number {
 	if (n === 0 || !Number.isFinite(n)) return n;

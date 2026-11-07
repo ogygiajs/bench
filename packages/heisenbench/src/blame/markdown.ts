@@ -1,4 +1,5 @@
 import { cell, code } from '../md.ts';
+import { calls_text, cost_text } from '../weight/cost.ts';
 import type { BlameResult, BlameUnit, CaseBlame } from './index.ts';
 
 /** Causes shown; the rest are in the JSON. */
@@ -90,7 +91,11 @@ function cases_text(cs: CaseBlame[]): string {
 
 function where_table(c: CaseBlame, units: Map<number, BlameUnit>): string[] {
 	if (c.functions.length === 0) return [];
-	const out = ['| Function | Δ self steps | Lines |', '| --- | ---: | --- |'];
+	// the real-cost column, as the ranked findings show it, when real traffic priced the change
+	const real = !!c.cost;
+	const out = real
+		? ['| Function | Δ self steps | Lines | Real cost |', '| --- | ---: | --- | --- |']
+		: ['| Function | Δ self steps | Lines |', '| --- | ---: | --- |'];
 	for (const f of c.functions) {
 		const lines = f.lines
 			.map((l) => {
@@ -100,11 +105,42 @@ function where_table(c: CaseBlame, units: Map<number, BlameUnit>): string[] {
 			})
 			.join(', ');
 		const only = f.only === 'with' ? ' (new)' : f.only === 'without' ? ' (gone)' : '';
+		const cost = !real
+			? ''
+			: f.cost
+				? ` ${cell(`${calls_text(f.cost)} → ${cost_text(f.cost)}`)} |`
+				: ' not in the imported traffic |';
 		out.push(
-			`| ${code(`${f.module} > ${f.function}`)}${only} | ${steps(f.delta_self_steps)} | ${cell(lines)} |`
+			`| ${code(`${f.module} > ${f.function}`)}${only} | ${steps(f.delta_self_steps)} | ${cell(lines)} |${cost}`
 		);
 	}
 	return out;
+}
+
+/**
+ * What the blamed change costs on the imported traffic, in the words the ranked findings use
+ * (weight/cost.ts `cost_text`): in all, and per hunk when it is more than one.
+ */
+function cost_lines(c: CaseBlame, units: Map<number, BlameUnit>): string[] {
+	const k = c.cost;
+	if (!k) return [];
+	const left =
+		k.not_in_traffic > 0
+			? ` ${k.not_in_traffic} changed function${k.not_in_traffic === 1 ? '' : 's'} the traffic does not run ${k.not_in_traffic === 1 ? 'is' : 'are'} not in it.`
+			: '';
+	if (!k.total) {
+		return [
+			`**Real cost**: not in the imported traffic: it runs none of the ${k.not_in_traffic} function${k.not_in_traffic === 1 ? '' : 's'} this change moves.`
+		];
+	}
+	const each = k.hunks.filter((h) => h.cost);
+	const per =
+		each.length > 1
+			? ` By hunk: ${list(each.map((h) => `${unit_label(units.get(h.unit)!)} ${cost_text(h.cost!)}`))}.`
+			: '';
+	return [
+		`**Real cost** of this change on the imported traffic: ${cost_text(k.total)}.${per}${left}`
+	];
 }
 
 function group_lines(cs: CaseBlame[], units: Map<number, BlameUnit>): string[] {
@@ -160,6 +196,8 @@ function group_lines(cs: CaseBlame[], units: Map<number, BlameUnit>): string[] {
 			`These hunks account for ${share(c.explained)} of the case's change; the rest comes from outside them.`
 		);
 	}
+	const real = cost_lines(c, units);
+	if (real.length > 0) out.push('', ...real);
 	out.push('', '<details><summary>The change, and where its steps go</summary>', '');
 	for (const id of named) {
 		const u = units.get(id)!;

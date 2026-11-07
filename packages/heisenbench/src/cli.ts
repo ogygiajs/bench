@@ -41,6 +41,7 @@ Counting (the counting build)
                                  regressed case slower, by recounting the PR with hunks undone
       [--repo dir] [--base sha] [--head sha] [--filter text] [--paths files.txt] [--min-ratio 0.02]
       [--max-recounts 60] [--budget-ms 600000] [--jobs n] [--work dir] [--out blame.json] [--md blame.md]
+      [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]   the change's real cost
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -212,6 +213,8 @@ const SPECS: Record<string, Spec> = {
 			'jobs',
 			'work',
 			'deps',
+			'weights',
+			'requests-per-day',
 			'out',
 			'md'
 		],
