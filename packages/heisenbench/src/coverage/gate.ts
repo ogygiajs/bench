@@ -11,6 +11,7 @@ import { load_prices } from '../prices.ts';
 import type { Report } from '../report.ts';
 import { cell, code } from '../md.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
+import { context_path } from '../identity.ts';
 
 /*
  * Which functions of a source tree have a measurement source (spec 8), and the CI gate on it.
@@ -182,13 +183,18 @@ export function read_exemptions(path: string): Exemption[] {
 	return list;
 }
 
-/** The exemption that covers `id`: its own, else the closest enclosing one that covers nested. */
+/**
+ * The exemption that covers `id`: its own, else the closest enclosing one that covers nested. An
+ * exemption may name a place instead of one function (`total > reduce:0` without the shape hash,
+ * identity.ts): it covers every function there, through edits to their code.
+ */
 function exemption_for(id: string, exempt: ReadonlyMap<string, Exemption>): Exemption | undefined {
-	const own = exempt.get(id);
+	const named = (x: string): Exemption | undefined => exempt.get(x) ?? exempt.get(context_path(x));
+	const own = named(id);
 	if (own) return own;
 	let at = id.lastIndexOf(' > ');
 	while (at !== -1) {
-		const outer = exempt.get(id.slice(0, at));
+		const outer = named(id.slice(0, at));
 		// `module > fn`: the module part is never an exemption on its own
 		if (outer && outer.nested !== false) return outer;
 		at = id.lastIndexOf(' > ', at - 1);
@@ -229,11 +235,32 @@ export function gate(
 	// A function in a moved file was on the base under its old module.
 	const moved_from = new Map<string, string>();
 	for (const [from, to] of o.renames ?? []) moved_from.set(to, from);
-	const on_base = (f: MeasuredFunction): boolean => {
-		if (base_ids === null || base_ids.has(f.id)) return true;
-		const from = moved_from.get(f.module);
-		return from !== undefined && base_ids.has(`${from} > ${f.path}`);
-	};
+	const base_id = (f: MeasuredFunction): string =>
+		`${moved_from.get(f.module) ?? f.module} > ${f.path}`;
+	const listed = (f: MeasuredFunction): boolean =>
+		base_ids === null || base_ids.has(f.id) || base_ids.has(base_id(f));
+	// A function whose own code changed has a new shape hash in the same place (identity.ts
+	// `context_path`): it was on the base. In each place, every base function the PR no longer
+	// has stands for one PR function there the base did not have, in source order.
+	const vacated = new Map<string, number>();
+	const head_ids = new Set(head.map(base_id));
+	for (const id of base_ids ?? []) {
+		if (head_ids.has(id)) continue;
+		const at = id.indexOf(' > ');
+		if (at === -1) continue;
+		const key = id.slice(0, at) + context_path(id.slice(at));
+		vacated.set(key, (vacated.get(key) ?? 0) + 1);
+	}
+	const edited = new Set<string>();
+	for (const f of [...head].sort((a, b) => a.line - b.line)) {
+		if (listed(f)) continue;
+		const key = `${moved_from.get(f.module) ?? f.module} > ${context_path(f.path)}`;
+		const left = vacated.get(key) ?? 0;
+		if (left === 0) continue;
+		vacated.set(key, left - 1);
+		edited.add(f.id);
+	}
+	const on_base = (f: MeasuredFunction): boolean => listed(f) || edited.has(f.id);
 	const out: GateResult = {
 		functions: head.length,
 		measured: 0,

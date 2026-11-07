@@ -13,6 +13,7 @@ import { merge_records } from '../src/coverage/replay-run.ts';
 import type { FunctionRecord, ReplayResult } from '../src/coverage/recorder.ts';
 import type { Report } from '../src/report.ts';
 import { temp_dir, write_files } from './helpers.ts';
+import { context_path } from '../src/identity.ts';
 
 const LIB = `export function benched(a: number): number {
 	return a + 1;
@@ -63,9 +64,11 @@ test('inventory: every function of a TypeScript source, nested ones too, named l
 	const inv = source_inventory(root, [join(root, 'packages/p/src/lib.ts')]);
 	assert.deepEqual(inv.errors, []);
 	assert.deepEqual(
-		inv.functions.map((f) => f.path),
+		inv.functions.map((f) => context_path(f.path)),
 		['arrow', 'arrow > map:0', 'benched', 'later', 'nothing', 'stateful', 'tested']
 	);
+	// a callback is named by its place and its shape
+	assert.match(inv.functions[1].path, /^arrow > map:0~[0-9a-f]{6}$/);
 	assert.equal(inv.functions[2].id, 'packages/p/src/lib.ts > benched');
 	const targets = record_targets(
 		inv,
@@ -115,7 +118,7 @@ test('sources and the gate: only new unmeasured functions fail; exemptions need 
 		['stateful']
 	);
 	assert.deepEqual(
-		g.exempted.map((f) => f.path),
+		g.exempted.map((f) => context_path(f.path)),
 		['arrow', 'arrow > map:0']
 	);
 	assert.deepEqual(
@@ -129,7 +132,7 @@ test('sources and the gate: only new unmeasured functions fail; exemptions need 
 	// `nested: false` exempts the function alone
 	const own = gate(measured, base, [{ id: m + 'arrow', reason: 'startup', nested: false }]);
 	assert.deepEqual(
-		own.new_unmeasured.map((f) => f.path),
+		own.new_unmeasured.map((f) => context_path(f.path)),
 		['arrow > map:0', 'stateful']
 	);
 	// without a base (a full run), nothing is new
@@ -156,6 +159,46 @@ test('the gate: a moved file keeps its history; a new file nothing can read fail
 	const md = render_gate(bad);
 	assert.ok(md.includes('1 new file Heisenbench could not read'), md);
 	assert.ok(md.includes('cannot parse \\| here'), md);
+});
+
+test('the gate: an old callback is not new when a new one comes before it, or when its own code changed', () => {
+	const ids = (source: string): { inv: ReturnType<typeof source_inventory>; ids: string[] } => {
+		const root = temp_dir('heisenbench-gate-');
+		write_files(root, { 'src/lower.ts': source });
+		const inv = source_inventory(root, [join(root, 'src/lower.ts')]);
+		return { inv, ids: inv.functions.map((f) => f.id) };
+	};
+	const base = ids(`export function lower(xs: number[], ys: string[]) {
+	ys.sort((a, b) => a.localeCompare(b));
+	return xs.map((x) => x + 1);
+}
+`);
+	// a sort added before the old one, and the old map callback edited
+	const head = ids(`export function lower(xs: number[], ys: string[]) {
+	xs.sort((a, b) => a - b);
+	ys.sort((a, b) => a.localeCompare(b));
+	return xs.map((x) => x * 2 + 1);
+}
+`);
+	const old_sort = base.ids.find((id) => id.includes('sort:0'))!;
+	assert.ok(head.ids.includes(old_sort), 'the old sort callback keeps its id');
+	const g = gate(measurement_sources(head.inv, new Set()), new Set(base.ids));
+	assert.deepEqual(
+		g.new_unmeasured.map((f) => [context_path(f.path), f.line]),
+		[['lower > sort:0', 2]],
+		'only the added sort is new'
+	);
+	assert.deepEqual(g.old_unmeasured.map((f) => context_path(f.path)).sort(), [
+		'lower',
+		'lower > map:0',
+		'lower > sort:0'
+	]);
+	// an exemption may name a place: it covers the callbacks there through their edits
+	const place = gate(measurement_sources(head.inv, new Set()), new Set(base.ids), [
+		{ id: 'src/lower.ts > lower > sort:0', reason: 'comparators' }
+	]);
+	assert.equal(place.pass, true);
+	assert.equal(place.exempted.length, 2);
 });
 
 test('merge_records: one record per function, samples deduplicated, conflicts counted', () => {

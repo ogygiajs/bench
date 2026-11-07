@@ -7,6 +7,7 @@ import { get_runtime } from '../src/runtime/index.ts';
 import { Builtins } from '../src/runtime/builtins.ts';
 import { build_case_report } from '../src/report.ts';
 import type { CaseReport, FunctionReport } from '../src/report.ts';
+import { context_path } from '../src/identity.ts';
 
 export function temp_dir(prefix = 'heisenbench-'): string {
 	return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
@@ -67,11 +68,19 @@ export async function measure(fn: () => unknown, with_builtins = false): Promise
 	});
 }
 
+/**
+ * The function at `path`: its id, or its place (`sorter > sort:0` for `sorter > sort:0~0af0c1`)
+ * when one function alone is there.
+ */
 export function fn_of(report: CaseReport, path: string): FunctionReport {
-	const f = report.functions.find((x) => x.path === path);
-	if (!f)
-		throw new Error(`no function ${path} in [${report.functions.map((x) => x.id).join(', ')}]`);
-	return f;
+	const exact = report.functions.find((x) => x.path === path);
+	if (exact) return exact;
+	const there = report.functions.filter((x) => context_path(x.path) === path);
+	if (there.length !== 1)
+		throw new Error(
+			`${there.length === 0 ? 'no function' : 'several functions'} ${path} in [${report.functions.map((x) => x.id).join(', ')}]`
+		);
+	return there[0];
 }
 
 /** Block counts keyed by original line (summed when several blocks start on one line). */

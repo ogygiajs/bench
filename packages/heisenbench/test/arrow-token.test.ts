@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { find_token } from '../src/transform/instrument.ts';
 import { counts_by_line, fn_of, load_module, measure } from './helpers.ts';
+import { context_path } from '../src/identity.ts';
 
 test('find_token skips tokens inside comments', () => {
 	const code = 'a /* => */ // =>\n =>';
@@ -30,6 +31,10 @@ test('an arrow body after a comment holding `=>` (as Svelte ships it) is instrum
 	});
 	assert.deepEqual(out, [10, 6]);
 	assert.equal(fn_of(report, 'double').calls, 1);
-	assert.equal(counts_by_line(fn_of(report, 'run > push:0'))[3], 1);
-	assert.equal(fn_of(report, 'run > push:0#2').calls, 1);
+	const pushed = report.functions
+		.filter((f) => context_path(f.path) === 'run > push:0')
+		.sort((a, b) => a.line - b.line);
+	assert.equal(pushed.length, 2);
+	assert.equal(counts_by_line(pushed[0])[3], 1);
+	assert.equal(pushed[1].calls, 1);
 });

@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import type { AppReport } from '../app/types.ts';
 import { is_app_case, unit_key } from '../app/types.ts';
+import { context_path } from '../identity.ts';
 
 /*
  * Real-app weights (spec 11): how often each function runs per unit of real work, from counted
@@ -73,8 +74,12 @@ export function canonical_module(id: string): string {
 	return `${pkg}/${path}`;
 }
 
+/**
+ * A function by its place (identity.ts `context_path`): the weights come from main and the changed
+ * function from a PR, where its own edit gave it a new shape hash. Two callbacks in one place add up.
+ */
 export function canonical_function(module: string, path: string): string {
-	return `${canonical_module(module)} > ${path}`;
+	return `${canonical_module(module)} > ${context_path(path)}`;
 }
 
 function round(n: number): number {

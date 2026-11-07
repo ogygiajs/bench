@@ -3,6 +3,7 @@ import type { FileDiff } from '../diff/git.ts';
 import { IC_RANK, state_words } from './types.ts';
 import { code } from '../md.ts';
 import { pair_cases } from '../cases.ts';
+import { context_path } from '../identity.ts';
 import type { EngineCase, EngineFunction, EngineReport, EngineSite } from './types.ts';
 
 /*
@@ -149,13 +150,18 @@ function diff_case(
 			unmatched_base.push(f);
 		}
 	}
-	// renamed functions: same changed hunk, same unchanged line, or the same site signature
+	// renamed functions: the same place (a callback whose own code changed, identity.ts), the same
+	// changed hunk, the same unchanged line, or the same site signature
 	for (const f of unmatched_base) {
 		const module = module_map.get(f.module) ?? f.module;
 		const lmap = line_maps.get(module) ?? IDENTITY;
 		const sig = signature(base_sites.get(f.id) ?? []);
-		let pick: EngineFunction | null = null;
-		for (const g of p.functions) {
+		const at = context_path(f.path);
+		let pick: EngineFunction | null =
+			p.functions.find(
+				(g) => !matched.has(g.id) && g.module === module && context_path(g.path) === at
+			) ?? null;
+		for (const g of pick ? [] : p.functions) {
 			if (matched.has(g.id) || g.module !== module) continue;
 			const h = lmap.removed_in(f.line);
 			const same_hunk = h !== -1 && h === lmap.added_in(g.line);

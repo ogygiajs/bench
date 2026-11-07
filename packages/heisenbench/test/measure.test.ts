@@ -15,6 +15,7 @@ import type { BytesResult } from '../src/measure/alloc.ts';
 import { judge_growth } from '../src/measure/leak.ts';
 import type { LeakResult } from '../src/measure/leak.ts';
 import { temp_dir, write_files } from './helpers.ts';
+import { context_path } from '../src/identity.ts';
 
 const BENCH_API = fileURLToPath(new URL('../src/bench.ts', import.meta.url));
 
@@ -269,7 +270,7 @@ bench('held by the bench file', () => kept.push({ at: m.tidy(1) }));
 	assert.equal(cache.leaked, true, JSON.stringify(cache));
 	assert.equal(cache.source?.variable, 'cache');
 	assert.equal(cache.source?.line, 9);
-	assert.equal(cache.source?.function, 'make_memo > <anonymous>');
+	assert.equal(context_path(cache.source?.function ?? ''), 'make_memo > <anonymous>');
 	assert.ok(cache.chain!.some((s) => s.edge_type === 'context' && s.edge === 'cache'));
 	assert.equal(by('no leak').leaked, false);
 	assert.equal(by('bounded cache').leaked, false);

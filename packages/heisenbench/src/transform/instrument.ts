@@ -241,6 +241,20 @@ interface Naming {
 	used: Map<string, number>;
 }
 
+/**
+ * What names a function, class or object literal that has no name of its own. `named`: the binding,
+ * key or assignment target the language names it after (`const f = () => {}`, `{ f() {} }`). `slot`:
+ * only the place it sits in, argument `i` of a call to `sort` (`sort:0`) or nothing at all
+ * (`<anonymous>`). One function can hold many functions in one slot (every `sort` callback), so a
+ * slot name is completed by the function's shape hash (see `name_path`).
+ */
+interface Hint {
+	name: string;
+	slot: boolean;
+}
+
+const named = (name: string): Hint => ({ name, slot: false });
+
 class Instrumenter {
 	code: string;
 	opts: InstrumentOptions;
@@ -255,6 +269,7 @@ class Instrumenter {
 	bsites: BuiltinSiteMeta[] = [];
 	edits: Edit[] = [];
 	naming: Naming[] = [{ path: '', used: new Map() }];
+	shapes = new Map<Node, number>();
 	zero_args = new Map<Node, Array<() => string>>();
 	class_fields = new Map<string, number>();
 
@@ -436,7 +451,7 @@ class Instrumenter {
 	 * a comma it would lose that name, so it is wrapped as `(c[i]++, {"#f": () => {}}["#f"])`,
 	 * which names it the same way.
 	 */
-	expr_block(node: Node, hint?: string, naming?: string | null): BlockRec {
+	expr_block(node: Node, hint?: Hint, naming?: string | null): BlockRec {
 		const prev = this.block;
 		const b = this.new_block(node.start, 'expr', node.end);
 		const named = naming != null && is_anonymous_definition(node);
@@ -463,12 +478,38 @@ class Instrumenter {
 
 	// ---------------------------------------------------------------- naming
 
-	name_path(name: string): string {
+	/**
+	 * The path of a function, class or object literal named `name` in the current scope. An id must
+	 * not move when unrelated code does, so it never counts its siblings unless it has to:
+	 *
+	 *   a name the language gives (`f`, `Router`, `match`) is the id, as long as it is the first of
+	 *   that name in the scope; a later one of the same name adds its shape hash (`f~3fa9c2`)
+	 *
+	 *   a slot (`sort:0`, `<anonymous>`) always adds its shape hash: one function holds many `sort`
+	 *   callbacks, and a new one before the others must not rename them
+	 *
+	 * Only functions alike in name AND shape (two identical callbacks) are told apart by order:
+	 * `sort:0~3fa9c2#2`. `shape_hash` is over the syntax tree, so formatting, comments and types
+	 * do not move it; an edit to the function's own code does, and the diff and the gate pair it by
+	 * its context (identity.ts `context_path`).
+	 */
+	name_path(name: string, node: Node, slot: boolean): string {
 		const top = this.naming[this.naming.length - 1];
-		const seen = top.used.get(name) ?? 0;
-		top.used.set(name, seen + 1);
-		const unique = seen === 0 ? name : `${name}#${seen + 1}`;
+		let unique = name;
+		if (slot || top.used.has(name)) unique = `${name}~${this.shape_hash(node)}`;
+		else top.used.set(name, 1);
+		if (unique !== name) {
+			const seen = top.used.get(unique) ?? 0;
+			top.used.set(unique, seen + 1);
+			if (seen > 0) unique = `${unique}#${seen + 1}`;
+		}
 		return top.path ? `${top.path} > ${unique}` : unique;
+	}
+
+	/** Six hex digits of the node's syntax tree: see `shape_of`. Memoized: nested ids reuse it. */
+	shape_hash(node: Node): string {
+		const h = shape_of(node, this.shapes);
+		return (h >>> 0).toString(16).padStart(8, '0').slice(0, 6);
 	}
 
 	key_name(key: Node | null, computed: boolean): string {
@@ -804,7 +845,7 @@ class Instrumenter {
 					if (id) this.declare(text(id, 'name'));
 					this.walk_class(d, id ? text(id, 'name') : 'default');
 				} else if (!d.type.startsWith('TS')) {
-					this.walk_expr(d, 'default');
+					this.walk_expr(d, named('default'));
 				}
 				return false;
 			}
@@ -831,7 +872,7 @@ class Instrumenter {
 			const init = get(d, 'init');
 			this.walk_pattern(id, 'declare');
 			if (init) {
-				this.walk_expr(init, id.type === 'Identifier' ? text(id, 'name') : undefined);
+				this.walk_expr(init, id.type === 'Identifier' ? named(text(id, 'name')) : undefined);
 				this.op('assign', d.start);
 			}
 		}
@@ -891,7 +932,7 @@ class Instrumenter {
 
 	// ---------------------------------------------------------------- functions
 
-	walk_function(node: Node, name: string, site_block: BlockRec = this.block): FnRec {
+	walk_function(node: Node, name: string, site_block: BlockRec = this.block, slot = false): FnRec {
 		const parent_fn = this.fn;
 		const prev_block = this.block;
 		const prev_scope = this.scope_block;
@@ -900,7 +941,7 @@ class Instrumenter {
 		const is_generator = flag(node, 'generator');
 		const closure = this.site('closure', node.start, 0, false, true, site_block);
 
-		const path = this.name_path(name);
+		const path = this.name_path(name, node, slot);
 		const f = this.new_fn(path, 'function', node, {
 			async: is_async,
 			generator: is_generator,
@@ -989,11 +1030,11 @@ class Instrumenter {
 		return f;
 	}
 
-	walk_class(node: Node, name: string): void {
+	walk_class(node: Node, name: string, slot = false): void {
 		const sup = get(node, 'superClass');
 		if (sup) this.walk_expr(sup);
 		this.site('class', node.start, CLASS, false);
-		const path = this.name_path(name);
+		const path = this.name_path(name, node, slot);
 		this.naming.push({ path, used: new Map() });
 		const body = get(node, 'body')!;
 		let fields_fn: FnRec | null = null;
@@ -1021,7 +1062,7 @@ class Instrumenter {
 				if (!value) continue;
 				if (is_static) {
 					// evaluated once, when the class is defined: part of the enclosing block
-					this.walk_expr(value, nm);
+					this.walk_expr(value, named(nm));
 					continue;
 				}
 				// Instance field initialisers run on every construction: one pseudo-function per class.
@@ -1030,7 +1071,7 @@ class Instrumenter {
 				const prev_fn = this.fn;
 				const prev_block = this.block;
 				this.fn = fields_fn;
-				this.expr_block(value, nm, computed ? null : nm);
+				this.expr_block(value, named(nm), computed ? null : nm);
 				this.fn = prev_fn;
 				this.block = prev_block;
 			} else if (m.type === 'StaticBlock') {
@@ -1081,7 +1122,7 @@ class Instrumenter {
 				this.walk_pattern(left, mode);
 				this.op('compare', node.start);
 				const name = left.type === 'Identifier' ? text(left, 'name') : undefined;
-				this.expr_block(get(node, 'right')!, name, name);
+				this.expr_block(get(node, 'right')!, name === undefined ? undefined : named(name), name);
 				return;
 			}
 			case 'RestElement':
@@ -1107,7 +1148,7 @@ class Instrumenter {
 		return this.site(kind, offset, bytes, dynamic);
 	}
 
-	walk_expr(node: Node, hint?: string): void {
+	walk_expr(node: Node, hint?: Hint): void {
 		switch (node.type) {
 			case 'Identifier':
 				this.ref(text(node, 'name'));
@@ -1137,12 +1178,14 @@ class Instrumenter {
 			case 'FunctionExpression':
 			case 'ArrowFunctionExpression': {
 				const id = get(node, 'id');
-				this.walk_function(node, hint ?? (id ? text(id, 'name') : '<anonymous>'));
+				const h = hint ?? (id ? named(text(id, 'name')) : { name: '<anonymous>', slot: true });
+				this.walk_function(node, h.name, this.block, h.slot);
 				return;
 			}
 			case 'ClassExpression': {
 				const id = get(node, 'id');
-				this.walk_class(node, hint ?? (id ? text(id, 'name') : '<class>'));
+				const h = hint ?? (id ? named(text(id, 'name')) : { name: '<class>', slot: true });
+				this.walk_class(node, h.name, h.slot);
 				return;
 			}
 			case 'CallExpression': {
@@ -1286,7 +1329,7 @@ class Instrumenter {
 		}
 	}
 
-	walk_object(node: Node, hint?: string): void {
+	walk_object(node: Node, hint?: Hint): void {
 		const props = nodes(node, 'properties');
 		let fixed = 0;
 		let has_spread = false;
@@ -1301,7 +1344,8 @@ class Instrumenter {
 			has_spread
 		);
 		const pushed = hint !== undefined;
-		if (hint !== undefined) this.naming.push({ path: this.name_path(hint), used: new Map() });
+		if (hint !== undefined)
+			this.naming.push({ path: this.name_path(hint.name, node, hint.slot), used: new Map() });
 		for (const p of props) {
 			if (p.type === 'SpreadElement') {
 				const arg = get(p, 'argument')!;
@@ -1316,7 +1360,7 @@ class Instrumenter {
 			const kind = text(p, 'kind');
 			let nm = this.key_name(key, computed);
 			if (kind === 'get' || kind === 'set') nm = `${kind} ${nm}`;
-			this.walk_expr(value, nm);
+			this.walk_expr(value, named(nm));
 		}
 		if (pushed) this.naming.pop();
 	}
@@ -1334,7 +1378,7 @@ class Instrumenter {
 				this.op('iter_init', a.start);
 				s = this.site('spread_args', a.start, 0, true, false);
 			} else {
-				this.walk_expr(a, `${callee}:${i}`);
+				this.walk_expr(a, { name: `${callee}:${i}`, slot: true });
 			}
 		}
 	}
@@ -1500,10 +1544,10 @@ class Instrumenter {
 		const op = text(node, 'operator');
 		const left = get(node, 'left')!;
 		const right = get(node, 'right')!;
-		let hint: string | undefined;
-		if (left.type === 'Identifier') hint = text(left, 'name');
+		let hint: Hint | undefined;
+		if (left.type === 'Identifier') hint = named(text(left, 'name'));
 		else if (left.type === 'MemberExpression' && !flag(left, 'computed'))
-			hint = text(get(left, 'property')!, 'name');
+			hint = named(text(get(left, 'property')!, 'name'));
 		if (left.type === 'MemberExpression') {
 			this.walk_expr(get(left, 'object')!);
 			if (flag(left, 'computed')) this.walk_expr(get(left, 'property')!);
@@ -1515,7 +1559,7 @@ class Instrumenter {
 		this.op('assign', node.start);
 		if (op === '&&=' || op === '||=' || op === '??=') {
 			this.op('logical', node.start);
-			this.expr_block(right, hint, left.type === 'Identifier' ? hint : null);
+			this.expr_block(right, hint, left.type === 'Identifier' ? hint!.name : null);
 			return;
 		}
 		if (op === '+=' && is_string_expr(right)) {
@@ -1686,6 +1730,97 @@ function contains_suspend(node: Node): boolean {
 		}
 	}
 	return false;
+}
+
+/** Keys of a node that are not its code: positions, raw text, and TypeScript-only modifiers. */
+const SHAPE_SKIP = new Set([
+	...SKIP_KEYS,
+	'raw',
+	'definite',
+	'declare',
+	'accessibility',
+	'override',
+	'readonly',
+	'abstract'
+]);
+
+/** Nodes whose shape is asked for (the ones a path names): their hashes are kept for reuse. */
+const SHAPED = new Set([
+	'FunctionExpression',
+	'FunctionDeclaration',
+	'ArrowFunctionExpression',
+	'ClassExpression',
+	'ClassDeclaration',
+	'ObjectExpression'
+]);
+
+const FNV_PRIME = 0x01000193;
+
+/** The shape of a node type stripping removes: it is not there. */
+const ABSENT = 0;
+
+/** A node that is only a type: an interface, a `type`, `declare x`, an overload signature. */
+function is_type_only(node: Node): boolean {
+	if (node.type.startsWith('TS')) return true;
+	if (flag(node, 'declare')) return true;
+	const value = get(node, 'value');
+	return node.type === 'MethodDefinition' && value !== null && value.type.startsWith('TS');
+}
+
+function mix_string(h: number, s: string): number {
+	for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), FNV_PRIME);
+	return Math.imul(h ^ 0xff, FNV_PRIME);
+}
+
+function mix_word(h: number, x: number): number {
+	for (let i = 0; i < 4; i++) h = Math.imul(h ^ ((x >>> (i * 8)) & 0xff), FNV_PRIME);
+	return h;
+}
+
+/**
+ * A 32-bit FNV-1a hash of a node's syntax tree: node types, names, operators, literal values and
+ * flags, nothing else. Whitespace, comments, parentheses, quotes, number spelling (`0x10` is `16`)
+ * and TypeScript types are not in the tree, so they do not move it; type stripping and a
+ * TypeScript compile give the same hash as the source. `?.` (`optional` on a member or call) is
+ * code; `optional` on a parameter or property is a type.
+ */
+function shape_of(node: Node, memo: Map<Node, number>): number {
+	while (TS_EXPRESSION_WRAPPERS.has(node.type)) node = get(node, 'expression')!;
+	if (node.type === 'TSParameterProperty') return shape_of(get(node, 'parameter')!, memo);
+	const kept = memo.get(node);
+	if (kept !== undefined) return kept;
+	if (is_type_only(node)) return ABSENT;
+	let h = mix_string(0x811c9dc5, node.type);
+	const keeps_optional = node.type === 'MemberExpression' || node.type === 'CallExpression';
+	for (const key of Object.keys(node)) {
+		if (SHAPE_SKIP.has(key) || (key === 'optional' && !keeps_optional)) continue;
+		h = mix_string(h, key);
+		h = mix_value(h, node[key], memo);
+	}
+	if (SHAPED.has(node.type)) memo.set(node, h);
+	return h;
+}
+
+function mix_value(h: number, v: unknown, memo: Map<Node, number>): number {
+	if (v === null || v === undefined) return mix_string(h, String(v));
+	if (Array.isArray(v)) {
+		// what type stripping removes (a `type` statement, an overload) is not an element
+		let n = 0;
+		for (const x of v) {
+			const s = x && typeof x === 'object' && 'type' in x ? shape_of(x as Node, memo) : null;
+			if (s === ABSENT) continue;
+			h = s === null ? mix_value(h, x, memo) : mix_word(h, s);
+			n++;
+		}
+		return mix_word(h, n);
+	}
+	if (typeof v === 'object') {
+		if ('type' in v) return mix_word(h, shape_of(v as Node, memo));
+		// a plain object: a regex literal's `{ pattern, flags }`
+		for (const [k, x] of Object.entries(v)) h = mix_value(mix_string(h, k), x, memo);
+		return h;
+	}
+	return mix_string(h, `${typeof v}:${String(v)}`);
 }
 
 /** An anonymous function or class expression: the language may name it after where it is put. */

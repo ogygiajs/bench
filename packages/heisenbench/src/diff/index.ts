@@ -7,6 +7,7 @@ import { align_prices } from '../recount.ts';
 import { measure_diff } from '../measure/diff.ts';
 import type { MeasureDiff } from '../measure/diff.ts';
 import type { Prices } from '../prices.ts';
+import { context_path } from '../identity.ts';
 
 /*
  * PR vs base (spec 11). Functions are matched by identity (`module > path`), through git file
@@ -329,12 +330,27 @@ function diff_case(
 	// `b`), so outer functions are matched first and their insides follow by path. At each depth the
 	// best-scoring pair goes first: one base function taking a sibling's better match leaves that
 	// sibling to a worse one.
+	//
+	// A function whose own code changed keeps its place (identity.ts `context_path`): the same path
+	// without shape hashes, under the PR path its enclosing function was matched to. A callback
+	// edited past the shape threshold is still the callback in that slot, and is not a rename.
 	const matched_base = new Set<string>();
+	const pr_path_of = new Map<string, string>();
+	for (const [b, p] of pairs) pr_path_of.set(b.id, p.path);
+	const place = (b: FunctionReport): string => {
+		const at = b.path.lastIndexOf(' > ');
+		const outer = at === -1 ? undefined : pr_path_of.get(`${b.module} > ${b.path.slice(0, at)}`);
+		return outer === undefined
+			? context_path(b.path)
+			: context_path(outer) + context_path(b.path.slice(at));
+	};
 	const accept = (b: FunctionReport, p: FunctionReport): void => {
-		pairs.push([b, p, b.path]);
+		const moved = context_path(b.path) !== context_path(p.path);
+		pairs.push([b, p, moved ? b.path : null]);
 		matched_base.add(b.id);
 		matched_pr.add(p.id);
-		renames.push({ case: name, from: b.id, to: p.id });
+		pr_path_of.set(b.id, p.path);
+		if (moved) renames.push({ case: name, from: b.id, to: p.id });
 		const inside = `${b.path} > `;
 		for (const c of unmatched_base) {
 			if (matched_base.has(c.id) || !c.path.startsWith(inside)) continue;
@@ -350,10 +366,13 @@ function diff_case(
 			if (matched_base.has(b.id) || depth(b) !== d) continue;
 			const module = paths.pr_module(b.module);
 			const mapped = paths.lines(module).forward(b.line);
+			const at = place(b);
 			for (const p of unmatched_pr) {
 				if (matched_pr.has(p.id) || p.module !== module || p.kind !== b.kind) continue;
 				let score = shape_similarity(b.shape, p.shape);
 				if (mapped === p.line) score += 0.01;
+				// same place first, whatever its shape; the most alike first among several
+				if (context_path(p.path) === at) score += 1;
 				if (score >= threshold) candidates.push({ b, p, score });
 			}
 		}
