@@ -45,7 +45,7 @@ does not have (a preview build) is marked `not published`. `--npm off` skips the
 | `bench`        | Every bench, include and preload file: path, sha256, text.                                                                                                                                                       |
 | `engine`       | Heisenbench's version, where it ran from (`npm`, or `checkout <commit>`), the hash of its code, package files and dependency versions, and the prices and weights hashes.                                        |
 | `node`         | Node, V8, platform, arch.                                                                                                                                                                                        |
-| `counting`     | How the cases were kept apart (`process per case`), `state: fresh`, `deps: all`, the environment every counting process had, the root's length and depth, the growth sizes, the preloads.                        |
+| `counting`     | How the cases were kept apart (`process per case`), `state: fresh`, `deps: all`, the environment every counting process had, `paths: virtual`, the growth sizes, the preloads.                                   |
 | `cases`        | Per case: totals (steps, allocations, bytes, calls), every function it ran (id, calls, self and inclusive steps, allocations, bytes), and the sha256 of its whole report (blocks, lines, built-ins, call edges). |
 | `growth`       | Per grown case: sizes, input sizes, steps, class, exponent, the likeliest shape and its odds.                                                                                                                    |
 | `hash`         | `sha256-…` of the canonical JSON of everything else (keys sorted).                                                                                                                                               |
@@ -61,12 +61,14 @@ and the function lists.
    `file:package.tgz`, the bench files at their paths, and the package installed with npm:
    `npm install` for the receipt, which writes the lockfile it keeps, and `npm ci` from that
    lockfile for the check. So both count the same dependency tree, down to every integrity.
-2. **The root.** Its path is 200 characters long and 16 directories deep on every machine
-   (directories are added and the last one padded). Code that walks or splits its own
-   `import.meta.url` does work per character and per directory, and a checker's temp directory is
-   not the maker's. The published Heisenbench is such code: its transform writes the runtime's
-   file URL into every module it makes, and `transform: a module of 20 functions` counts 1,636,997
-   steps under a 160-character root and 1,637,437 under a 200-character one.
+2. **The root.** Any temp directory: the counted code sees it as `/heisenbench/root`
+   ([how counting works](how-counting-works.md#the-same-count-every-time)), so a checker's temp
+   directory counts what the maker's did. The published Heisenbench is code that would notice: its
+   transform writes the runtime's file URL into every module it makes, and with real paths
+   `transform: a module of 20 functions` counted 1,636,997 steps under a 160-character root and
+   1,637,437 under a 200-character one. A receipt made before the virtual root records the length
+   and depth of the root it was counted in (`counting.root_length`, `root_depth`); it is checked
+   in a root padded to them, as it was made.
 3. **The environment.** No `NODE_OPTIONS` from the caller; `NODE_ENV=production`, `TZ=UTC`,
    `LC_ALL=C`.
 4. **Each case alone.** The cases are listed once, then each case is counted in a process of its
@@ -195,8 +197,8 @@ Not wired yet: ogygia's release workflow is unchanged. This is how it would be d
 - **Install scripts never run.** A package that needs its `postinstall` to work (downloading a
   binary) does not count.
 - **The network.** Both commands download the tarball and the dependencies.
-- **The root's characters.** Its length and depth are fixed, its characters are not: code that
-  compares its own path character by character with something else can still count differently.
+- **Paths that stay real.** A path that does not come from the code's own location (`os.tmpdir()`,
+  `process.argv`) is the checker's own, and work on it can count differently.
 - **Node.** A different Node can count differently where V8 calls back into counted code; the
   receipt says which Node counted it.
 - **Engine.** A receipt checks with the engine that made it. A newer Heisenbench may price or

@@ -12,7 +12,8 @@ import {
 	module_id,
 	module_specifier,
 	transform,
-	ts_to_js
+	ts_to_js,
+	virtualize_meta
 } from '../transform/index.ts';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { load_prices } from '../prices.ts';
@@ -44,6 +45,11 @@ export interface LoaderConfig {
 	 * from the working tree. `top` is the git top level the paths are relative to.
 	 */
 	source_from?: { sha: string; top: string };
+	/**
+	 * The modules of the root read their own paths under the virtual root (runtime/paths.ts): the
+	 * transform's `virtual_paths` for counted modules, `virtualize_meta` for bench files.
+	 */
+	virtual_paths?: boolean;
 }
 
 /** `git ...` in `cwd`, its stdout; throws what git says. */
@@ -177,6 +183,22 @@ export class LoaderCore {
 		if (own) this.#own_loaded.add(fileURLToPath(url.split('?')[0]));
 	}
 
+	/** Heisenbench's own file, or one its own code brought in (a compiler it requires). */
+	is_own(path: string): boolean {
+		return path.startsWith(HEISENBENCH_DIR) || this.#own_loaded.has(path);
+	}
+
+	/**
+	 * An ES module of the root that is not counted (a bench file in JavaScript) whose `import.meta`
+	 * the loader makes virtual (`virtual_paths`).
+	 */
+	meta_only(url: string, format: string | null | undefined): boolean {
+		if (!this.config.virtual_paths || format !== 'module' || !url.startsWith('file:')) return false;
+		const path = fileURLToPath(url);
+		const root = this.config.root.endsWith(sep) ? this.config.root : this.config.root + sep;
+		return path.startsWith(root) && !this.is_own(path) && package_name(path) === null;
+	}
+
 	should_instrument(url: string): boolean {
 		if (!url.startsWith('file:')) return false;
 		const path = fileURLToPath(url);
@@ -281,8 +303,10 @@ export class LoaderCore {
 
 	/** That module as JS: types stripped, or compiled when stripping cannot run it. */
 	plain_typescript(url: string): string {
-		const out = ts_to_js(this.read(url), fileURLToPath(url));
-		return out.map === null ? out.code : out.code + inline_map(out.map as object);
+		const file = fileURLToPath(url);
+		const out = ts_to_js(this.read(url), file);
+		const code = this.config.virtual_paths ? virtualize_meta(out.code, file) : out.code;
+		return out.map === null ? code : code + inline_map(out.map as object);
 	}
 
 	/**
@@ -335,7 +359,8 @@ export class LoaderCore {
 				input_map,
 				expose: this.config.expose,
 				prices: this.prices,
-				commonjs
+				commonjs,
+				virtual_paths: this.config.virtual_paths
 			});
 		} catch (e) {
 			// A `.js` file with no package type that is an ES module after all (Node detects it from

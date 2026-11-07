@@ -3,6 +3,7 @@ import { parseSync } from 'oxc-parser';
 import remapping from '@jridgewell/remapping';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { Positions } from './positions.ts';
+import { meta_footer } from './meta.ts';
 import { OP_INDEX, OP_KINDS, builtin_names, op_price_vector } from '../prices.ts';
 import type { OpKind, Prices } from '../prices.ts';
 import {
@@ -155,6 +156,12 @@ export interface InstrumentOptions {
 	 * `__filename` where an ES module says `import.meta.url`, and exports nothing (`expose` off).
 	 */
 	commonjs?: boolean;
+	/**
+	 * The paths the module can read name the root virtually (runtime/paths.ts): `import.meta` is
+	 * the module's virtual meta (meta.ts); a CommonJS module's `__filename`, `__dirname` and
+	 * `require.resolve` are virtual paths. The counting loader turns it on; a Vite build does not.
+	 */
+	virtual_paths?: boolean;
 }
 
 export interface InstrumentResult {
@@ -275,7 +282,20 @@ class Instrumenter {
 	pos: Positions;
 	prices: Float64Array;
 	builtin_names: Set<string>;
-	n: { c: string; d: string; f: string; b: string; s: string; R: string; r: string; u: string };
+	n: {
+		c: string;
+		d: string;
+		f: string;
+		b: string;
+		s: string;
+		R: string;
+		r: string;
+		u: string;
+		M: string;
+		m: string;
+	};
+	/** The module reads `import.meta` and gets the virtual one (`virtual_paths`). */
+	uses_meta = false;
 
 	fns: FnRec[] = [];
 	blocks: BlockRec[] = [];
@@ -312,7 +332,9 @@ class Instrumenter {
 			s: p + 's',
 			R: p + 'R',
 			r: p + 'r',
-			u: p + 'u'
+			u: p + 'u',
+			M: p + 'M',
+			m: p + 'm'
 		};
 	}
 
@@ -584,7 +606,10 @@ class Instrumenter {
 		const spec = JSON.stringify(this.opts.module_specifier);
 		this.open(header_pos, () =>
 			this.opts.commonjs
-				? `const{c:${n.c},d:${n.d},f:${n.f},b:${n.b},s:${n.s},r:${n.R}}=globalThis[Symbol.for("heisenbench.runtime")].counters(${spec},${JSON.stringify(JSON.stringify(this.meta))}),${n.u}=__filename;`
+				? `const{c:${n.c},d:${n.d},f:${n.f},b:${n.b},s:${n.s},r:${n.R}}=globalThis[Symbol.for("heisenbench.runtime")].counters(${spec},${JSON.stringify(JSON.stringify(this.meta))}),${n.u}=__filename;` +
+					(this.opts.virtual_paths
+						? `{const ${n.m}=globalThis[Symbol.for("heisenbench.paths")];if(${n.m})__filename=${n.m}.path(__filename),__dirname=${n.m}.path(__dirname),require=${n.m}.require(require)}`
+						: '')
 				: `import{c as ${n.c},d as ${n.d},f as ${n.f},b as ${n.b},s as ${n.s},r as ${n.R}}from${spec};`
 		);
 		this.scope_block = null;
@@ -1181,9 +1206,23 @@ class Instrumenter {
 			case 'Literal':
 				if (node.regex) this.alloc_site('regexp', node.start, REGEXP, false);
 				return;
+			case 'MetaProperty':
+				if (
+					this.opts.virtual_paths &&
+					!this.opts.commonjs &&
+					text(get(node, 'meta') ?? node, 'name') === 'import'
+				) {
+					this.uses_meta = true;
+					this.edits.push({
+						pos: node.start,
+						end: node.end,
+						open: true,
+						text: () => `${this.n.M}()`
+					});
+				}
+				return;
 			case 'ThisExpression':
 			case 'Super':
-			case 'MetaProperty':
 			case 'PrivateIdentifier':
 				return;
 			case 'TemplateLiteral':
@@ -1982,6 +2021,8 @@ export function instrument(code: string, opts: InstrumentOptions): InstrumentRes
 		else if (e.open) s.appendRight(e.pos, e.text());
 		else s.prependLeft(e.pos, e.text());
 	}
+
+	if (ins.uses_meta) s.append(meta_footer(ins.n.M, ins.n.m));
 
 	if ((opts.expose ?? true) && !opts.commonjs) {
 		const bindings = private_bindings(program);

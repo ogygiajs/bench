@@ -1,7 +1,11 @@
 import { registerHooks } from 'node:module';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { LoaderCore } from './core.ts';
 import type { LoaderConfig } from './core.ts';
 import { register_source_resolve } from './resolve.ts';
+import { install_paths, real_url } from '../runtime/paths.ts';
+import { virtualize_meta } from '../transform/meta.ts';
 
 export type { LoaderConfig } from './core.ts';
 
@@ -11,12 +15,18 @@ export type { LoaderConfig } from './core.ts';
  * for `require` as well as `import`, so a CommonJS dependency is counted like an ES module.
  */
 export function register_heisenbench(config: LoaderConfig): LoaderCore {
-	const core = new LoaderCore(config);
+	const virtual_paths = config.virtual_paths ?? true;
+	const core = new LoaderCore({ ...config, virtual_paths });
+	const root = resolve(config.root);
+	// every path the counted code can read names the root virtually (runtime/paths.ts)
+	if (virtual_paths) install_paths(root, (file) => core.is_own(file));
 	// first, so the hooks below see `./x.js` already resolved to `./x.ts` (resolve.ts)
 	register_source_resolve();
 	registerHooks({
 		resolve(specifier, context, next) {
 			if (core.is_virtual(specifier)) return { url: specifier, shortCircuit: true };
+			// import() or require of a virtual path: the file it names
+			if (virtual_paths) specifier = real_url(specifier, root);
 			const r = next(specifier, context);
 			core.note_resolved(r.url, context.parentURL, context.conditions);
 			const url = core.with_generation(r.url, context.parentURL);
@@ -27,8 +37,15 @@ export function register_heisenbench(config: LoaderConfig): LoaderCore {
 				return { format: 'module', source: core.virtual_source(url), shortCircuit: true };
 			}
 			if (!core.should_instrument(url)) {
-				if (!core.is_plain_typescript(url)) return next(url, context);
-				return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
+				if (core.is_plain_typescript(url))
+					return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
+				const r = next(url, context);
+				if (r.source == null || !core.meta_only(url, r.format)) return r;
+				const src =
+					typeof r.source === 'string'
+						? r.source
+						: Buffer.from(r.source as Uint8Array).toString('utf8');
+				return { ...r, source: virtualize_meta(src, fileURLToPath(url)), shortCircuit: true };
 			}
 			if (core.needs_own_read(url)) {
 				const out = core.instrument(url, core.read(url), null);

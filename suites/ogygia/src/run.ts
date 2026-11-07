@@ -17,7 +17,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { REPORT_SCHEMA, locateAuditFindings, mergeAudits, renderTime } from '@bench/heisenbench';
 import type {
 	AuditReport,
@@ -78,7 +78,8 @@ export function node_options(tree: Tree): string {
 	const base = process.env.NODE_OPTIONS ?? '';
 	// The tree's preload maps the specifiers only Vite and Kit serve to stubs. NODE_OPTIONS (not an
 	// argument) so the processes Heisenbench spawns itself (health and measure children) load it too.
-	return tree.preload ? `${base} --import=${tree.preload}`.trim() : base;
+	// as a URL: NODE_OPTIONS splits at spaces, and a checkout's path may have them
+	return tree.preload ? `${base} --import=${pathToFileURL(tree.preload).href}`.trim() : base;
 }
 
 function read_report(path: string): Report | null {

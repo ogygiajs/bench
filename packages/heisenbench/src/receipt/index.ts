@@ -10,15 +10,7 @@ import { ISOLATION, RECEIPT_ENV, RECEIPT_SIZES, count_tree } from './count.ts';
 import type { ReceiptCase, ReceiptGrowth } from './count.ts';
 import { fetch_tarball, npm_dist } from './tarball.ts';
 import type { Tarball } from './tarball.ts';
-import {
-	ROOT_DEPTH,
-	ROOT_LENGTH,
-	install,
-	locked_packages,
-	make_root,
-	safe_path,
-	write_files
-} from './tree.ts';
+import { install, locked_packages, make_root, new_root, safe_path, write_files } from './tree.ts';
 import type { Lockfile } from './tree.ts';
 
 export type { ReceiptCase, ReceiptFunction, ReceiptGrowth } from './count.ts';
@@ -84,9 +76,17 @@ export interface Receipt {
 		deps: 'all';
 		/** Environment variables every counting process had. */
 		env: Record<string, string>;
-		/** Characters in the counting root's path, and directories (tree.ts). */
-		root_length: number;
-		root_depth: number;
+		/**
+		 * `virtual`: the counted code saw the root as the virtual root (runtime/paths.ts), so the
+		 * tree counts the same wherever it is.
+		 */
+		paths?: 'virtual';
+		/**
+		 * A receipt made before the virtual root: the characters and directories of the root it was
+		 * counted in, which its check pads a root to (tree.ts `make_root`).
+		 */
+		root_length?: number;
+		root_depth?: number;
 		/** Growth: the sizes every case that declares `scale` was grown to. */
 		sizes: number[];
 		/** Files of the receipt every counting process imported first (`--import`). */
@@ -192,7 +192,7 @@ export async function make_receipt(o: ReceiptOptions): Promise<Receipt> {
 			}
 		}
 		log(`receipt  ${t.name}@${t.version} (${t.integrity.slice(0, 19)}…, npm: ${npm})`);
-		const root = make_root(ROOT_LENGTH, ROOT_DEPTH, work);
+		const root = new_root(work);
 		write_files(root, files);
 		const lockfile = await install(root, t);
 		log(
@@ -227,8 +227,7 @@ export async function make_receipt(o: ReceiptOptions): Promise<Receipt> {
 				state: 'fresh',
 				deps: 'all',
 				env: { ...RECEIPT_ENV },
-				root_length: ROOT_LENGTH,
-				root_depth: ROOT_DEPTH,
+				paths: 'virtual',
 				sizes: RECEIPT_SIZES,
 				preload
 			},
@@ -380,7 +379,11 @@ export async function verify_receipt(receipt: Receipt, o: VerifyOptions): Promis
 				: `${n.version}; the receipt was counted on ${receipt.node.version} (a difference below can be V8's)`
 		});
 
-		const root = make_root(receipt.counting.root_length, receipt.counting.root_depth, work);
+		const { root_length, root_depth } = receipt.counting;
+		const root =
+			root_length !== undefined && root_depth !== undefined
+				? make_root(root_length, root_depth, work)
+				: new_root(work);
 		write_files(root, receipt.bench.files);
 		await install(root, t, receipt.install.lockfile);
 		log(`verify   installed the receipt's lockfile with npm ci`);

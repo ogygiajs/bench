@@ -14,7 +14,13 @@ import {
 } from '../src/receipt/index.ts';
 import type { Receipt } from '../src/receipt/index.ts';
 import { integrity_of, read_tarball, tar_file } from '../src/receipt/tarball.ts';
-import { depth_of, install, make_root, write_files as write_tree } from '../src/receipt/tree.ts';
+import {
+	depth_of,
+	install,
+	make_root,
+	new_root,
+	write_files as write_tree
+} from '../src/receipt/tree.ts';
 import type { Report } from '../src/report.ts';
 import { compare_versions, function_place, render_registry } from '../src/receipt/registry.ts';
 import { temp_dir, write_files } from './helpers.ts';
@@ -173,7 +179,7 @@ test('each case counts alone: state an earlier case left in a global does not re
 	assert.equal(steps(receipt.cases, 'tag: beta'), steps(receipt.cases, 'tag: alpha'));
 
 	// the same tree counted by one `heisenbench run`: beta walks alpha's key too
-	const root = make_root(200, 16, join(dir, 'shared'));
+	const root = new_root(join(dir, 'shared'));
 	write_tree(root, receipt.bench.files);
 	await install(root, read_tarball(release));
 	const out = join(dir, 'shared.json');
@@ -193,8 +199,10 @@ test('each case counts alone: state an earlier case left in a global does not re
 
 test('the receipt verifies against its tarball, from another work directory', async () => {
 	const { dir, release, receipt } = await fixture();
-	// a longer, deeper work path: the root is padded to the receipt's length and depth, so `where`
-	// (one step per `/` of its own URL) counts the same
+	// a longer, deeper work path: `where` (one step per `/` of its own URL) counts the same, as its
+	// URL names the virtual root
+	assert.equal(receipt.counting.paths, 'virtual');
+	assert.equal(receipt.counting.root_length, undefined);
 	const r = await verify_receipt(receipt, { tarball: release, work: join(dir, 'another', 'work') });
 	assert.equal(r.matches, true, render_verify_receipt(r));
 	assert.equal(r.first_difference, null);
@@ -248,7 +256,7 @@ test('canonical JSON does not depend on key order', () => {
 	assert.equal(canonical_json({ a: undefined, b: null }), '{"b":null}');
 });
 
-test('the counting root has the same length and depth under any work directory', () => {
+test('an older receipt is checked in a root of its length and depth, under any work directory', () => {
 	const dir = temp_dir('heisenbench-root-');
 	for (const work of [join(dir, 'a'), join(dir, 'a', 'much', 'longer', 'path')]) {
 		const root = make_root(200, 16, work);

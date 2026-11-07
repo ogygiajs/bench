@@ -510,8 +510,10 @@ from small boosted trees trained on measured changes (`ranges.json`,
 - File reads and `fetch` are recorded in the warm-up run and replayed. Anything else that touches
   the network or writes a file throws.
 - Every run gets fresh module state, so a cache filled by one run does not make the next one fast.
-- `process.cwd()` is `/heisenbench/root` (the run root), so code that slices or compares the working
-  directory counts the same in every checkout. Files under it still read.
+- Every path the counted code can see names the run root `/heisenbench/root`: `import.meta.url`
+  and its `filename`, `dirname` and `resolve`, `__filename` and `__dirname`, `require.resolve`,
+  `error.stack` and `process.cwd()`. Code that splits, slices or matches its own path counts the
+  same in every checkout, at any depth. Files under it still read and import.
 
 **What changes the count:**
 
@@ -557,9 +559,11 @@ only comparable on one V8.
   when counted code calls it by name (`xs.slice(1)`, `structuredClone(v)`, `Array.prototype.map.call(xs, f)`).
   Through a computed name (`xs['slice']()`) or a variable holding the function
   (`const s = String.prototype.slice; s.call(x)`), it costs one call.
-- **Paths a module builds from `import.meta.url` are real paths.** Only the working directory is
-  virtual. A function that slices a path made from `import.meta.url` still counts more in a deeper
-  checkout.
+- **Some paths stay real.** A path that does not come from the module's own location
+  (`process.argv`, `os.tmpdir()`, `module.filename`, a `CallSite`'s file name, a stack formatted by
+  a `prepareStackTrace` of the code's own) is the real one, and work done on it can follow the
+  checkout's path. So can a path outside the run root, a package linked from elsewhere
+  ([how counting works](docs/how-counting-works.md#the-same-count-every-time)).
 - **Engine health repeats what V8 repeats.** On ogygia's 57 cases, three rounds of `heisenbench health`
   gave the same report every time. A function or inline cache that differs between runs is marked
   unstable and never becomes a finding; the comment says how many were skipped. That is not proof
