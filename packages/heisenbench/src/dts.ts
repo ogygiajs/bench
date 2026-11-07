@@ -149,8 +149,9 @@ export function private_dts(opts: DtsOptions): string {
 			if (text.startsWith('declare ')) text = text.slice(8);
 			// the declaration's doc comment, as tsc kept it: hovers, and complexity contracts
 			// (`@heisenbench linear in rows`), read where the function is used
-			const docs = (ts.getJSDocCommentsAndTags(st) as import('typescript').Node[])
-				.filter((j) => j.kind === ts.SyntaxKind.JSDoc)
+			const docs = ts
+				.getJSDocCommentsAndTags(st)
+				.filter((j) => ts.isJSDoc(j))
 				.map((j) => j.getText(d) + '\n')
 				.join('');
 			locals.push(docs + 'export ' + tabs(text));
