@@ -14,6 +14,8 @@ import { REPORT_SCHEMA, environment } from './report.ts';
 import { code } from './md.ts';
 import { render_audit } from './audit/markdown.ts';
 import type { AuditReport } from './audit/fit.ts';
+import { diff_contracts, render_contracts_diff } from './contracts/index.ts';
+import type { ContractsDiff } from './contracts/index.ts';
 import type { Report } from './report.ts';
 
 /*
@@ -23,7 +25,7 @@ import type { Report } from './report.ts';
  * renders an "Engine" and a "Growth" part under the step table.
  */
 
-type Section = 'engine' | 'growth' | 'recorded_growth' | 'search' | 'audit';
+type Section = 'engine' | 'growth' | 'recorded_growth' | 'search' | 'audit' | 'contracts';
 
 function git(root: string, args: string[]): string | null {
 	try {
@@ -83,6 +85,8 @@ export interface SectionsDiff {
 	search: SearchFinding[] | null;
 	/** The PR side's price audit (a property of the prices, not a change): shown when suspect. */
 	audit?: AuditReport | null;
+	/** Complexity contracts the PR adds, changes or removes, and those that do not hold on its side. */
+	contracts?: ContractsDiff | null;
 }
 
 export function diff_sections(
@@ -104,7 +108,8 @@ export function diff_sections(
 				: null,
 		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth, odds) : null,
 		search: base.search && pr.search ? diff_search(base.search, pr.search) : null,
-		audit: pr.audit ?? null
+		audit: pr.audit ?? null,
+		contracts: pr.contracts ? diff_contracts(base.contracts, pr.contracts) : null
 	};
 }
 
@@ -158,6 +163,8 @@ export function render_sections(d: SectionsDiff): string {
 		}
 		parts.push(lines.join('\n'));
 	}
+	const contracts = d.contracts ? render_contracts_diff(d.contracts) : '';
+	if (contracts) parts.push(contracts);
 	const prices = d.audit ? render_audit(d.audit, { quiet: true }) : '';
 	if (prices) parts.push(prices);
 	return parts.join('\n');

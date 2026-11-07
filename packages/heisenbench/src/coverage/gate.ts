@@ -12,6 +12,8 @@ import type { Report } from '../report.ts';
 import { cell, code } from '../md.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
 import { context_path } from '../identity.ts';
+import { read_contracts } from '../contracts/declare.ts';
+import type { Contract, ContractError } from '../contracts/declare.ts';
 
 /*
  * Which functions of a source tree have a measurement source (spec 8), and the CI gate on it.
@@ -44,13 +46,22 @@ export interface SourceInventory {
 	functions: SourceFunction[];
 	/** Files the transform could not read (listed, never silently dropped). */
 	errors: Array<{ file: string; error: string }>;
+	/** The complexity contracts the files declare (contracts/declare.ts). Absent in older inventories. */
+	contracts?: Contract[];
+	/** Tags that declare no contract (an unknown class, no such parameter, on no function). */
+	contract_errors?: ContractError[];
 }
 
-/** Every function of `files` (absolute), as the counting transform names them for `root`. */
+/**
+ * Every function of `files` (absolute), as the counting transform names them for `root`, and the
+ * complexity contracts they declare.
+ */
 export function source_inventory(root: string, files: readonly string[]): SourceInventory {
 	const prices = load_prices();
 	const functions: SourceFunction[] = [];
 	const errors: SourceInventory['errors'] = [];
+	const contracts: Contract[] = [];
+	const contract_errors: ContractError[] = [];
 	for (const file of files) {
 		try {
 			const source = readFileSync(file, 'utf8');
@@ -67,6 +78,9 @@ export function source_inventory(root: string, files: readonly string[]): Source
 			}
 			const id = module_id(file, root);
 			const r = transform(code, { filename: file, id, input_map, prices, expose: false });
+			const declared = read_contracts(source, file, id, r.meta.functions);
+			contracts.push(...declared.contracts);
+			contract_errors.push(...declared.errors);
 			for (const f of r.meta.functions) {
 				if (f.kind !== 'function') continue;
 				functions.push({
@@ -82,7 +96,8 @@ export function source_inventory(root: string, files: readonly string[]): Source
 		}
 	}
 	functions.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-	return { functions, errors };
+	contracts.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+	return { functions, errors, contracts, contract_errors };
 }
 
 /** Function ids a counted report ran (calls > 0 in any case). */
@@ -210,6 +225,12 @@ export interface GateOptions {
 	renames?: ReadonlyMap<string, string>;
 	/** Files of the PR's tree the transform could not read and the base could (they fail the gate). */
 	unreadable?: ReadonlyArray<{ file: string; error: string }>;
+	/**
+	 * The tree's complexity contracts. A contracted function with no measurement source fails the
+	 * gate whether it is new or not and whatever exemption names it: a speed limit nothing measures
+	 * is a promise nobody checks.
+	 */
+	contracts?: readonly Contract[];
 }
 
 export interface GateResult {
@@ -224,6 +245,8 @@ export interface GateResult {
 	stale_exemptions: Exemption[];
 	/** New files nothing could read: their functions are unknown, so the gate cannot pass. */
 	unreadable: Array<{ file: string; error: string }>;
+	/** Functions with a complexity contract and no measurement source: these fail the gate too. */
+	unmeasured_contracts?: Array<MeasuredFunction & { contract: string }>;
 	pass: boolean;
 }
 
@@ -272,13 +295,17 @@ export function gate(
 		exempted: [],
 		stale_exemptions: [],
 		unreadable: [...(o.unreadable ?? [])],
+		unmeasured_contracts: [],
 		pass: true
 	};
+	const contracted = new Map((o.contracts ?? []).map((c) => [c.id, c]));
 	for (const f of head) {
 		if (f.reason === null) {
 			out.measured++;
 			continue;
 		}
+		const c = contracted.get(f.id);
+		if (c) out.unmeasured_contracts!.push({ ...f, contract: c.text });
 		const e = exemption_for(f.id, exempt);
 		if (e !== undefined) {
 			used.add(e.id);
@@ -287,7 +314,10 @@ export function gate(
 		else out.new_unmeasured.push(f);
 	}
 	out.stale_exemptions = exemptions.filter((e) => !used.has(e.id));
-	out.pass = out.new_unmeasured.length === 0 && out.unreadable.length === 0;
+	out.pass =
+		out.new_unmeasured.length === 0 &&
+		out.unreadable.length === 0 &&
+		out.unmeasured_contracts!.length === 0;
 	return out;
 }
 
@@ -322,6 +352,17 @@ export function render_gate(g: GateResult, o: { top?: number } = {}): string {
 		out.push('');
 	} else {
 		out.push('No new function without a measurement source.', '');
+	}
+	const contracts = g.unmeasured_contracts ?? [];
+	if (contracts.length > 0) {
+		out.push(
+			`**${contracts.length} function${contracts.length === 1 ? '' : 's'} with a complexity contract and no measurement source.** A contract is checked on what measures the function: add a growth case or a test that calls it with inputs that replay (an exemption does not cover a contract):`,
+			'',
+			'| Function | Contract | Why |',
+			'| --- | --- | --- |'
+		);
+		for (const f of contracts) out.push(`| ${loc(f)} | ${cell(f.contract)} | ${f.reason} |`);
+		out.push('');
 	}
 	if (g.unreadable.length > 0) {
 		out.push(

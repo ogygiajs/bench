@@ -23,6 +23,7 @@ import { StepCapError } from '../runtime/index.ts';
 import { OWN_CODE, package_label } from '../identity.ts';
 import { add_units } from '../units.ts';
 import type { Units } from '../units.ts';
+import { ContractBook } from '../contracts/declare.ts';
 
 /*
  * Growth (spec 9): a case's input scaled to several sizes (1x / 10x / 100x by default), steps
@@ -77,6 +78,43 @@ export interface GrowthCase {
 	probe?: { size: number; input_size: number; steps: number };
 	/** The size the odds were read from, when the code took another path below it (odds.ts path_from). */
 	odds_from?: number;
+	/**
+	 * The functions with a complexity contract (contracts/) the case ran, each with its own curve
+	 * inside the case. Absent when it ran none.
+	 */
+	contracts?: ContractCurve[];
+}
+
+/**
+ * A contracted function inside a growth case: its steps per call at each size of the case, and
+ * the shape they make. The size is the case's scale factor; the curve is per call, so a function
+ * the case calls more often as it grows is measured on what one call costs.
+ */
+export interface ContractCurve {
+	id: string;
+	/** Inclusive steps per call at each size (0 where it did not run). */
+	steps: number[];
+	/** Calls at each size. */
+	calls: number[];
+	class: GrowthClass;
+	exponent: number;
+	power?: number;
+	/** Odds of each shape (null: steps that fall, or too few sizes). */
+	odds: GrowthOdds | null;
+	/** The size the odds were read from, when the code took another path below it. */
+	odds_from?: number;
+	/** Steps per call at the probe size, when one was counted. */
+	probe_steps?: number;
+	/** The lines with the most steps under it (its own and those of what it calls) at the largest size. */
+	lines: LineShare[];
+}
+
+export interface LineShare {
+	/** `module:line` */
+	at: string;
+	steps: number;
+	/** Its share of the steps of the lines counted. */
+	share: number;
 }
 
 export interface GrowthFunction {
@@ -199,6 +237,86 @@ export function where_steps(points: readonly GrowthPoint[]): Pick<GrowthCase, 't
 	};
 }
 
+/** Lines named per result. */
+const TOP_LINES = 5;
+
+/**
+ * The lines with the most self steps in a report; with `only`, among those functions' lines
+ * alone (the share is of their steps).
+ */
+export function top_lines(report: CaseReport, only?: ReadonlySet<string>): LineShare[] {
+	// a line that holds a function and a callback is one line
+	const by_at = new Map<string, number>();
+	let total = 0;
+	for (const f of report.functions) {
+		if (only && !only.has(f.id)) continue;
+		for (const l of f.lines) {
+			if (l.steps <= 0) continue;
+			const at = `${f.module}:${l.line}`;
+			by_at.set(at, (by_at.get(at) ?? 0) + l.steps);
+			total += l.steps;
+		}
+	}
+	const all = [...by_at].map(([at, steps]) => ({ at, steps }));
+	all.sort((a, b) => b.steps - a.steps || (a.at < b.at ? -1 : 1));
+	return all
+		.slice(0, TOP_LINES)
+		.map((l) => ({ ...l, share: total > 0 ? round3(l.steps / total) : 0 }));
+}
+
+/** `id` and every function it reaches through the report's call edges. */
+export function reached_from(report: CaseReport, id: string): Set<string> {
+	const out = new Set([id]);
+	const callees = new Map<string, string[]>();
+	for (const e of report.edges) {
+		let to = callees.get(e.from);
+		if (!to) callees.set(e.from, (to = []));
+		to.push(e.to);
+	}
+	const todo = [id];
+	while (todo.length > 0) {
+		for (const to of callees.get(todo.pop()!) ?? []) {
+			if (out.has(to)) continue;
+			out.add(to);
+			todo.push(to);
+		}
+	}
+	return out;
+}
+
+/** One function's steps per call in a report (0 when it did not run), and its calls. */
+function per_call(report: CaseReport, id: string): { steps: number; calls: number } {
+	const f = report.functions.find((x) => x.id === id);
+	return f && f.calls > 0
+		? { steps: f.inclusive_steps / f.calls, calls: f.calls }
+		: { steps: 0, calls: 0 };
+}
+
+/**
+ * The curves of the contracted functions `ids` over counted points (the odds read later, once the
+ * probe is in).
+ */
+function contract_curves(points: readonly GrowthPoint[], ids: readonly string[]): ContractCurve[] {
+	const ks = points.map((p) => p.k);
+	const last = points[points.length - 1].report;
+	return ids.map((id) => {
+		const at = points.map((p) => per_call(p.report, id));
+		const steps = at.map((x) => x.steps);
+		const f = fit_growth(ks, steps);
+		const curve: ContractCurve = {
+			id,
+			steps,
+			calls: at.map((x) => x.calls),
+			class: f.class,
+			exponent: round3(f.exponent),
+			odds: null,
+			lines: top_lines(last, reached_from(last, id))
+		};
+		if (f.class === 'polynomial') curve.power = f.power;
+		return curve;
+	});
+}
+
 /** The functions with self steps in a report. */
 export function ran_in(report: CaseReport): Set<string> {
 	const out = new Set<string>();
@@ -251,13 +369,17 @@ export async function count_probe(
 	}
 }
 
-/** Grow one case: the input at every size, counted. */
+/**
+ * Grow one case: the input at every size, counted. `contracted`: of the functions the case ran,
+ * the ids with a complexity contract, whose own curves the case keeps (`contracts`).
+ */
 export async function grow_case(
 	c: BenchCase,
 	m: Measurer,
 	sizes: number[] = DEFAULT_SIZES,
 	cap = GROWTH_CAP,
-	odds: OddsOptions = {}
+	odds: OddsOptions = {},
+	contracted: (ran: ReadonlySet<string>) => string[] = () => []
 ): Promise<GrowthCase> {
 	const own = c.scale;
 	const out: GrowthCase = {
@@ -323,15 +445,33 @@ export async function grow_case(
 				)
 			};
 		};
+		const ran = new Set<string>();
+		for (const p of points) for (const id of ran_in(p.report)) ran.add(id);
+		const curves = contract_curves(points, contracted(ran));
+		// a contract's curve: its odds over the points (with the probe's per-call steps in place)
+		const curve_odds = (cv: ContractCurve, pts: readonly GrowthPoint[], from: number) =>
+			points_odds(
+				pts,
+				pts.map((p) => per_call(p.report, cv.id).steps),
+				from,
+				odds
+			);
 		const first = read(points);
-		// a close call, or too few sizes left after another path
-		const want = close_call(first.odds) || (first.odds === null && first.from > 0);
+		// a close call, or too few sizes left after another path: on the case or on a contract
+		const open = (o: GrowthOdds | null) => close_call(o) || (o === null && first.from > 0);
+		const want = open(first.odds) || curves.some((cv) => open(curve_odds(cv, points, first.from)));
 		const probe = want ? await count_probe(points, count) : null;
 		const all = with_probe(points, probe);
 		const r = probe ? read(all) : first;
 		out.odds = r.odds;
 		if (r.from > 0) out.odds_from = all[r.from].k;
 		if (probe) out.probe = { size: probe.k, input_size: probe.input_size, steps: probe.steps };
+		for (const cv of curves) {
+			cv.odds = curve_odds(cv, all, r.from);
+			if (r.from > 0) cv.odds_from = all[r.from].k;
+			if (probe) cv.probe_steps = per_call(probe.report, cv.id).steps;
+		}
+		if (curves.length > 0) out.contracts = curves;
 	} catch (e) {
 		out.error = e instanceof Error ? e.message : String(e);
 	}
@@ -363,6 +503,12 @@ function growth_lines(g: GrowthCase): string[] {
 			`           ${f.id}  ${growth_label(f.class, f.power)} (exponent ${f.exponent}; ${f.steps.map((s) => Math.round(s)).join(' / ')} self steps)`
 		);
 	}
+	for (const cv of g.contracts ?? []) {
+		const o = odds_words(cv.odds);
+		lines.push(
+			`           contract ${cv.id}  ${growth_label(cv.class, cv.power)} (exponent ${cv.exponent}; ${cv.steps.map((s) => Math.round(s)).join(' / ')} steps per call${o ? `; odds ${o}` : ''})`
+		);
+	}
 	return lines;
 }
 
@@ -389,8 +535,14 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 	const list = opts.scaled ? loaded.filter((c) => c.scale !== undefined) : loaded;
 	const m = new Measurer(opts.root);
 	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
+	// the contracts of every module loaded so far (a case can import more as it runs)
+	const book = new ContractBook();
+	const contracted = (ran: ReadonlySet<string>): string[] => {
+		book.read(m.rt.modules.map((r) => r.meta));
+		return [...ran].filter((id) => book.contracts.has(id)).sort();
+	};
 	for (const c of list) {
-		const g = await grow_case(c, m, sizes, opts.cap, opts.odds);
+		const g = await grow_case(c, m, sizes, opts.cap, opts.odds, contracted);
 		report.cases.push(g);
 		log(
 			g.error

@@ -4,6 +4,7 @@ export type VerifyLayer =
 	| 'leak'
 	| 'engine'
 	| 'growth'
+	| 'contract'
 	| 'search'
 	| 'app'
 	| 'time'
@@ -15,6 +16,7 @@ export const VERIFY_LAYERS: VerifyLayer[] = [
 	'leak',
 	'engine',
 	'growth',
+	'contract',
 	'search',
 	'app',
 	'time',

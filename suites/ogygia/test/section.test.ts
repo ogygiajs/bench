@@ -1,6 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REPORT_SCHEMA, analyzeAudit, diffReports, loadPrices } from '@bench/heisenbench';
+import {
+	REPORT_SCHEMA,
+	analyzeAudit,
+	diffContracts,
+	diffReports,
+	loadPrices
+} from '@bench/heisenbench';
 import type { CaseReport, Report } from '@bench/heisenbench';
 import { parseComment, upsertSection } from '@bench/compare';
 import { merge_reports } from '../src/run.ts';
@@ -365,4 +371,54 @@ test('growth from recorded calls: a full run lists its findings; a PR with none 
 		result({ recorded: { ...recorded(0, 'changed', ''), error: 'the packages did not build' } })
 	);
 	assert.match(failed, /\*\*Growth from recorded calls failed\*\*: `the packages did not build`/);
+});
+
+test('complexity contracts: a PR shows the ones it changes or breaks, a full run lists them all', () => {
+	const contract = (path: string, text: string, verdict: 'holds' | 'broken') => ({
+		id: `x.ts > ${path}`,
+		module: 'x.ts',
+		path,
+		line: 2,
+		tag_line: 1,
+		class: 'linear' as const,
+		param: 'rows',
+		argument: 0,
+		text,
+		verdict,
+		sources: []
+	});
+	const check = (cs: ReturnType<typeof contract>[]) => ({
+		schema: 'heisenbench-contracts/1' as const,
+		bar: 0.9,
+		contracts: cs,
+		errors: [],
+		pass: cs.every((c) => c.verdict === 'holds')
+	});
+	const base = check([contract('a', 'linear in rows', 'holds')]);
+	const same = render_pr_section(
+		result({ contracts: { head: base, base, diff: diffContracts(base, base), error: null } })
+	);
+	assert.doesNotMatch(same, /Complexity contracts/, 'nothing changed and all hold: no part');
+	const head = check([
+		contract('a', 'linear in rows', 'broken'),
+		contract('b', 'linear in rows', 'holds')
+	]);
+	const pr = render_pr_section(
+		result({ contracts: { head, base, diff: diffContracts(base, head), error: null } })
+	);
+	assert.match(pr, /#### Complexity contracts/);
+	assert.match(pr, /- \*\*broken\*\*: `x\.ts > a` `@heisenbench linear in rows` is broken/);
+	assert.match(pr, /- new: `x\.ts > b`/);
+	const full = render_full_summary(
+		result({
+			meta: { ...result({}).meta, kind: 'main', pr: null, base: null, merge_base: null },
+			selection: select_all(['x.bench.ts'], 'a full run'),
+			contracts: { head, base: null, diff: null, error: null }
+		})
+	);
+	assert.match(full, /1 of 2 contracts hold/);
+	const failed = render_pr_section(
+		result({ contracts: { head: null, base: null, diff: null, error: 'it crashed' } })
+	);
+	assert.match(failed, /\*\*Complexity contracts failed\*\*: `it crashed`/);
 });

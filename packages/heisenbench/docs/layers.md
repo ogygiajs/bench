@@ -11,6 +11,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Engine health     | `heisenbench health`                                 | plain    | yes                                        | yes                  |
 | Growth            | `heisenbench growth`                                 | counting | cases with `scale`                         | cases with `scale`   |
 | Recorded growth   | `heisenbench growth --recorded`                      | counting | the changed source files                   | every source file    |
+| Contracts         | `heisenbench contracts`                              | none     | both trees, from what growth measured      | every contract       |
 | Price audit       | `heisenbench audit`                                  | both     | no                                         | cases with `scale`   |
 | Time              | `heisenbench time`, `heisenbench run --measure time` | plain    | yes                                        | yes                  |
 | Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
@@ -463,6 +464,113 @@ Limits: only top-level functions replay (a class method or a closure is seen thr
 caller's parts); a sample a test built with state the replay lacks throws and is left out; the
 generic scaler cannot grow a source text into a valid larger one, so a compiler's curve comes from
 the sizes its tests and bench cases pass it.
+
+## Complexity contracts
+
+A speed limit written on the function. The growth layers find a function that grows too fast
+after the fact; a contract says up front how fast it may grow, and CI holds it to that.
+
+```ts
+/** @heisenbench linear in code */
+export function collect_flag_sites(code: string, id: string, file: string): FlagSite[] {
+```
+
+**Declaring.** The tag names a class (`constant`, `log`, `linear`, `n log n`, `quadratic`, `cubic`,
+`quartic`) and, after `in`, the parameter the growth is over; without `in` it is over the whole
+input. It binds to the function that starts right after its doc comment: a function declaration,
+a `const` holding a function or an arrow, a class method or an object method. On an overload
+signature it binds to the implementation. A tag with an unknown class, a parameter the function
+does not have, two tags in one comment, or no function after it is an error, and the check fails
+on it. `@heisenbench` in the middle of a sentence is a mention, not a tag.
+
+A tag on the function and not an entry in the bench file's config, because it is the least
+intrusive of the two: a comment changes nothing that runs (the counting transform, the plain
+build and the types ignore it), it sits where a reviewer reads the code it limits, and it moves
+and renames with the function. A config entry would name `module > path`, which a move or rename
+orphans without a word. And tools that read doc comments show it: tsc keeps it in the `.d.ts`
+(and so in API docs built from the declarations), and `heisenbench dts` keeps it on private
+functions, so an editor shows the contract wherever the function is called.
+
+**Measuring.** Two sources, both the growth layers' own:
+
+- **Growth cases.** Every growth case that runs a contracted function keeps that function's own
+  curve (`contracts` in the case): its inclusive steps per call at each size of the case, fitted
+  and given odds like the case. When the odds of the case or of a contracted function are a close
+  call, the one more size of [active sizing](#growth-odds) is counted for both. The size is the
+  case's scale factor, and the curve is per call, so a function the case calls once per row is
+  measured on what one call costs.
+
+  ```
+  ok       flag inventory: the flag calls of a module as it grows  linear (exponent 1.008; 570521 / 5669238 / 57681071 steps; odds linear >99%)
+             contract packages/core/src/compiler/flags.ts > collect_flag_sites  linear (exponent 1.008; 570521 / 5669238 / 57681071 steps per call; odds linear >99%)
+  ```
+
+- **Recorded calls.** [Growth from recorded calls](#growth-from-recorded-calls) of the function:
+  its steps per call over the recorded sizes of the argument the tag names. When growth chose
+  another argument, that argument's own fit is read (the report keeps each argument's odds); when
+  the sizes span too little, the largest call's argument is scaled.
+
+**Checking.** `heisenbench contracts <source files> --reports a.json,b.json` reads the tags and
+holds each against every curve the reports have of its function. Each curve says:
+
+| Verdict | When                                                                                                 |
+| ------- | ---------------------------------------------------------------------------------------------------- |
+| holds   | the declared class or a cheaper one has at least 90% odds                                            |
+| broken  | a steeper class has at least 90% odds (recorded calls: with 1,000 steps or more at the largest size) |
+| unsure  | neither                                                                                              |
+
+A contract is broken when any curve breaks it, holds when one holds it and none breaks it, and is
+unmeasured when nothing measured its function. The check passes only when every contract holds:
+broken, unsure, unmeasured and a tag that declares nothing all exit 1. The bar is 90%
+(`--contract-odds`), the one the growth layer already uses twice: a superlinear finding needs 90%
+odds of quadratic or worse, and odds under 90% on the likeliest shape are a close call that gets one
+more size counted. A contract that holds is one the growth layer itself calls settled, with at most
+one chance in ten of a steeper shape left. "The declared class or a cheaper one" is what a speed
+limit means: a function declared linear that is log is within it.
+
+A broken contract says what was measured, at which sizes, and which lines carry the steps at the
+largest size (the function's own lines and those of everything it calls). ogygia `01dc5b9`, the
+commit before #187, with #187's growth cases:
+
+```
+BROKEN   packages/core/src/compiler/flags.ts > collect_flag_sites `@heisenbench linear in code` is broken in growth case flag inventory: the flag calls of a module as it grows: measured quadratic (exponent 1.921), odds quadratic >99%; 1x / 10x / 100x (input sizes 2,058 / 20,638 / 213,638): 771,705 / 26,091,064 / 2,175,398,767 steps per call; at the largest size most steps on packages/core/src/compiler/flags.ts:47 (97%), rolldown@1.2.16/dist/shared/parse-Bgfg7ZwM.mjs:27 (2%); odds of linear or cheaper <1%
+```
+
+Line 47 is `line_at`'s loop, which counted each flag's line from the top of the file. The report
+section is `contracts`; `--md` writes the failures and, collapsed, the contracts that hold.
+
+**Hygiene.** A contract with no measurement source fails the check as unmeasured, and the
+[measurement-source gate](#the-measurement-source-gate) fails on it too: `heisenbench inventory`
+lists every contract, and a contracted function with no measurement source fails the gate whether
+it is new or not, and whatever exemption names it.
+
+**In a PR.** `heisenbench diff` shows a "Complexity contracts" part when the PR adds, changes or
+removes a contract, when one that did not hold on the base holds now, and for every contract that
+does not hold on the PR side. A PR that changes none and breaks none gets no part.
+
+**On ogygia.** The six functions #187 made linear, each with a contract (on a local branch: ogygia
+declares none yet). On main (`b46798f`) all six hold; on `01dc5b9`, with #187's bench files, all six
+are broken, each at the lines #187 changed. Growing the five cases took 4 s on main and 32 s on
+`01dc5b9` (M4 Max), and the check 1 s.
+
+| Function                           | Contract           | main `b46798f`                 | `01dc5b9`                  |
+| ---------------------------------- | ------------------ | ------------------------------ | -------------------------- |
+| `flags.ts > collect_flag_sites`    | `linear in code`   | holds: linear >99%             | broken: quadratic, `:47`   |
+| `page-insights.ts > lcp_rivals`    | `linear in visit`  | holds: log >99%                | broken: quadratic, `:2621` |
+| `gc.ts > attribute_gc`             | `n log n in input` | holds: linear 56%, n log n 40% | broken: quadratic, `:257`  |
+| `patterns.ts > find_wait_patterns` | `n log n in input` | holds: n log n >99%            | broken: quadratic, `:2084` |
+| `source-scan.ts > constant_work`   | `linear in source` | holds: linear >99%             | broken: quadratic, `:1309` |
+| `source-scan.ts > hoist_plan`      | `linear in source` | holds: linear >99%             | broken: quadratic, `:1309` |
+
+`attribute_gc` sorts the pauses' moments and the timeline's segments, so its contract says
+n log n: declared linear, three sizes give it 56% linear and 40% n log n, and the check calls it
+unsure.
+
+Limits: a growth case measures the function over whatever the case scales, so the parameter the
+tag names is checked only by recorded calls; a per-call curve averages the calls of one size, so a
+function called on inputs of very different sizes in one case reads their mean; `.svelte` files
+and dependencies are not read for tags; recorded calls replay only top-level functions, so a
+method's contract needs a growth case.
 
 ## Price audit
 
@@ -1206,6 +1314,10 @@ added one is new.
 A file the PR moved keeps its functions' history when the gate gets the git range
 (`--repo dir --base sha --head sha`): its unmeasured functions stay old, not new. A new file the
 transform cannot read fails the gate, since its functions are unknown.
+
+A function with a [complexity contract](#complexity-contracts) and no measurement source fails the
+gate whether it is new or old, and no exemption covers it: a speed limit nothing measures is a
+promise nobody checks. The inventory lists the contracts, so the gate needs no other input.
 
 On ogygia PR #180 (CI run 42288359583): 1,524 of 8,234 functions (18.5%) had a measurement
 source, 555 through a bench and 969 through recorded test inputs. Of the rest, 2,822 never ran,

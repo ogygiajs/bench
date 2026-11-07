@@ -17,6 +17,8 @@ import type { Check, VerifyLayer, VerifyRow } from './types.ts';
  *             cache keyed by the row object; its twin is keyed by row id (twenty entries)
  *   engine    shape order, int -> double, delete, megamorphic access; their same-line twins; no-ops
  *   growth    linear -> quadratic; a constant factor that is not a class change
+ *   contract  a function declared linear that is quadratic: broken, with its class and line; a
+ *             true contract holds
  *   search    quadratic inputs found; a linear function has none
  *   app       a change ranked by real-app weight: hot shown, cold small suppressed, cold large shown
  *   time      the time layer's verdict and the steps agree: slower, faster, same
