@@ -1,0 +1,50 @@
+name: pkg.pr.new
+
+# Publishes a PREVIEW build of heisenbench for every push and PR, so a branch can be tried with
+# `pnpm add https://pkg.pr.new/ogygiajs/bench/heisenbench@<sha-or-branch>` before anything reaches
+# npm. Needs the pkg.pr.new GitHub App on the repository: https://github.com/apps/pkg-pr-new
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  publish:
+    # a version PR (changeset-release/*) publishes for real once merged: no preview to try first
+    if: ${{ !startsWith(github.head_ref, 'changeset-release/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: pnpm install --frozen-lockfile
+
+      # A preview names itself: the next patch as a prerelease of this commit
+      # (`0.0.1-next.cb18746`), so a report or a lockfile never mistakes it for the release it was
+      # built after. Only the packed copy changes; nothing is committed.
+      # (a pull_request run checks out GitHub's merge commit: name the branch's own head instead)
+      - name: Name the preview version
+        working-directory: packages/heisenbench
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          node -e "const fs=require('fs');const p=JSON.parse(fs.readFileSync('package.json','utf8'));const [a,b,c]=p.version.split('-')[0].split('.').map(Number);p.version=a+'.'+b+'.'+(c+1)+'-next.'+process.env.HEAD_SHA.slice(0,7);fs.writeFileSync('package.json',JSON.stringify(p,null,'\t')+'\n');console.log(p.name+' '+p.version)"
+
+      # `--pnpm` packs with `pnpm pack`, which runs prepack (tsdown builds dist/) and applies
+      # publishConfig (bin and exports pointing at dist/, not src/). With `npm pack` the preview
+      # would ship the source layout and `catalog:` versions.
+      # `--packageManager=pnpm`: the PR comment's install line reads `pnpm add …`.
+      - run: npx --yes pkg-pr-new publish --pnpm --packageManager=pnpm './packages/heisenbench'

@@ -1,0 +1,60 @@
+name: release
+
+# Releases heisenbench to npm (.changeset/README.md). A merged changeset opens or updates the
+# version PR; merging that PR publishes under `latest`, with the tag and the GitHub release.
+#
+# Publishing uses npm trusted publishing (OIDC, the `id-token: write` permission): no npm token is
+# stored here. The npm package names this repository and this workflow file as its trusted
+# publisher, so only this job can publish it, and every release carries provenance.
+#
+# changeset publish packs with pnpm, which applies publishConfig (bin and exports pointing at
+# dist/) and turns `catalog:` versions into real ones; the package's prepack builds dist/ with
+# tsdown, and its prepublishOnly refuses any publish that is not pnpm's.
+on:
+  push:
+    branches:
+      - main
+
+# One release at a time; a newer push waits rather than cancelling a publish halfway.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # all history, so changesets can link each changelog entry to its commit and PR
+          fetch-depth: 0
+          # SHIP_TOKEN (a fine-grained token, not GITHUB_TOKEN): the version PR it opens and pushes
+          # then runs CI like any PR, so the `ship` label can merge it
+          token: ${{ secrets.SHIP_TOKEN || github.token }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - run: pnpm install --frozen-lockfile
+      # Build first, so a broken build fails here and not halfway through the publish.
+      - run: pnpm --filter heisenbench build
+      - name: Create the version PR or publish to npm
+        uses: changesets/action@v2
+        with:
+          version-script: pnpm ci:version
+          publish-script: pnpm ci:release
+          commit-message: 'chore: update versions'
+          pr-title: 'chore: update versions'
+          create-github-releases: true
+          # the action refuses a GITHUB_TOKEN env that differs from this input
+          github-token: ${{ secrets.SHIP_TOKEN || github.token }}
