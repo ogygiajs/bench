@@ -728,6 +728,53 @@ high, goes into a corpus (at most 48 inputs). The search climbs from the current
 change that is at least as dense, and after 40 tries without a new best restarts from the best
 input or from one in the corpus. Every random choice comes from one seeded generator.
 
+**Which edit.** Each edit operator is an arm of a bandit ([`src/search/bandit.ts`](../src/search/bandit.ts),
+Thompson sampling): the 11 grammar operators, the plain string edits, each of the 10 array
+edits, the number edges and the 2 object edits. An edit's reward is how much denser it made the
+input it edited, `gain / (gain + 0.25)` with `gain` the new density over the old one minus 1 (a
+25% gain is worth 1/2); an edit that is no denser, that the code rejects or that does not fit
+gets 0. Each try draws a reward rate for every operator that can change the input from its Beta
+posterior and runs one, in proportion to its share in the fixed schedule times its draw. Every
+operator starts from the same prior, the rate pooled over all operators, worth 16 tries: with a
+flat prior, an operator that ran a lot sinks to its true low rate while one that barely ran
+still looks like a coin flip, and the tries drift toward every operator equally. So before any
+evidence the bandit is the fixed schedule, and an operator moves off its share only on its own
+results. The draws come from the same seeded generator; same seed, same schedule.
+`--schedule fixed` is the schedule before it (operators by fixed weights, one try in six a plain
+edit anywhere): the same report as before the bandit, byte for byte. Each case reports
+`found_at` (the try that first found an input worth a look, as a finding defines it), `best_at`
+(the try that found the worst input) and `arms` (each operator's inputs run, and how many were
+denser).
+
+`node scripts/search-schedules.ts [--seeds 300] [--noise]` runs both schedules on the planted
+cases below and the answer key, with the same budget and seed, and counts the tries each takes
+to its planted input. Over seeds 1 to 300 (default budget of 300 tries):
+
+| case                   | found, fixed | found, bandit | median tries, fixed | median tries, bandit | all tries, fixed | all tries, bandit |
+| ---------------------- | ------------ | ------------- | ------------------- | -------------------- | ---------------- | ----------------- |
+| backtracking regex     | 226/300      | 246/300       | 122.5               | 101                  | 50878            | 45099             |
+| quadratic nesting      | 300/300      | 300/300       | 6                   | 6                    | 3130             | 3543              |
+| a loop that never ends | 300/300      | 300/300       | 2                   | 2                    | 1103             | 772               |
+| insertion sort (key)   | 300/300      | 300/300       | 7                   | 7                    | 3659             | 3441              |
+| substring count (key)  | 279/300      | 284/300       | 32                  | 31                   | 17962            | 16578             |
+
+"All tries" counts a search that never found its input as its whole budget. The final inputs:
+
+| case                  | median final, fixed | median final, bandit | per seed, bandit better / worse | fixed against itself on another seed |
+| --------------------- | ------------------- | -------------------- | ------------------------------- | ------------------------------------ |
+| backtracking regex    | never finishes      | never finishes       | 61 / 48                         | 65 / 79                              |
+| quadratic nesting     | 2.175x density      | 2.831x density       | 206 / 91                        | 156 / 139                            |
+| insertion sort (key)  | 12.954x             | 12.966x              | 49 / 42                         | 53 / 37                              |
+| substring count (key) | 4.67x               | 4.67x                | 120 / 126                       | 125 / 129                            |
+
+The two linear cases have no finding with either schedule. Three of the five planted inputs are
+found in under ten tries, before the bandit has much evidence; there it is the fixed schedule
+drawn from a different random stream, and the quadratic nesting takes 13% more tries in all
+(the same median; a few seeds wander for a hundred tries or more with either schedule). It pays
+where a search is long and one operator keeps paying, as the regex's runs do: 20 more seeds find
+it, in 11% fewer tries. A final input worse on one seed is chance: the fixed schedule against
+itself on another seed is as often worse. The nesting ends denser with the bandit on most seeds.
+
 **Regexes.** Built-ins are priced by input size, so V8 running a regex that backtracks costs no
 more steps than one that walks its input once. During the search's own runs (never `heisenbench
 run`), every match first runs on a model of V8's backtracking matcher
@@ -775,11 +822,12 @@ JSON section keeps every case; `--md` writes only the findings:
 A PR case is flagged when its worst input costs at least 4 times its typical one and at least
 twice the base's ratio, when it never finishes and the base does, or when its pattern grows
 superlinearly and the base's does not. `--guided off` is the plain search (random edits, the
-most steps wins, no corpus, no shrinking or growing) and `--regex off` drops the regex model.
+most steps wins, no corpus, no shrinking or growing), `--regex off` drops the regex model and
+`--schedule fixed` the bandit.
 
-In `heisenbench verify`, the search finds an input that costs 11.25x the typical steps for an
-insertion sort and 4.93x for a naive substring count, and nothing for a plain summing loop
-(1.00x).
+In `heisenbench verify`, the search finds an input that costs 11.24x the typical steps for an
+insertion sort and 8.11x for a naive substring count (the fixed schedule: 11.25x and 4.93x), and
+nothing for a plain summing loop (1.00x).
 
 **The planted tests** ([`test/search.test.ts`](../test/search.test.ts)), seeds 1 to 3:
 
@@ -787,14 +835,15 @@ insertion sort and 4.93x for a naive substring count, and nothing for a plain su
   the regex model on and the same 300 tries, finds no slow input on any seed (1.03x, 1.95x,
   1.13x the typical steps, never a runaway): its edits break the JSON or cannot grow a value
   past its seed length. The guided search finds a value the regex backtracks on without end on
-  every seed, within 42 to 111 tries, and shrinks it to one member: `{"":"llllllllllllll+"}`,
-  `{"":"11111111111111/"}`, `{"":"oooooooooooooo-"}` (about 100 characters to 23).
+  every seed, within 158, 42 and 106 tries (the fixed schedule: 93, 42, 111), and shrinks it to
+  one member: `{"":"eeeeeeeeeeeeee{"}`, `{"":"aaaaaaaaaaaaaa+"}`, `{"":"aaaaaaaaaaaaaa?"}` (about
+  100 characters to 23).
 - A parser that checks its brackets balance, then scans each group to its close: linear on flat
   input, quadratic on deep valid nesting. The plain mutator finds nothing (1.02x to 1.03x): its
   edits unbalance the brackets, which the parser rejects. The guided search finds it on every
-  seed, shrinks it to one or two groups (`(m)`, `(3)`, `()(())`) and grows it by nesting:
-  quadratic, exponent 1.97 to 1.99, with all of the extra steps on the three lines of the inner
-  scan.
+  seed, worth a look after 4, 4 and 1 tries (the fixed schedule: 19, 7, 39), shrinks it to one
+  group (`()"`, `(8)`, `() `) and grows it by nesting: quadratic, exponent 1.97 to 1.98, with all
+  of the extra steps on the three lines of the inner scan.
 - A word counter: no finding (1.03x the setup's density on every seed).
 
 **On ogygia** main `01dc5b9` (M4 Max, seed 1, one process per bench file, every case bounded by

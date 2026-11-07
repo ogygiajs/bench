@@ -69,8 +69,8 @@ Layers (each writes its section into --out, default heisenbench-report.json)
   heisenbench search <bench files...>   the input that costs the most work per unit of input:
                                  shrunk, grown 1x to 8x, blamed by line
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
-      [--shrink 200] [--flag 4] [--guided on|off] [--regex on|off] [--root dir]
-      [--filter text] [--out file] [--md file]
+      [--shrink 200] [--flag 4] [--guided on|off] [--regex on|off] [--schedule bandit|fixed]
+      [--root dir] [--filter text] [--out file] [--md file]
   heisenbench audit <bench files...>    the prices checked against time at every growth size
       [--sizes 1,10,100] [--scaled on|off] [--repeats 5] [--time-ms 200] [--root dir]
       [--filter text] [--out file] [--md audit.md]
@@ -338,6 +338,7 @@ const SPECS: Record<string, Spec> = {
 			'flag',
 			'guided',
 			'regex',
+			'schedule',
 			'md'
 		],
 		args: [1, MANY],
@@ -725,8 +726,12 @@ async function main(argv: string[]): Promise<number> {
 			write_section(out, 'growth', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;
 		}
+		const schedule = flags.get('schedule');
+		if (schedule !== undefined && schedule !== 'bandit' && schedule !== 'fixed')
+			throw new UsageError('--schedule takes bandit or fixed');
 		const r = await run_search({
 			...common,
+			schedule,
 			evals: num('evals'),
 			steps: num('budget-steps'),
 			ms: num('budget-ms'),

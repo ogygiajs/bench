@@ -497,8 +497,8 @@ pass  growth/constant-factor     no-op    no class change
 pass  growth/quadratic           planted  rank: linear -> quadratic
 pass  contract/broken            planted  broken: measured quadratic, most steps on lib.ts:22
 pass  contract/holds             no-op    holds
-pass  search/order               planted  worst/typical 11.25, flagged
-pass  search/count               planted  worst/typical 4.93, flagged
+pass  search/order               planted  worst/typical 11.24, flagged
+pass  search/count               planted  worst/typical 8.11, flagged
 pass  search/total               no-op    worst/typical 1.00, not flagged
 pass  app/cold-large             planted  configure: cold, shown (+774 steps/call)
 pass  app/cold-small             planted  configure: cold, suppressed (+5 steps/call)
