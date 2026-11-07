@@ -9,7 +9,7 @@ import type { GrowthDiff } from './growth/index.ts';
 import type { OddsOptions } from './growth/odds.ts';
 import { diff_search } from './search/index.ts';
 import type { SearchFinding } from './search/index.ts';
-import { load_prices } from './prices.ts';
+import { SIZE_TERMS, load_prices } from './prices.ts';
 import { REPORT_SCHEMA, environment } from './report.ts';
 import { code } from './md.ts';
 import { render_audit } from './audit/markdown.ts';
@@ -68,7 +68,8 @@ export function write_section<K extends Section>(
 				sha: info.sha ?? git(root, ['rev-parse', 'HEAD']),
 				prefix: top ? relative(top, root).split(sep).join('/') : ''
 			},
-			cases: []
+			cases: [],
+			unit_terms: [...SIZE_TERMS]
 		};
 	}
 	report[key] = value;

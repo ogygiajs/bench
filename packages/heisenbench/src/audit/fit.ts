@@ -3,7 +3,7 @@ import { fit_growth } from '../growth/fit.ts';
 import type { GrowthClass } from '../growth/fit.ts';
 import { BUILTIN_TERMS, price_units } from '../units.ts';
 import type { Units } from '../units.ts';
-import type { BuiltinModel, Prices } from '../prices.ts';
+import type { BuiltinModel, Prices, SizeTerm } from '../prices.ts';
 
 /*
  * The price audit: do the prices say what the engine does? Steps are units times prices. When the
@@ -405,6 +405,7 @@ function candidates_of(
 		const term = key.slice(dot + 1) as (typeof BUILTIN_TERMS)[number];
 		const price = prices.builtins[kind.slice(3)];
 		if (!price || term === 'calls' || PRICED_TERM[price.model] === term) continue;
+		if (price.terms?.[term as SizeTerm] !== undefined) continue;
 		const u = units.map((x) => x[key] ?? 0);
 		if (!drifts(u, steps)) continue;
 		const own = per_size.map((m) => m.get(kind) ?? 0);

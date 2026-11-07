@@ -11,9 +11,40 @@ export interface BuiltinInput {
 }
 
 export interface InputMaker {
-	make: (n: number) => BuiltinInput;
+	/**
+	 * One call's input at size `n`. `shape` picks one of `shapes` kinds of input of that size,
+	 * for a built-in priced by size terms besides n (prices.ts SIZE_TERMS): a `split` cutting the
+	 * same characters into few parts or many, so the fit can tell the two costs apart.
+	 */
+	make: (n: number, shape?: number) => BuiltinInput;
 	fresh?: boolean;
+	/** How many shapes `make` has (default 1). */
+	shapes?: number;
 }
+
+/** `n` characters with `sep` after every `every - 1` others. */
+function separated(n: number, every: number, sep = ','): string {
+	const unit = 'x'.repeat(every - 1) + sep;
+	return unit.repeat(Math.ceil(n / unit.length)).slice(0, n);
+}
+
+/** Values whose JSON is about n characters: numbers, small records, long strings. */
+function json_shapes(): Array<(n: number) => unknown> {
+	return [
+		(n) => numbers(Math.ceil(n / 6)),
+		(n) => Array.from({ length: Math.ceil(n / 24) }, (_, i) => ({ id: i, tag: 'ab' })),
+		(n) => Array.from({ length: Math.ceil(n / 67) }, () => text(64))
+	];
+}
+
+/** Input shapes for the built-ins with size terms: each a function of n. */
+function shaped(makes: Array<(n: number) => BuiltinInput>): InputMaker {
+	return { make: (n, shape = 0) => makes[shape](n), shapes: makes.length };
+}
+
+// The line break regex a JavaScript parser splits source code by.
+const LINE_BREAK = new RegExp('\\r\\n?|\\n|\\u2028|\\u2029');
+const DENSITIES = [2, 8, 32, 256];
 
 function numbers(n: number): number[] {
 	// a fixed shuffle: sorting work does not depend on the seed
@@ -50,6 +81,18 @@ const str = (args: (n: number) => unknown[] = () => []): InputMaker => ({
 	make: (n) => ({ self: text(n), args: args(n) })
 });
 
+/** Strings of `n` characters with a comma every `d`, replaced by a string, then by a callback. */
+function replacing(pattern: unknown): InputMaker {
+	const every = [2, 16, 128];
+	return shaped([
+		...every.map((d) => (n: number) => ({ self: separated(n, d), args: [pattern, ';'] })),
+		...every.map((d) => (n: number) => ({
+			self: separated(n, d),
+			args: [pattern, (m: string) => m + ';']
+		}))
+	]);
+}
+
 export const INPUTS: Record<string, InputMaker> = {
 	'Array.prototype.sort': arr(() => [(a: number, b: number) => a - b], true),
 	'Array.prototype.toSorted': arr(() => [(a: number, b: number) => a - b]),
@@ -71,16 +114,29 @@ export const INPUTS: Record<string, InputMaker> = {
 	'Array.prototype.indexOf': arr(() => [-1]),
 	'Array.prototype.lastIndexOf': arr(() => [-1]),
 	'Array.prototype.includes': arr(() => [-1]),
-	'Array.prototype.join': arr(() => [',']),
+	// numbers, then strings of 8 and 64 characters: elements and characters apart
+	'Array.prototype.join': shaped([
+		(n) => ({ self: numbers(n), args: [','] }),
+		(n) => ({ self: Array.from({ length: Math.ceil(n / 8) }, () => 'abcdefgh'), args: [','] }),
+		(n) => ({ self: Array.from({ length: Math.ceil(n / 64) }, () => text(64)), args: [','] })
+	]),
 	'Array.prototype.concat': arr((n) => [numbers(n)]),
 	'Array.prototype.reverse': arr(() => [], true),
 	'Array.prototype.fill': arr(() => [0], true),
-	'Array.from': { make: (n) => ({ self: Array, args: [numbers(n)] }) },
-	'String.prototype.split': str(() => [',']),
+	'Array.from': shaped([
+		(n) => ({ self: Array, args: [numbers(n)] }),
+		(n) => ({ self: Array, args: [numbers(n), (x: number) => x + 1] })
+	]),
+	// the same characters cut into many parts or few, by a string and by a regex
+	'String.prototype.split': shaped([
+		...DENSITIES.map((d) => (n: number) => ({ self: separated(n, d), args: [','] })),
+		...[8, 64].map((d) => (n: number) => ({ self: separated(n, d, '\n'), args: [LINE_BREAK] }))
+	]),
 	'String.prototype.slice': str(() => [0]),
 	'String.prototype.substring': str(() => [0]),
-	'String.prototype.replace': str(() => [/a/g, 'z']),
-	'String.prototype.replaceAll': str(() => ['a', 'z']),
+	// few matches or many, replaced by a string or by a callback
+	'String.prototype.replace': replacing(/,/g),
+	'String.prototype.replaceAll': replacing(','),
 	'String.prototype.indexOf': str(() => ['#']),
 	'String.prototype.includes': str(() => ['#']),
 	'String.prototype.startsWith': { make: (n) => ({ self: text(n), args: [text(n)] }) },
@@ -91,14 +147,17 @@ export const INPUTS: Record<string, InputMaker> = {
 	'String.prototype.repeat': { make: (n) => ({ self: 'a', args: [n] }) },
 	'String.prototype.padStart': { make: (n) => ({ self: 'a', args: [n] }) },
 	'String.prototype.padEnd': { make: (n) => ({ self: 'a', args: [n] }) },
-	'String.prototype.match': str(() => [/a/g]),
+	'String.prototype.match': shaped(
+		[2, 16, 128].map((d) => (n: number) => ({ self: separated(n, d), args: [/,/g] }))
+	),
 	'String.prototype.matchAll': str(() => [/a/g]),
 	'RegExp.prototype.exec': { make: (n) => ({ self: /#/, args: [text(n)] }) },
 	'RegExp.prototype.test': { make: (n) => ({ self: /#/, args: [text(n)] }) },
-	'JSON.stringify': { make: (n) => ({ self: JSON, args: [numbers(Math.ceil(n / 6))] }) },
-	'JSON.parse': {
-		make: (n) => ({ self: JSON, args: [JSON.stringify(numbers(Math.ceil(n / 6)))] })
-	},
+	// numbers, small records and long strings: values and characters apart
+	'JSON.stringify': shaped(json_shapes().map((v) => (n: number) => ({ self: JSON, args: [v(n)] }))),
+	'JSON.parse': shaped(
+		json_shapes().map((v) => (n: number) => ({ self: JSON, args: [JSON.stringify(v(n))] }))
+	),
 	structuredClone: { make: (n) => ({ self: globalThis, args: [numbers(n)] }) },
 	'Object.keys': { make: (n) => ({ self: Object, args: [record(n)] }) },
 	'Object.values': { make: (n) => ({ self: Object, args: [record(n)] }) },

@@ -3,10 +3,16 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fn_of, load_module, loader_root, measure, write_files } from './helpers.ts';
-import { builtin_cost, load_prices } from '../src/prices.ts';
+import { SIZE_TERMS, builtin_cost, load_prices } from '../src/prices.ts';
+import type { SizeTerm } from '../src/prices.ts';
 
 const { prices } = load_prices();
-const cost = (key: string, n: number) => builtin_cost(prices.builtins[key], n);
+const cost = (key: string, n: number, terms: Partial<Record<SizeTerm, number>> = {}) =>
+	builtin_cost(
+		prices.builtins[key],
+		n,
+		SIZE_TERMS.map((t) => terms[t] ?? 0)
+	);
 
 test('built-ins are priced by size and charged to their call line', async () => {
 	const m = await load_module(`export function sorter(xs: number[]) {
@@ -32,10 +38,48 @@ test('built-ins are priced by size and charged to their call line', async () => 
 	);
 	assert.equal(by.get('slice')!.steps, cost('Array.prototype.slice', 8));
 	assert.equal(by.get('sort')!.steps, cost('Array.prototype.sort', 8));
-	assert.equal(by.get('join')!.steps, cost('Array.prototype.join', 8 + joined.length));
+	assert.equal(
+		by.get('join')!.steps,
+		cost('Array.prototype.join', 8 + joined.length, { items: 8 })
+	);
 	assert.ok(fn_of(r, 'sorter > sort:0').calls > 0, 'the comparator is counted as code');
 	const line3 = f.lines.find((l) => l.line === 3)!;
 	assert.ok(line3.steps >= cost('Array.prototype.sort', 8));
+});
+
+test('size terms: what a built-in cuts, matches, calls back, builds and converts is kept per call', async () => {
+	const m = await load_module(`export function terms(s: string, xs: number[]) {
+	const parts = s.split(',');
+	const all = s.replace(/,/g, ';');
+	const one = s.replace(',', ';');
+	const called = s.replaceAll(',', (c) => c + c);
+	const found = s.match(/,/g);
+	const joined = xs.join('-');
+	const tree = JSON.parse('{"a":[1,2,{"b":"c"}]}');
+	const text = JSON.stringify({ a: [1, 2] });
+	const mapped = Array.from(xs, (x) => x * 2);
+	const copied = Array.from(xs);
+	return [parts, all, one, called, found, joined, tree, text, mapped, copied];
+}
+`);
+	const r = await measure(() => m.terms('a,b,c,d' as never, [1, 2, 3] as never), true);
+	const u = fn_of(r, 'terms').units!;
+	const term = (key: string, t: string) => u[`bi.${key}.${t}`] ?? 0;
+	assert.equal(term('String.prototype.split', 'parts'), 4);
+	assert.equal(
+		term('String.prototype.replace', 'matches'),
+		3 + 1,
+		'a global regex: 3; a string: once'
+	);
+	assert.equal(term('String.prototype.replace', 'callbacks'), 0);
+	assert.equal(term('String.prototype.replaceAll', 'matches'), 3);
+	assert.equal(term('String.prototype.replaceAll', 'callbacks'), 3);
+	assert.equal(term('String.prototype.match', 'matches'), 3);
+	assert.equal(term('Array.prototype.join', 'items'), 3);
+	// the object, the array, two numbers, the inner object and its string
+	assert.equal(term('JSON.parse', 'values'), 6);
+	assert.equal(term('JSON.stringify', 'values'), 4);
+	assert.equal(term('Array.from', 'callbacks'), 3, 'the mapFn, not the copy');
 });
 
 test('calls from uninstrumented code are free; nested built-ins are charged once', async () => {

@@ -4,6 +4,8 @@ import type { Prices } from '../prices.ts';
 import { agreement, point_times, read_points } from './points.ts';
 import type { Agreement, PointSet } from './points.ts';
 import { FEATURES, features_of, fit_weights } from './weights.ts';
+import { INPUTS, builtin_function } from './inputs.ts';
+import { builtin_size, builtin_terms } from '../runtime/builtins.ts';
 
 /*
  * `heisenbench calibrate agree a b`: is the machine quiet enough to calibrate on? Two measurements taken
@@ -51,10 +53,29 @@ function predictions(fit_on: PointSet, over: PointSet): Map<string, number> {
 	return out;
 }
 
+/**
+ * Each built-in's price at each size; a built-in with size terms at each of its calibration
+ * shapes too (its sizes measured on the calibration input), so a moved term price shows.
+ */
 function price_costs(p: Prices): Map<string, number> {
 	const out = new Map<string, number>();
 	for (const [key, price] of Object.entries(p.builtins)) {
-		for (const n of SIZES) out.set(`${key} @${n}`, builtin_cost(price, n));
+		const input = INPUTS[key];
+		const fn = builtin_function(key);
+		const shapes = input && fn && (input.shapes ?? 1) > 1 ? input.shapes! : 0;
+		for (const n of SIZES) {
+			if (shapes === 0) {
+				out.set(`${key} @${n}`, builtin_cost(price, n));
+				continue;
+			}
+			for (let shape = 0; shape < shapes; shape++) {
+				const s = input!.make(n, shape);
+				const result = Reflect.apply(fn!, s.self, s.args);
+				const size = builtin_size(key, s.self, s.args, result);
+				const terms = builtin_terms(key, s.self, s.args, result);
+				out.set(`${key} @${n} #${shape}`, builtin_cost(price, size, terms));
+			}
+		}
 	}
 	return out;
 }

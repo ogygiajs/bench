@@ -104,8 +104,11 @@ export async function calibrate_prices(o: CalibratePricesOptions = {}): Promise<
 		const pts = points.filter((p) => p.key === key);
 		if (pts.length === 0) continue;
 		fits[key] = fit_curve(pts);
+		const terms = Object.entries(fits[key].terms_ns ?? {})
+			.map(([t, ns]) => `, ${t} ${ns.toFixed(3)} ns`)
+			.join('');
 		o.log?.(
-			`${key}: ${fits[key].model} base ${fits[key].base_ns.toFixed(1)} ns, k ${fits[key].k_ns.toFixed(3)} ns (R^2 ${fits[key].r2.toFixed(3)})`
+			`${key}: ${fits[key].model} base ${fits[key].base_ns.toFixed(1)} ns, k ${fits[key].k_ns.toFixed(3)} ns${terms} (R^2 ${fits[key].r2.toFixed(3)})`
 		);
 	}
 	const out = o.out ?? DEFAULT_PRICES_PATH;

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { BUILTIN_UNIT_SHIFT, EDGE_KEY_SHIFT } from './runtime/index.ts';
+import { BUILTIN_SLOTS, BUILTIN_UNIT_SHIFT, EDGE_KEY_SHIFT } from './runtime/index.ts';
 import type { Runtime, Snapshot } from './runtime/index.ts';
 import { OP_KINDS, op_price_vector } from './prices.ts';
 import { BUILTIN_TERMS, DYNAMIC_PRICE, add_unit, add_units, op_units } from './units.ts';
@@ -125,6 +125,11 @@ export interface Report {
 	/** `prefix`: the run root relative to the git top level (module ids are relative to the root). */
 	git: { sha: string | null; prefix: string };
 	cases: CaseReport[];
+	/**
+	 * The built-in size terms its units keep (prices.ts SIZE_TERMS, `parts`...). Absent: a report
+	 * from before they were kept, which cannot be recounted with a price that uses one (recount.ts).
+	 */
+	unit_terms?: string[];
 	/** Bench files that did not load (a syntax error, a throw at the top): none of their cases ran. */
 	load_errors?: LoadError[];
 	/** `heisenbench health`: what V8 did with the uninstrumented code (spec 5). */
@@ -215,8 +220,8 @@ function builtin_units(rt: Runtime, t: Record<string, number>): Map<number, Unit
 	const out = new Map<number, Units>();
 	for (const key of Object.keys(t)) {
 		const k = Number(key);
-		const term = k % 4;
-		const unit_key = (k - term) / 4;
+		const term = k % BUILTIN_SLOTS;
+		const unit_key = (k - term) / BUILTIN_SLOTS;
 		const owner = Math.floor(unit_key / BUILTIN_UNIT_SHIFT);
 		const name = rt.bkeys[unit_key % BUILTIN_UNIT_SHIFT];
 		if (name === undefined) continue;
