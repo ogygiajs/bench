@@ -1,0 +1,8 @@
+import { bench } from 'HEISENBENCH_BENCH';
+import { rank } from './lib.ts';
+
+bench('rank', ({ rows }) => rank(rows), {
+	setup: () => ({
+		rows: Array.from({ length: 20 }, (_, i) => ({ id: i, tags: ['a' + i, 'bb', 'c' + i] }))
+	})
+});

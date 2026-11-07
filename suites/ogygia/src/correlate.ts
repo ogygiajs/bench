@@ -8,13 +8,13 @@
  *
  * Every first-parent commit in from..to that touches the source of a package with bench files is
  * one pair: the commit against its parent. The bench files of `--bench` (default `--to`) are laid
- * over both trees (with internal/abax and the unit-test stubs they load), so one fixed set of cases
+ * over both trees (with internal/heisenbench and the unit-test stubs they load), so one fixed set of cases
  * measures every commit; a case whose code did not exist yet fails to load on that side and is
  * left out. Per pair:
  *
  *   steps   every bench file counted on both trees (exact: one run a side)
  *   time    the bench files whose import graph reaches a changed file, timed on the plain build,
- *           both trees in one process taking turns (`abax time`, `--repeats` rounds), judged by the
+ *           both trees in one process taking turns (`heisenbench time`, `--repeats` rounds), judged by the
  *           same no-overlap noise rule PR comments use
  *
  * Measuring writes `<out>/pairs/<sha>/` (reports, time comparison) and skips pairs already there,
@@ -36,15 +36,15 @@ import {
 import { cpus, platform, release } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { loadPrices, recount } from '@bench/abax';
-import type { Report, TimeComparison } from '@bench/abax';
+import { loadPrices, recount } from '@bench/heisenbench';
+import type { Report, TimeComparison } from '@bench/heisenbench';
 import { changed_files, clone, prepare_tree, remove_tree, rev_parse } from './checkout.ts';
 import type { Tree } from './checkout.ts';
 import { import_graphs } from './graph.ts';
-import { ABAX_DIR, run_time, run_tree } from './run.ts';
+import { HEISENBENCH_DIR, run_time, run_tree } from './run.ts';
 import { is_shared, select_changed } from './select.ts';
 
-/** The time rule's floor (packages/abax TIME_RULES.p50_ns): a smaller step change is "unchanged". */
+/** The time rule's floor (packages/heisenbench TIME_RULES.p50_ns): a smaller step change is "unchanged". */
 export const STEPS_FLOOR_PCT = 3;
 
 export interface Row {
@@ -124,11 +124,11 @@ function bench_packages(repo: string, rev: string): string[] {
 		.filter((p) => p && git(repo, ['ls-tree', '--name-only', rev, `packages/${p}/bench`]) !== '');
 }
 
-/** Lay the bench files of `rev` (and what they load) over a tree, and link Abax into it. */
+/** Lay the bench files of `rev` (and what they load) over a tree, and link Heisenbench into it. */
 function overlay(repo: string, rev: string, tree: Tree, packages: string[]): Tree {
 	const paths = [
 		...packages.map((p) => `packages/${p}/bench`),
-		'internal/abax',
+		'internal/heisenbench',
 		'packages/core/test/_stubs'
 	];
 	const tar = execFileSync('git', ['archive', '--format=tar', rev, '--', ...paths], {
@@ -136,10 +136,10 @@ function overlay(repo: string, rev: string, tree: Tree, packages: string[]): Tre
 		maxBuffer: 1 << 28
 	});
 	execFileSync('tar', ['-x', '-C', tree.dir], { input: tar });
-	const link = join(tree.dir, 'node_modules', '@bench', 'abax');
+	const link = join(tree.dir, 'node_modules', '@bench', 'heisenbench');
 	mkdirSync(dirname(link), { recursive: true });
 	rmSync(link, { force: true, recursive: true });
-	symlinkSync(relative(dirname(link), ABAX_DIR), link, 'dir');
+	symlinkSync(relative(dirname(link), HEISENBENCH_DIR), link, 'dir');
 	const benches = packages
 		.flatMap((p) =>
 			readdirSync(join(tree.dir, 'packages', p, 'bench'))
@@ -147,7 +147,7 @@ function overlay(repo: string, rev: string, tree: Tree, packages: string[]): Tre
 				.map((f) => `packages/${p}/bench/${f}`)
 		)
 		.sort();
-	return { ...tree, benches, preload: join(tree.dir, 'internal', 'abax', 'src', 'preload.ts') };
+	return { ...tree, benches, preload: join(tree.dir, 'internal', 'heisenbench', 'src', 'preload.ts') };
 }
 
 interface PairMeta {
@@ -216,13 +216,13 @@ async function measure(values: Record<string, string | boolean | undefined>): Pr
 		const base = overlay(
 			repo,
 			bench_rev,
-			prepare_tree(repo, work, parent, ABAX_DIR, log),
+			prepare_tree(repo, work, parent, HEISENBENCH_DIR, log),
 			packages
 		);
 		const head = overlay(
 			repo,
 			bench_rev,
-			prepare_tree(repo, work, commit, ABAX_DIR, log),
+			prepare_tree(repo, work, commit, HEISENBENCH_DIR, log),
 			packages
 		);
 		const b = await run_tree(base, base.benches, join(dir, 'base'), log, null, ['run']);

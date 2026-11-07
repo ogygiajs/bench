@@ -207,7 +207,9 @@ importers:
         specifier: 'catalog:'
         version: 1.91.0
 
-  packages/abax:
+  packages/compare: {}
+
+  packages/heisenbench:
     dependencies:
       '@jridgewell/remapping':
         specifier: 2.3.5
@@ -250,16 +252,14 @@ importers:
         specifier: 6.0.3
         version: 6.0.3
 
-  packages/compare: {}
-
   suites/apps:
     dependencies:
-      '@bench/abax':
-        specifier: workspace:abax@*
-        version: link:../../packages/abax
       '@bench/compare':
         specifier: workspace:*
         version: link:../../packages/compare
+      '@bench/heisenbench':
+        specifier: workspace:heisenbench@*
+        version: link:../../packages/heisenbench
       autocannon:
         specifier: catalog:measure
         version: 8.0.0
@@ -279,12 +279,12 @@ importers:
 
   suites/ogygia:
     dependencies:
-      '@bench/abax':
-        specifier: workspace:abax@*
-        version: link:../../packages/abax
       '@bench/compare':
         specifier: workspace:*
         version: link:../../packages/compare
+      '@bench/heisenbench':
+        specifier: workspace:heisenbench@*
+        version: link:../../packages/heisenbench
       oxc-parser:
         specifier: 'catalog:'
         version: 0.157.0

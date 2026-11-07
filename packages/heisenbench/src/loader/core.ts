@@ -1,0 +1,176 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { sep } from 'node:path';
+import {
+	VIRTUAL_PREFIX,
+	compile_svelte,
+	inline_map,
+	is_svelte_module,
+	is_ts,
+	module_id,
+	transform,
+	ts_to_js
+} from '../transform/index.ts';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
+import { load_prices } from '../prices.ts';
+import { OWN_DIR } from '../own.ts';
+
+export interface LoaderConfig {
+	/** Report paths are relative to this directory. */
+	root: string;
+	/**
+	 * Instrument dependencies too: true for every package in node_modules, or a list of package
+	 * names. Default false.
+	 */
+	deps?: boolean | string[];
+	/** Path substrings that are never instrumented. Default: bench files (`.bench.`). */
+	exclude?: string[];
+	/** Svelte output for .svelte files. Default 'server'. */
+	svelte?: 'server' | 'client';
+	/** Append the `__heisenbench` export of private bindings. Default true. */
+	expose?: boolean;
+}
+
+const HEISENBENCH_DIR = OWN_DIR;
+/** Query parameter of a fresh module graph (`?heisenbench_gen=3`). */
+export const GENERATION = 'heisenbench_gen=';
+const EXTENSIONS = ['.js', '.mjs', '.ts', '.mts', '.svelte'];
+
+function package_name(path: string): string | null {
+	const marker = `${sep}node_modules${sep}`;
+	const at = path.lastIndexOf(marker);
+	if (at === -1) return null;
+	const rest = path.slice(at + marker.length).split(sep);
+	return rest[0].startsWith('@') ? `${rest[0]}/${rest[1]}` : rest[0];
+}
+
+/** What both loader flavours (registerHooks in-thread, module.register off-thread) share. */
+export class LoaderCore {
+	config: LoaderConfig;
+	virtual = new Map<string, string>();
+	prices = load_prices();
+
+	constructor(config: LoaderConfig) {
+		this.config = config;
+	}
+
+	should_instrument(url: string): boolean {
+		if (!url.startsWith('file:')) return false;
+		const path = fileURLToPath(url);
+		if (path.startsWith(HEISENBENCH_DIR)) return false;
+		if (path.endsWith('.d.ts')) return false;
+		if (!EXTENSIONS.some((e) => path.endsWith(e))) return false;
+		for (const x of this.config.exclude ?? ['.bench.']) if (path.includes(x)) return false;
+		const pkg = package_name(path);
+		if (pkg !== null) {
+			const deps = this.config.deps ?? false;
+			if (deps === false) return false;
+			if (Array.isArray(deps) && !deps.includes(pkg)) return false;
+		}
+		return true;
+	}
+
+	is_virtual(specifier: string): boolean {
+		return specifier.startsWith(VIRTUAL_PREFIX);
+	}
+
+	/**
+	 * Fresh module state (fresh.ts): a module imported with `?heisenbench_gen=N` passes the same query to
+	 * every file it imports, so the whole graph is a new copy with its own module state. Heisenbench's own
+	 * files and Node built-ins stay shared. The counter modules are keyed by file, not URL: every
+	 * copy of a file counts into the same counters.
+	 */
+	with_generation(url: string, parent: string | undefined): string {
+		if (!parent || !url.startsWith('file:')) return url;
+		const q = parent.indexOf('?');
+		const at = q === -1 ? -1 : parent.indexOf(GENERATION, q);
+		if (at === -1 || url.includes(GENERATION)) return url;
+		if (fileURLToPath(url).startsWith(HEISENBENCH_DIR)) return url;
+		const end = parent.indexOf('&', at);
+		const gen = parent.slice(at, end === -1 ? undefined : end);
+		return url + (url.includes('?') ? '&' : '?') + gen;
+	}
+
+	virtual_source(url: string): string {
+		const src = this.virtual.get(url);
+		if (src === undefined) throw new Error(`heisenbench: unknown counter module ${url}`);
+		return src;
+	}
+
+	/**
+	 * True when the load hook must read the file itself: the default loader rejects .svelte, and
+	 * strips TypeScript only (it throws on an `enum` before a hook sees the source).
+	 */
+	needs_own_read(url: string): boolean {
+		return (
+			url.startsWith('file:') &&
+			(fileURLToPath(url).endsWith('.svelte') || this.is_plain_typescript(url))
+		);
+	}
+
+	read(url: string): string {
+		return readFileSync(fileURLToPath(url), 'utf8');
+	}
+
+	/**
+	 * A TypeScript ES module this loader reads itself although it is not counted (a bench file):
+	 * Node's own loader strips types only, and an `enum` in a bench file must not stop the run.
+	 * Packages in node_modules are left to Node (it does not strip types there at all).
+	 */
+	is_plain_typescript(url: string): boolean {
+		if (!url.startsWith('file:')) return false;
+		const path = fileURLToPath(url);
+		return (
+			(path.endsWith('.ts') || path.endsWith('.mts')) &&
+			!path.endsWith('.d.ts') &&
+			package_name(path) === null
+		);
+	}
+
+	/** That module as JS: types stripped, or compiled when stripping cannot run it. */
+	plain_typescript(url: string): string {
+		const out = ts_to_js(this.read(url), fileURLToPath(url));
+		return out.map === null ? out.code : out.code + inline_map(out.map as object);
+	}
+
+	/** Instrument loaded source. Returns null when the module stays as it is (CommonJS, JSON...). */
+	instrument(url: string, source: string, format: string | null | undefined): string | null {
+		const filename = fileURLToPath(url);
+		// Fresh copies of a module (with_generation) load the same file again: transform it once.
+		const cached = this.#done.get(filename);
+		if (cached && cached.source === source && cached.format === format) return cached.code;
+		const code = this.#instrument(filename, source, format);
+		this.#done.set(filename, { source, format, code });
+		return code;
+	}
+
+	#done = new Map<
+		string,
+		{ source: string; format: string | null | undefined; code: string | null }
+	>();
+
+	#instrument(filename: string, source: string, format: string | null | undefined): string | null {
+		let code = source;
+		let input_map: SourceMapInput | null = null;
+		if (is_svelte_module(filename)) {
+			const out = compile_svelte(source, filename, this.config.svelte ?? 'server');
+			code = out.code;
+			input_map = out.map;
+		} else if (format === 'module-typescript' || (format == null && is_ts(filename))) {
+			const out = ts_to_js(source, filename);
+			code = out.code;
+			input_map = out.map;
+		} else if (format !== 'module') {
+			return null;
+		}
+		const r = transform(code, {
+			filename,
+			id: module_id(filename, this.config.root),
+			input_map,
+			expose: this.config.expose,
+			prices: this.prices
+		});
+		this.virtual.set(r.specifier, r.virtual);
+		return r.code + inline_map(r.map);
+	}
+}

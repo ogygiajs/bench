@@ -42,7 +42,7 @@ test('nothing reached, nothing runs', () => {
 });
 
 test('the lockfile or the bench harness changing runs every bench file', () => {
-	for (const changed of ['pnpm-lock.yaml', 'internal/abax/src/preload.ts']) {
+	for (const changed of ['pnpm-lock.yaml', 'internal/heisenbench/src/preload.ts']) {
 		const s = select_changed(graphs, [changed]);
 		assert.equal(s.mode, 'all');
 		assert.equal(s.selected.length, 2);

@@ -1,6 +1,6 @@
 /**
  * A child process in a process group of its own, so a time limit stops everything it started.
- * Abax spawns children of its own (the engine-health and measure children); `spawnSync`'s
+ * Heisenbench spawns children of its own (the engine-health and measure children); `spawnSync`'s
  * `timeout` kills only the direct child and leaves those running, holding the CPU the next
  * command measures on, and its pipes open.
  *

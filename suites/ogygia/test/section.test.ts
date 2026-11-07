@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REPORT_SCHEMA, diffReports } from '@bench/abax';
-import type { CaseReport, Report } from '@bench/abax';
+import { REPORT_SCHEMA, diffReports } from '@bench/heisenbench';
+import type { CaseReport, Report } from '@bench/heisenbench';
 import { parseComment, upsertSection } from '@bench/compare';
 import { merge_reports } from '../src/run.ts';
 import {
@@ -49,7 +49,7 @@ function result(over: Partial<Result>): Result {
 			sha: 'a'.repeat(40),
 			base: 'b'.repeat(40),
 			merge_base: 'c'.repeat(40),
-			abax: null,
+			heisenbench: null,
 			node: 'v26',
 			run_url: 'https://example.test/run/1',
 			measure: null
@@ -68,12 +68,12 @@ test('a PR that reaches no bench file says so, with the run link, and fits the c
 	const md = render_pr_section(result({}));
 	assert.ok(md.startsWith(HEADING + '\n'));
 	assert.match(md, /No bench file reaches the files this PR changes \(1 bench file checked/);
-	assert.match(md, /\[Abax run\]\(https:\/\/example\.test\/run\/1\)/);
-	// the shared comment takes it as its abax section
-	const body = upsertSection(null, 'abax', md);
+	assert.match(md, /\[Heisenbench run\]\(https:\/\/example\.test\/run\/1\)/);
+	// the shared comment takes it as its heisenbench section
+	const body = upsertSection(null, 'heisenbench', md);
 	assert.deepEqual(
 		parseComment(body).map((s) => s.name),
-		['abax']
+		['heisenbench']
 	);
 });
 
@@ -102,7 +102,7 @@ test('the time layer’s table follows the steps; a failed time layer says so', 
 			selection: sel,
 			time: {
 				comparison: {
-					schema: 'abax-time/1',
+					schema: 'heisenbench-time/1',
 					repeats: 5,
 					node: 'v26',
 					cases: [{ name: 'c' } as never],

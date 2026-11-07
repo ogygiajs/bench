@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * Abax on ogygia: count the bench files of an ogygia commit, against its base for a PR.
+ * Heisenbench on ogygia: count the bench files of an ogygia commit, against its base for a PR.
  *
  *   node suites/ogygia/src/cli.ts --sha <pr head> --base <pr base> [--pr <n>]    a PR
  *   node suites/ogygia/src/cli.ts --sha <commit> [--kind main]                   a full run
  *
  * Options: --repo <url or path> (default the ogygia repository), --work <dir> (clones and trees,
  * default .work), --out <dir> (default out), --run-url <url> (linked from the comment),
- * --measure <layers> (the plain-build layers every `abax run` adds: `time,bytes,leaks`, `all` or
+ * --measure <layers> (the plain-build layers every `heisenbench run` adds: `time,bytes,leaks`, `all` or
  * `none`; default none for a PR, all for a full run), --time on|off (a PR's time layer, default on),
  * --weights <app-weights.json> (a PR: rank the changed functions by main's real-app weights; a
  * missing file is said in one line), --search-budget <seconds> (a PR's worst-case search over the
@@ -20,17 +20,17 @@
  * unless --measure asks. A full run (no --base): every bench file of the one commit, with every
  * plain-build layer. Writes to --out:
  *
- *   section.md    the `abax` section of the PR comment (a full run: a summary of every case)
+ *   section.md    the `heisenbench` section of the PR comment (a full run: a summary of every case)
  *   result.json   meta, selection, both reports, the diff and the time comparison (the results
  *                 branch keeps this)
- *   head/, base/  the per-file reports and Abax's log; time/ the time comparison (the artifact)
+ *   head/, base/  the per-file reports and Heisenbench's log; time/ the time comparison (the artifact)
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { diffReports, diffSections, gitDiff } from '@bench/abax';
+import { diffReports, diffSections, gitDiff } from '@bench/heisenbench';
 import {
 	changed_files,
 	clone,
@@ -39,7 +39,7 @@ import {
 	rev_parse
 } from './checkout.ts';
 import { import_graphs } from './graph.ts';
-import { ABAX_DIR, empty_report, run_time, run_tree } from './run.ts';
+import { HEISENBENCH_DIR, empty_report, run_time, run_tree } from './run.ts';
 import { RESULT_SCHEMA, render_full_summary, render_pr_section } from './section.ts';
 import type { Meta, Result } from './section.ts';
 import { SEARCH_BUDGET_MS, cases_with_inputs, pick_cases, run_searches } from './search.ts';
@@ -66,11 +66,11 @@ const { values } = parseArgs({
 const LAYERS = /^(all|none|(time|bytes|leaks)(,(time|bytes|leaks))*)$/;
 
 const SHA = /^[0-9a-f]{7,40}$/;
-const log = (line: string): void => console.log(`[abax] ${line}`);
+const log = (line: string): void => console.log(`[heisenbench] ${line}`);
 
 function bench_repo_sha(): string | null {
 	try {
-		return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ABAX_DIR, encoding: 'utf8' }).trim();
+		return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: HEISENBENCH_DIR, encoding: 'utf8' }).trim();
 	} catch {
 		return null;
 	}
@@ -102,13 +102,13 @@ async function main(): Promise<void> {
 		sha,
 		base,
 		merge_base: mb,
-		abax: bench_repo_sha(),
+		heisenbench: bench_repo_sha(),
 		node: process.version,
 		run_url: values['run-url'] ?? null,
 		measure
 	};
 
-	const head = prepare_tree(repo, work, sha, ABAX_DIR, log);
+	const head = prepare_tree(repo, work, sha, HEISENBENCH_DIR, log);
 	let selection;
 	if (mb) {
 		const changed = changed_files(repo, mb, sha);
@@ -136,7 +136,7 @@ async function main(): Promise<void> {
 		// Both trees side by side, each on half the cores (one at a time when measuring time). Engine
 		// health checks that V8 does the same thing twice everywhere, PRs included: only that check
 		// can mark a function unstable, and an unstable one is never a finding in the comment.
-		const base_tree = mb ? prepare_tree(repo, work, mb, ABAX_DIR, log) : null;
+		const base_tree = mb ? prepare_tree(repo, work, mb, HEISENBENCH_DIR, log) : null;
 		const present = new Set(base_tree?.benches ?? []);
 		const base_files = selection.selected.filter((f) => present.has(f));
 		const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));

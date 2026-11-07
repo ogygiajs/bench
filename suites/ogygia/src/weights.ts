@@ -1,20 +1,20 @@
 /**
  * Real-app weights on a PR: the changed functions ranked by what they cost the real apps per unit
  * of work (a request, a page load, an interaction), from the weights the newest main run counted
- * in the app scenarios (`abax/main/app-weights.json` on the results branch).
+ * in the app scenarios (`heisenbench/main/app-weights.json` on the results branch).
  *
  * The weights carry the environment they were counted in. Steps per call move with the Node
  * version, so weights from another environment than the PR's counts are not used: the section
  * says so in one line instead of ranking.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { envMismatch, environment } from '@bench/abax';
-import type { DiffResult, Environment, Report } from '@bench/abax';
-import { WEIGHTS_SCHEMA, build_weights, rank_changes } from '@bench/abax/weight';
-import type { AppWeights, RankedChange } from '@bench/abax/weight';
-import type { AppReport } from '@bench/abax/app';
+import { envMismatch, environment } from '@bench/heisenbench';
+import type { DiffResult, Environment, Report } from '@bench/heisenbench';
+import { WEIGHTS_SCHEMA, build_weights, rank_changes } from '@bench/heisenbench/weight';
+import type { AppWeights, RankedChange } from '@bench/heisenbench/weight';
+import type { AppReport } from '@bench/heisenbench/app';
 
-/** Weights as the main run stores them: Abax's file plus where they were counted. */
+/** Weights as the main run stores them: Heisenbench's file plus where they were counted. */
 export type StoredWeights = AppWeights & { env?: Environment; node?: string };
 
 /** Ranked changes kept in result.json. */
@@ -101,7 +101,7 @@ export function rank_by_weights(path: string, diff: DiffResult, head: Report): W
 }
 
 /**
- * The weights a main run stores: Abax's `build_weights` over the counted app reports, labelled
+ * The weights a main run stores: Heisenbench's `build_weights` over the counted app reports, labelled
  * with the commit and stamped with the environment that counted them (this process: the same
  * job, right after the count).
  */

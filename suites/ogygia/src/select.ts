@@ -1,7 +1,7 @@
 /**
  * Which bench files a PR runs: those whose import graph reaches a file the PR changed. A change to
  * what every run shares (the lockfile, the workspace, the root package.json and tsconfig, the bench
- * harness in internal/abax) runs them all. A main push or the nightly run runs them all too
+ * harness in internal/heisenbench) runs them all. A main push or the nightly run runs them all too
  * (`select_all`).
  *
  * A manifest (`package.json`, `tsconfig*.json`) is in no import graph, yet it decides how the
@@ -13,7 +13,7 @@
 
 /** Changed paths that run every bench file. */
 const EVERYTHING = ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', '.npmrc'];
-const EVERYTHING_UNDER = ['internal/abax/'];
+const EVERYTHING_UNDER = ['internal/heisenbench/'];
 /** A tsconfig at the root. */
 const ROOT_TSCONFIG = /^tsconfig[^/]*\.json$/;
 /** A manifest anywhere: the directory before it is its scope. */

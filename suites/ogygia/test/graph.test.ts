@@ -29,7 +29,7 @@ const computed = (x: string) => import('./h' + x);
 });
 
 function tree(files: Record<string, string>): string {
-	const root = mkdtempSync(join(tmpdir(), 'abax-graph-'));
+	const root = mkdtempSync(join(tmpdir(), 'heisenbench-graph-'));
 	for (const [path, text] of Object.entries(files)) {
 		mkdirSync(dirname(join(root, path)), { recursive: true });
 		writeFileSync(join(root, path), text);

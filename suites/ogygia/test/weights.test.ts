@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { REPORT_SCHEMA, environment } from '@bench/abax';
-import type { DiffResult, Report } from '@bench/abax';
-import type { AppReport } from '@bench/abax/app';
+import { REPORT_SCHEMA, environment } from '@bench/heisenbench';
+import type { DiffResult, Report } from '@bench/heisenbench';
+import type { AppReport } from '@bench/heisenbench/app';
 import { main_weights, rank_by_weights } from '../src/weights.ts';
 import type { StoredWeights } from '../src/weights.ts';
 import { weight_lines } from '../src/section.ts';
@@ -49,7 +49,7 @@ function diff_of(changes: Array<[string, string, number]>): DiffResult {
 
 function stored(over: Partial<StoredWeights> = {}): StoredWeights {
 	return {
-		schema: 'abax-app-weights/1',
+		schema: 'heisenbench-app-weights/1',
 		source: { sha: 'b'.repeat(40), ogygia: {}, scenarios: ['dashboard'] },
 		units: { 'dashboard server request': { steps: 1_000_000, units: 4, side: 'server' } },
 		functions: {

@@ -1,10 +1,10 @@
 /**
- * Abax on one tree: every bench file in its own processes (one bad file costs only its own cases),
- * each counted (`abax run`: exact, so once per commit, with the plain-build layers asked for), then
- * engine health (`abax health`) and growth for the cases that declare a scaler (`abax growth
+ * Heisenbench on one tree: every bench file in its own processes (one bad file costs only its own cases),
+ * each counted (`heisenbench run`: exact, so once per commit, with the plain-build layers asked for), then
+ * engine health (`heisenbench health`) and growth for the cases that declare a scaler (`heisenbench growth
  * --scaled on`). The reports of all files are merged into one report per tree.
  *
- * And the time layer across two trees: `abax time` loads both in one process and times them in
+ * And the time layer across two trees: `heisenbench time` loads both in one process and times them in
  * turns, judged by the bench repo's same-job noise rule.
  *
  * Where a PR run's time went (11 bench files, 15 min on a 4-core runner): per tree about 2 min of
@@ -18,14 +18,14 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'nod
 import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REPORT_SCHEMA, renderTime } from '@bench/abax';
-import type { CaseReport, EngineReport, GrowthReport, Report, TimeComparison } from '@bench/abax';
+import { REPORT_SCHEMA, renderTime } from '@bench/heisenbench';
+import type { CaseReport, EngineReport, GrowthReport, Report, TimeComparison } from '@bench/heisenbench';
 import type { Tree } from './checkout.ts';
 import { spawn_group } from './spawn.ts';
 import type { GroupResult } from './spawn.ts';
 
-export const ABAX_DIR = fileURLToPath(new URL('../../../packages/abax/', import.meta.url));
-export const ABAX_CLI = join(ABAX_DIR, 'src', 'cli.ts');
+export const HEISENBENCH_DIR = fileURLToPath(new URL('../../../packages/heisenbench/', import.meta.url));
+export const HEISENBENCH_CLI = join(HEISENBENCH_DIR, 'src', 'cli.ts');
 
 /**
  * ogygia's dependencies that do real work on the measured paths, counted like ogygia's own code
@@ -36,7 +36,7 @@ export const ABAX_CLI = join(ABAX_DIR, 'src', 'cli.ts');
  */
 export const COUNTED_DEPS = ['devalue', 'svelte', 'magic-string'];
 
-/** A bench file whose step never landed in its report (failed to load, or Abax crashed). */
+/** A bench file whose step never landed in its report (failed to load, or Heisenbench crashed). */
 export interface LoadError {
 	file: string;
 	command: Command | 'time';
@@ -67,7 +67,7 @@ const WRITES: Record<Command, 'cases' | 'engine' | 'growth'> = {
 export function node_options(tree: Tree): string {
 	const base = process.env.NODE_OPTIONS ?? '';
 	// The tree's preload maps the specifiers only Vite and Kit serve to stubs. NODE_OPTIONS (not an
-	// argument) so the processes Abax spawns itself (health and measure children) load it too.
+	// argument) so the processes Heisenbench spawns itself (health and measure children) load it too.
 	return tree.preload ? `${base} --import=${tree.preload}`.trim() : base;
 }
 
@@ -88,7 +88,7 @@ function tail_of(r: GroupResult): string {
 }
 
 /**
- * Why an Abax command's part cannot be trusted, or null when it can. Exit 0 is a clean run and
+ * Why an Heisenbench command's part cannot be trusted, or null when it can. Exit 0 is a clean run and
  * exit 1 is "a case failed" (the report holds that failure). Anything else, a signal or the time
  * limit means the process died: its part of the report may be from a layer that finished before
  * a later one crashed, so it is an error even when the part is there. A clean exit without its
@@ -111,7 +111,7 @@ export function command_error(
 	return null;
 }
 
-async function spawn_abax(
+async function spawn_heisenbench(
 	tree: Tree,
 	args: string[],
 	log_file: string,
@@ -119,19 +119,19 @@ async function spawn_abax(
 ): Promise<GroupResult> {
 	const r = await spawn_group(
 		process.execPath,
-		[ABAX_CLI, ...args],
+		[HEISENBENCH_CLI, ...args],
 		{ cwd: tree.dir, env: { ...process.env, NODE_OPTIONS: node_options(tree) } },
 		limit_min * 60_000
 	);
 	const end = r.timed_out
 		? `(killed after ${limit_min} min)`
 		: `(exit ${r.signal ?? r.status ?? r.error?.message})`;
-	appendFileSync(log_file, `$ abax ${args.join(' ')}\n${r.stdout}${r.stderr}\n${end}\n`);
+	appendFileSync(log_file, `$ heisenbench ${args.join(' ')}\n${r.stdout}${r.stderr}\n${end}\n`);
 	return r;
 }
 
-/** One Abax command on one bench file; the error text when its part never reached the report. */
-async function abax(
+/** One Heisenbench command on one bench file; the error text when its part never reached the report. */
+async function heisenbench(
 	tree: Tree,
 	command: Command,
 	file: string,
@@ -149,7 +149,7 @@ async function abax(
 				: command === 'health' && !check
 					? ['--check', 'off']
 					: [];
-	const r = await spawn_abax(
+	const r = await spawn_heisenbench(
 		tree,
 		[command, file, '--root', tree.dir, '--out', out, '--sha', tree.sha, ...extra],
 		log_file,
@@ -157,7 +157,7 @@ async function abax(
 	);
 	const report = read_report(out);
 	const wrote = report !== null && report[WRITES[command]] !== undefined;
-	return command_error(r, wrote, `abax ${command}`, LIMIT_MIN[command]);
+	return command_error(r, wrote, `heisenbench ${command}`, LIMIT_MIN[command]);
 }
 
 /** Run `tasks`, at most `jobs` at once. */
@@ -225,7 +225,7 @@ export interface TreeOptions {
 
 /**
  * Count, check and grow `files` on `tree`; reports and logs go under `out_dir`. `measure`: the
- * plain-build layers `abax run` adds (`time,bytes,leaks`, `all`), or null for none.
+ * plain-build layers `heisenbench run` adds (`time,bytes,leaks`, `all`), or null for none.
  */
 export async function run_tree(
 	tree: Tree,
@@ -245,11 +245,11 @@ export async function run_tree(
 		files.map((file, i) => async () => {
 			const out = join(out_dir, `${i}.json`);
 			// a log per bench file: they run side by side
-			const log_file = join(out_dir, `abax-${i}.log`);
+			const log_file = join(out_dir, `heisenbench-${i}.log`);
 			rmSync(out, { force: true });
 			for (const command of commands) {
-				log(`${tree.sha.slice(0, 12)} abax ${command} ${file}`);
-				const error = await abax(tree, command, file, out, log_file, measure, o.check ?? true);
+				log(`${tree.sha.slice(0, 12)} heisenbench ${command} ${file}`);
+				const error = await heisenbench(tree, command, file, out, log_file, measure, o.check ?? true);
 				if (error !== null) {
 					errors[i].push({ file, command, error });
 					if (command === 'run') break;
@@ -267,7 +267,7 @@ export async function run_tree(
 
 /**
  * The time layer (spec 6): the bench files both trees have, timed on the plain build in one
- * process, PR and base taking turns (`abax time`), judged by the no-overlap noise rule. The PR
+ * process, PR and base taking turns (`heisenbench time`), judged by the no-overlap noise rule. The PR
  * tree's preload serves both sides (the stubs it maps to are test fixtures, not measured code).
  */
 export async function run_time(
@@ -290,7 +290,7 @@ export async function run_time(
 		...(o.time_ms !== undefined ? ['--time-ms', String(o.time_ms)] : [])
 	];
 	const limit_min = o.limit_min ?? LIMIT_MIN.time;
-	const r = await spawn_abax(
+	const r = await spawn_heisenbench(
 		head,
 		[
 			'time',
@@ -305,10 +305,10 @@ export async function run_time(
 			join(out_dir, 'time.md'),
 			...extra
 		],
-		join(out_dir, 'abax.log'),
+		join(out_dir, 'heisenbench.log'),
 		limit_min
 	);
-	const error = command_error(r, existsSync(out), 'abax time', limit_min);
+	const error = command_error(r, existsSync(out), 'heisenbench time', limit_min);
 	if (error !== null) return { comparison: null, markdown: '', error };
 	const comparison = JSON.parse(readFileSync(out, 'utf8')) as TimeComparison;
 	return { comparison, markdown: renderTime(comparison), error: null };

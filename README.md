@@ -5,33 +5,33 @@ Benchmarks for [ogygia](https://github.com/ogygiajs/ogygia). One pnpm workspace:
 - [`suites/apps`](suites/apps/README.md): the app benchmark. The same apps built with ogygia and
   other Svelte frameworks, measured the same way. Its blog is a port of
   [Stanislav Khromov's interactive-blogs-benchmark](https://github.com/khromov/interactive-blogs-benchmark).
-- [`suites/ogygia`](suites/ogygia): Abax on ogygia's own source. It runs the bench files in
+- [`suites/ogygia`](suites/ogygia): Heisenbench on ogygia's own source. It runs the bench files in
   ogygia's `packages/*/bench` on a commit and, for a PR, on the commit it branched from (counted,
-  then timed with both taking turns), and writes the `abax` section of the PR comment.
-- [`packages/abax`](packages/abax): Abax, the function-level benchmark engine. It counts steps,
+  then timed with both taking turns), and writes the `heisenbench` section of the PR comment.
+- [`packages/heisenbench`](packages/heisenbench): Heisenbench, the function-level benchmark engine. It counts steps,
   allocations and calls per function and line, exactly, so one run of each side decides.
 - [`packages/compare`](packages/compare): the noise rule for a PR build against its base, and the
   one benchmark comment on an ogygia PR.
 
-## Abax
+## Heisenbench
 
-[Abax](packages/abax/README.md) is the function-level half of this repository. It rewrites
+[Heisenbench](packages/heisenbench/README.md) is the function-level half of this repository. It rewrites
 ogygia's source so every function counts its own work, block by block, with built-ins priced by
 input size and the clock, randomness, timers and IO made deterministic. The same code with the
 same input gives the same count on every run, so one run of a PR and one of its base show which
 line got slower, with no repeats and no noise floor. Engine health, time, real bytes, leaks,
 growth and a worst-case search run next to the count and cover what counting cannot see.
 
-On every ogygia PR, Abax writes the first section of the benchmark comment. It counts from source,
-so it does not wait for the published preview the app benchmark needs. `abax verify` checks 34 planted cases on every change to this
-repository. [packages/abax/README.md](packages/abax/README.md) has the details, the limits and
+On every ogygia PR, Heisenbench writes the first section of the benchmark comment. It counts from source,
+so it does not wait for the published preview the app benchmark needs. `heisenbench verify` checks 34 planted cases on every change to this
+repository. [packages/heisenbench/README.md](packages/heisenbench/README.md) has the details, the limits and
 the numbers.
 
 ## Run it
 
 You need Node 26.4 or newer and pnpm. Scripts are TypeScript run by plain `node`. CI runs the
 tests on Node 26.4.0 and on the newest 26. It builds and measures the apps on Node 22, the Node
-the published app numbers come from; Abax itself does not run on Node 22.
+the published app numbers come from; Heisenbench itself does not run on Node 22.
 
 ```bash
 pnpm install
@@ -43,7 +43,7 @@ pnpm lint && pnpm format:check
 
 The app benchmark's README has every option, Docker, and what each metric means.
 
-Abax on two ogygia commits (a clone of ogygia, or a local checkout's path as `--repo`):
+Heisenbench on two ogygia commits (a clone of ogygia, or a local checkout's path as `--repo`):
 
 ```bash
 node suites/ogygia/src/cli.ts --sha <pr commit> --base <base commit> --out suites/ogygia/out
@@ -61,9 +61,9 @@ section of it and rewrites only that section:
 <!-- ogygia-benchmarks -->
 ### ogygia benchmarks
 
-<!-- section:abax -->
+<!-- section:heisenbench -->
 ...
-<!-- /section:abax -->
+<!-- /section:heisenbench -->
 
 <!-- section:apps -->
 ...
@@ -77,8 +77,8 @@ The workflow writes a section with
 ## Results
 
 The `bench` workflow keeps every run on the orphan `results` branch: `main/latest.json`,
-`main/<sha>.json`, `pr/<number>.json` and `commit/<sha>.json`. The `abax` workflow keeps its runs
-beside them in the same layout under `abax/`.
+`main/<sha>.json`, `pr/<number>.json` and `commit/<sha>.json`. The `heisenbench` workflow keeps its runs
+beside them in the same layout under `heisenbench/`.
 
 ## License
 

@@ -1,9 +1,9 @@
 name: fuzz
 
-# Abax's fuzzer (packages/abax/fuzz) for longer, every night, on seeds that change every day:
-# random programs checked against V8, abax diff on rewrites and planted costs, block lines through
+# Heisenbench's fuzzer (packages/heisenbench/fuzz) for longer, every night, on seeds that change every day:
+# random programs checked against V8, heisenbench diff on rewrites and planted costs, block lines through
 # TypeScript and Svelte, runs cut short, and the corpus pass over ogygia's packages and the
-# dependencies Abax instruments. Failing programs and their minimized repros are uploaded as an
+# dependencies Heisenbench instruments. Failing programs and their minimized repros are uploaded as an
 # artifact; the run opens nothing (no issue, no PR). check.yml runs a short slice on fixed seeds.
 
 on:
@@ -36,7 +36,7 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 26
-      - run: pnpm install --frozen-lockfile --filter 'abax...'
+      - run: pnpm install --frozen-lockfile --filter 'heisenbench...'
       # ogygia's packages for the corpus pass (the transform must take every file of them)
       - name: Check out ogygia
         run: git clone --quiet --depth 1 https://github.com/ogygiajs/ogygia.git "$RUNNER_TEMP/ogygia"
@@ -50,7 +50,7 @@ jobs:
           # a new range of seeds every day: program i of day d is seed d * 1000000 + i
           seed="${SEED:-$(( $(date -u +%s) / 86400 * 1000000 ))}"
           echo "### fuzz from seed $seed" >> "$GITHUB_STEP_SUMMARY"
-          pnpm --filter abax fuzz -- --seed "$seed" --runs 1000000 --time "$(( MINUTES * 60 ))" \
+          pnpm --filter heisenbench fuzz -- --seed "$seed" --runs 1000000 --time "$(( MINUTES * 60 ))" \
             --jobs 4 --corpus default --out "$RUNNER_TEMP/fuzz" | tee "$RUNNER_TEMP/fuzz.log"
       - name: Summary
         if: always()

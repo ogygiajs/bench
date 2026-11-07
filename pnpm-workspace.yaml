@@ -9,17 +9,17 @@ packages:
 catalog:
   oxfmt: ^0.75.0
   oxlint: ^1.90.0
-  # Abax parses with it (the step transform) and so does suites/ogygia (the bench files' import
+  # Heisenbench parses with it (the step transform) and so does suites/ogygia (the bench files' import
   # graph); exact, because a parser update can move the AST positions blocks are keyed by.
   oxc-parser: 0.157.0
   rolldown: 1.2.2
-  # Builds Abax's npm package (built JavaScript and .d.ts; Node does not strip types in
+  # Builds Heisenbench's npm package (built JavaScript and .d.ts; Node does not strip types in
   # node_modules). The same builder ogygia uses.
   tsdown: ^0.23.7
 catalogs:
   # Exact on purpose: a new Lighthouse, Playwright, Chrome launcher or autocannon changes the
   # numbers the app benchmark reports, so they move only by hand. Playwright also matches the
-  # Docker image tag in suites/apps/Dockerfile. tinybench is Abax's time layer: a new one changes
+  # Docker image tag in suites/apps/Dockerfile. tinybench is Heisenbench's time layer: a new one changes
   # how latency and throughput are sampled.
   measure:
     autocannon: 8.0.0

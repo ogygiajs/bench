@@ -4,9 +4,9 @@
 //   <!-- ogygia-benchmarks -->
 //   ### ogygia benchmarks
 //
-//   <!-- section:abax -->
+//   <!-- section:heisenbench -->
 //   ...
-//   <!-- /section:abax -->
+//   <!-- /section:heisenbench -->
 //
 //   <!-- section:apps -->
 //   ...
@@ -19,7 +19,7 @@
 export const MARKER = '<!-- ogygia-benchmarks -->';
 export const HEADING = '### ogygia benchmarks';
 /** Known sections, in the order the comment shows them; any other section follows these. */
-export const SECTION_ORDER: readonly string[] = ['abax', 'apps'];
+export const SECTION_ORDER: readonly string[] = ['heisenbench', 'apps'];
 /** What a comment without sections holds: the app benchmark's body. */
 export const LEGACY_SECTION = 'apps';
 

@@ -67,9 +67,9 @@ test('a child that exits leaves no process behind, and its exit code comes back'
 });
 
 test('a command that cannot start says so', async () => {
-	const r = await spawn_group('/nonexistent/abax-test-binary', [], {}, 5000);
+	const r = await spawn_group('/nonexistent/heisenbench-test-binary', [], {}, 5000);
 	assert.ok(r.error);
-	assert.match(command_error(r, false, 'abax run', 15)!, /did not start/);
+	assert.match(command_error(r, false, 'heisenbench run', 15)!, /did not start/);
 });
 
 const result = (over: Partial<GroupResult>): GroupResult => ({
@@ -83,28 +83,28 @@ const result = (over: Partial<GroupResult>): GroupResult => ({
 });
 
 test('exit 0 or 1 with its part written is clean; anything else is an error, report or not', () => {
-	assert.equal(command_error(result({}), true, 'abax run', 15), null);
-	assert.equal(command_error(result({ status: 1 }), true, 'abax run', 15), null);
+	assert.equal(command_error(result({}), true, 'heisenbench run', 15), null);
+	assert.equal(command_error(result({ status: 1 }), true, 'heisenbench run', 15), null);
 	assert.equal(
-		command_error(result({ status: 134, stderr: 'abort\nat measure' }), true, 'abax run', 15),
-		'abax run exited with 134\nabort\nat measure'
+		command_error(result({ status: 134, stderr: 'abort\nat measure' }), true, 'heisenbench run', 15),
+		'heisenbench run exited with 134\nabort\nat measure'
 	);
 	assert.equal(
-		command_error(result({ status: null, signal: 'SIGSEGV' }), true, 'abax health', 15),
-		'abax health was killed by SIGSEGV'
+		command_error(result({ status: null, signal: 'SIGSEGV' }), true, 'heisenbench health', 15),
+		'heisenbench health was killed by SIGSEGV'
 	);
 	assert.equal(
 		command_error(
 			result({ status: null, signal: 'SIGKILL', timed_out: true }),
 			true,
-			'abax growth',
+			'heisenbench growth',
 			5
 		),
-		'abax growth did not finish within 5 min'
+		'heisenbench growth did not finish within 5 min'
 	);
 	assert.equal(
-		command_error(result({ stderr: 'SyntaxError: x' }), false, 'abax run', 15),
+		command_error(result({ stderr: 'SyntaxError: x' }), false, 'heisenbench run', 15),
 		'SyntaxError: x'
 	);
-	assert.match(command_error(result({}), false, 'abax run', 15)!, /wrote nothing/);
+	assert.match(command_error(result({}), false, 'heisenbench run', 15)!, /wrote nothing/);
 });

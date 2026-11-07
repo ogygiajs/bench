@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { DiffResult, Report, SearchCase } from '@bench/abax';
-import { ABAX_DIR } from '../src/run.ts';
+import type { DiffResult, Report, SearchCase } from '@bench/heisenbench';
+import { HEISENBENCH_DIR } from '../src/run.ts';
 import { cases_with_inputs, flagged, pick_cases, run_searches } from '../src/search.ts';
 import type { SearchResult, SearchRun } from '../src/search.ts';
 import { search_lines } from '../src/section.ts';
 
 test('the cases that declare an input are found in the bench file', () => {
-	const src = `import { bench as b } from '@bench/abax/bench';
+	const src = `import { bench as b } from '@bench/heisenbench/bench';
 import { opts } from './o.ts';
 b('with setup', ({ xs }) => f(xs), { setup: () => ({ xs: [1] }) });
 b(\`template\`, (c) => f(c), { teardown() {}, setup() { return 1; } });
@@ -85,7 +85,7 @@ const searched = (head: SearchCase | null, base: SearchCase | null): SearchResul
 	error: null
 });
 
-test('flagged by Abax’s rule: 4x typical and twice the base’s ratio', () => {
+test('flagged by Heisenbench’s rule: 4x typical and twice the base’s ratio', () => {
 	assert.equal(flagged(searched(found(5), found(1))), true);
 	assert.equal(flagged(searched(found(5), null)), true);
 	assert.equal(flagged(searched(found(5), found(3))), false);
@@ -123,15 +123,15 @@ test('the search is one line, plus one per flagged case', () => {
 });
 
 test('a real search on a small tree, both sides, within its budget', async () => {
-	const dir = mkdtempSync(join(tmpdir(), 'abax-search-'));
+	const dir = mkdtempSync(join(tmpdir(), 'heisenbench-search-'));
 	mkdirSync(join(dir, 'node_modules', '@bench'), { recursive: true });
-	symlinkSync(ABAX_DIR, join(dir, 'node_modules', '@bench', 'abax'), 'dir');
+	symlinkSync(HEISENBENCH_DIR, join(dir, 'node_modules', '@bench', 'heisenbench'), 'dir');
 	mkdirSync(join(dir, 'packages', 'p', 'bench'), { recursive: true });
 	writeFileSync(join(dir, 'package.json'), '{"name":"t","private":true,"type":"module"}');
 	const file = 'packages/p/bench/sum.bench.ts';
 	writeFileSync(
 		join(dir, file),
-		`import { bench } from '@bench/abax/bench';
+		`import { bench } from '@bench/heisenbench/bench';
 const total = (xs: number[]) => { let s = 0; for (const x of xs) s += x; return s; };
 bench('total', ({ xs }) => total(xs), { setup: () => ({ xs: [1, 2, 3, 4] }) });
 bench('total twice', ({ xs }) => total(xs) + total(xs), { setup: () => ({ xs: [1, 2] }) });
