@@ -11,6 +11,7 @@ import { Measurer, load_cases } from '../growth/measure.ts';
 import { run_recorded_growth } from '../growth/recorded.ts';
 import { alias_records, read_record_dir } from '../coverage/replay-run.ts';
 import { install_twin } from '../mutation/twin.ts';
+import { get_runtime } from '../runtime/index.ts';
 
 /*
  * Entry of a recount child (blame/index.ts, mutation/index.ts): `node child.ts job.json`. Counts
@@ -42,6 +43,8 @@ interface Job {
 	recorded?: { dir: string; alias: string | null; modules: string[]; cap: number } | null;
 	/** List the cases of the bench files (and which declare `scale`) instead; nothing is counted. */
 	list?: boolean;
+	/** Steps one run of a counted case may take (a mutant that runs away stops there and fails). */
+	cap?: number | null;
 }
 
 watch_parent();
@@ -97,6 +100,7 @@ if (job.list) {
 	});
 	writeFileSync(job.out, JSON.stringify(report));
 } else {
+	if (job.cap) get_runtime().cap = job.cap;
 	const report = await run_benches({
 		files: job.files.map((f) => join(job.root, f)),
 		root: job.root,

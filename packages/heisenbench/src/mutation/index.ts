@@ -19,6 +19,7 @@ import { source_inventory } from '../coverage/gate.ts';
 import type { SourceFunction } from '../coverage/gate.ts';
 import { diff_reports } from '../diff/index.ts';
 import { shown } from '../diff/markdown.ts';
+import { GROWTH_RANK } from '../growth/fit.ts';
 import type { GrowthClass } from '../growth/fit.ts';
 import { DEFAULT_SIZES, GROWTH_SCHEMA, diff_growth } from '../growth/index.ts';
 import type { GrowthCase, GrowthReport } from '../growth/index.ts';
@@ -74,7 +75,12 @@ import { suggest } from './suggest.ts';
 export const MUTATION_SCHEMA = 'heisenbench-mutation/1';
 /** Functions mutated when sampling (the reached ones; the unreached cost nothing). */
 export const DEFAULT_SAMPLE = 60;
-export const MUTATION_MAX_RECOUNTS = 3000;
+/**
+ * Recounts reserved at most: a function reserves its control, a repeat of it, one per mutant and
+ * three growths for a quadratic one (ogygia main reserves about 3,800 for 632 functions, spends
+ * about 2,300).
+ */
+export const MUTATION_MAX_RECOUNTS = 6000;
 export const MUTATION_BUDGET_MS = 60 * 60_000;
 /**
  * Steps one growth run may take (the root's and the mutant's alike): a quadratic mutant at 100x
@@ -273,13 +279,18 @@ function sha(s: string | Buffer): string {
 /** sha256 over Heisenbench's own source and prices: what counts the trees. */
 function engine_hash(): string {
 	const h = createHash('sha256');
+	// what only this process runs (judging, ranking, writing) never changes a count
+	const judge_only = new Set(
+		['index', 'markdown', 'suggest', 'cli'].map((n) => join(OWN_DIR, 'mutation', n))
+	);
 	const walk = (d: string): void => {
 		for (const e of readdirSync(d, { withFileTypes: true }).sort((a, b) =>
 			a.name < b.name ? -1 : 1
 		)) {
 			const p = join(d, e.name);
 			if (e.isDirectory()) walk(p);
-			else if (/\.(ts|js)$/.test(e.name)) h.update(e.name).update(readFileSync(p));
+			else if (/\.(ts|js)$/.test(e.name) && !judge_only.has(p.replace(/\.(ts|js)$/, '')))
+				h.update(e.name).update(readFileSync(p));
 		}
 	};
 	walk(OWN_DIR);
@@ -507,6 +518,9 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 			growth?: { sizes: number[]; cap: number };
 			recorded?: { modules: string[] };
 			list?: boolean;
+			cap?: number;
+			/** A second count of the same tree (is the function's output the same run to run?). */
+			again?: number;
 		}
 	): Promise<Counted> => {
 		const parts = [...tree]
@@ -564,7 +578,8 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 										cap: cap
 									}
 								: null,
-						list: job.list ?? false
+						list: job.list ?? false,
+						cap: job.cap ?? null
 					},
 					join(work, 'counts', `${key}.job.json`),
 					{
@@ -750,7 +765,7 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 		for (const item of items) {
 			if (!chosen.has(item)) continue;
 			const need =
-				1 +
+				2 +
 				item.mutants.length +
 				(item.mutants.some((m) => m.operator === 'quadratic') ? GROWTH_RESERVE : 0);
 			if (reserved + need > max_recounts) {
@@ -767,7 +782,9 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 
 		async function evaluate(item: Item): Promise<MutantResult[]> {
 			const { plan, f, cases, mutants } = item;
-			const job = { ...job_for(cases), twin: true };
+			// a mutant that runs away stops at 64 times its case's steps, not at the child's clock
+			const most = Math.max(0, ...cases.map((k) => case_of(base, k)?.totals.steps ?? 0));
+			const job = { ...job_for(cases), twin: true, cap: Math.max(1e7, Math.ceil(64 * most)) };
 			const path = relative(root, module_files.get(plan.module) ?? join(root, plan.module))
 				.split(sep)
 				.join('/');
@@ -816,6 +833,7 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 				);
 			}
 			const scale_keys = cases.filter((k) => scaled.has(k));
+			let control_again: Promise<Counted> | undefined;
 			const out: MutantResult[] = [];
 			await Promise.all(
 				mutants.map(async (m, i) => {
@@ -836,19 +854,40 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 					const broke = cases.find(
 						(k) => !case_of(control.report, k)?.error && case_of(c.report, k)?.error
 					);
-					if (broke) {
+					const runaway = broke !== undefined && /step cap/.test(case_of(c.report, broke)!.error!);
+					if (broke && !runaway) {
 						r.status = 'discarded';
 						r.note = `it changed behavior: ${name_of(broke)} throws (${case_of(c.report, broke)!.error})`;
 						return;
 					}
-					const differs = twin_difference(control.twin!, c.twin!);
+					const differs = runaway ? null : twin_difference(control.twin!, c.twin!);
 					if (differs) {
-						r.status = 'discarded';
-						r.note = `it changed behavior: ${differs}`;
-						return;
+						// the original itself may answer differently run to run (a fresh key pair each
+						// setup): then the twin cannot judge, and the counts still can
+						const again = await (control_again ??= count(
+							new Map([[path, Buffer.from(rewrite(plan, f, null, true))]]),
+							{ ...job, again: 1 }
+						));
+						const itself = again.twin ? twin_difference(control.twin!, again.twin) : null;
+						if (itself === null) {
+							r.status = 'discarded';
+							r.note = `it changed behavior: ${differs}`;
+							return;
+						}
+						r.note =
+							'its output differs run to run on the original too: the twin could not check it';
+					}
+					if (runaway) {
+						r.loud = true;
+						r.note = `${name_of(broke!)} ran past 64 times its steps and was stopped`;
+						if (m.operator !== 'quadratic') {
+							r.status = 'caught';
+							r.by = 'steps';
+							return;
+						}
 					}
 					const d = diff_reports(control.report!, c.report);
-					const noticed = d.changes.some((x) => x.findings.some(shown));
+					const noticed = runaway || d.changes.some((x) => x.findings.some(shown));
 					const grew = d.cases
 						.map((x) => ({ x, delta: x.pr_steps - x.base_steps }))
 						.sort((a, b) => b.delta - a.delta)[0];
@@ -857,7 +896,7 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 						grew && grew.x.base_steps > 0
 							? Math.round((grew.delta / grew.x.base_steps) * 1e6) / 1e6
 							: null;
-					r.loud = regressed_cases(d, c.report).length > 0;
+					r.loud = runaway || regressed_cases(d, c.report).length > 0;
 					if (m.operator !== 'quadratic') {
 						if (noticed) {
 							r.status = 'caught';
@@ -881,6 +920,24 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 							if (diff_growth(b, g).findings.length > 0) {
 								r.status = 'caught';
 								r.by = 'growth';
+								return;
+							}
+							// The mutant went past this layer's cap at the smallest sizes while the
+							// original fitted below quadratic: CI's growth (a cap of 10^10) would fit
+							// it, as quadratic or worse.
+							const ran_away = scale_keys.find((k) => {
+								const mg = g.cases.find((x) => x.name === name_of(k));
+								const bg = class_of(b.cases.find((x) => x.name === name_of(k)));
+								return (
+									mg?.error?.startsWith('exceeded the cap') === true &&
+									bg !== null &&
+									(GROWTH_RANK[bg] ?? 99) < (GROWTH_RANK.quadratic ?? 4)
+								);
+							});
+							if (ran_away) {
+								r.status = 'caught';
+								r.by = 'growth';
+								r.note = `${name_of(ran_away)} went past ${cap} steps at its smallest sizes with the mutant, and fitted ${class_of(b.cases.find((x) => x.name === name_of(ran_away)))} without it`;
 								return;
 							}
 						} else {

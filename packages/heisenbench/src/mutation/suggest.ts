@@ -110,13 +110,20 @@ export function suggest(
 	if (fr.cases.length === 0) {
 		const at = nearest_bench(plan.module, benches);
 		const loop = f.loops.find((l) => l.coll !== null) ?? null;
-		const call = top ? `${name}(${args_of(f)})` : null;
+		// a nested function or a method is reached through the top-level binding it lives in
+		const outer = top ? name : name.split(' > ')[0];
+		const names = f.params.map((p) => p.replace(/^\.\.\./, ''));
+		const head = top
+			? `bench('${name}: <the input it gets on a real page>', (${names.length > 0 ? `{ ${names.join(', ')} }` : ''}) => ${name}(${args_of(f)}), {`
+			: `bench('${outer}: <an input that reaches line ${f.line}>', (ctx) => /* drive ${outer} so it runs ${name.slice(outer.length + 3)} */ undefined, {`;
 		const lines = [
 			bench_import(root, at),
-			...(call ? [import_line(plan, name, at)] : []),
+			import_line(plan, outer, at),
 			'',
-			`bench('${name}: <the input it gets on a real page>', (${f.params.length > 0 ? `{ ${f.params.map((p) => p.replace(/^\.\.\./, '')).join(', ')} }` : ''}) => ${call ?? `/* reach ${name} through ${name.split(' > ')[0]} */ undefined`}, {`,
-			`\tsetup: () => ({ ${f.params.map((p) => `${p.replace(/^\.\.\./, '')}: /* ... */ undefined`).join(', ')} })${loop ? ',' : ''}`,
+			head,
+			top
+				? `\tsetup: () => ({ ${names.map((p) => `${p}: /* ... */ undefined`).join(', ')} })${loop ? ',' : ''}`
+				: `\tsetup: () => ({ /* what ${outer} needs */ })${loop ? ',' : ''}`,
 			...(loop
 				? [
 						`\t// grows ${source_of(loop.coll!, f)}, the collection its loop at line ${loop.line} walks`,
@@ -128,7 +135,7 @@ export function suggest(
 		return {
 			reason: 'no bench case runs it',
 			text: [
-				`No bench case runs it${at ? `; a case in \`${at}\` would` : ''}${top ? '' : ` (it is \`${name}\` inside \`${name.split(' > ')[0]}\`: a case that calls that with input reaching line ${f.line})`}:`,
+				`No bench case runs it${at ? `; a case in \`${at}\` would` : ''}${top ? '' : ` (it is \`${name.slice(outer.length + 3)}\` inside \`${outer}\`, at line ${f.line})`}:`,
 				'',
 				'```ts',
 				...lines,

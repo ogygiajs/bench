@@ -60,10 +60,19 @@ class Hash {
 }
 
 /** A deterministic fingerprint of `value`, with `roots` replaced by `<root>` in its strings. */
-export function fingerprint(value: unknown, roots: readonly string[] = []): string {
+export function fingerprint(
+	value: unknown,
+	roots: readonly string[] = [],
+	max = MAX_NODES,
+	spent: { nodes: number } = { nodes: 0 }
+): string {
+	const MAX_NODES = max;
 	const h = new Hash();
 	const seen = new Map<object, number>();
 	let nodes = 0;
+	const done = () => {
+		spent.nodes += Math.min(nodes, MAX_NODES);
+	};
 	const str = (s: string): string => {
 		let out = s;
 		for (const r of roots) if (r !== '') out = split_join(out, r, '<root>');
@@ -137,6 +146,7 @@ export function fingerprint(value: unknown, roots: readonly string[] = []): stri
 		h.text('}');
 	};
 	walk(value);
+	done();
 	return h.hex();
 }
 
@@ -150,6 +160,14 @@ export interface TwinRecord {
 
 /** Calls kept one by one (to say where two runs differ); past them only the running hash. */
 export const KEPT_CALLS = 2000;
+
+/**
+ * Values one counted tree's fingerprints walk in all at full depth. Past it each call's value is
+ * walked to SHALLOW_NODES only: a hot function that returns a large structure costs a bounded
+ * check, and the original and the mutant, calling alike, cross the line at the same call.
+ */
+export const TOTAL_NODES = 2_000_000;
+export const SHALLOW_NODES = 64;
 
 /** What one counted tree's hooked calls gave. */
 export interface TwinSummary {
@@ -168,14 +186,29 @@ export function install_twin(roots: readonly string[], record: boolean): () => T
 	const head: TwinRecord[] = [];
 	const all = new Hash();
 	let calls = 0;
+	const spent = { nodes: 0 };
+	// Only a call that is not inside another call of the same function is recorded: a defeated
+	// memo makes a recursive function call itself more, and its outermost answer is what counts.
+	// a plain dictionary: no built-in a priced wrapper could see
+	const depth = Object.create(null) as Record<string, number>;
 	const hook = record
 		? (id: string, v: unknown, how = 'r'): unknown => {
-				const rec = { id, how, print: fingerprint(v, roots) };
+				if (depth[id] !== 1) return v;
+				const max = spent.nodes < TOTAL_NODES ? MAX_NODES : SHALLOW_NODES;
+				const rec = { id, how, print: fingerprint(v, roots, max, spent) };
 				all.text(`${id}\u0000${how}\u0000${rec.print}`);
 				if (calls++ < KEPT_CALLS) head.push(rec);
 				return v;
 			}
 		: (_id: string, v: unknown): unknown => v;
+	Object.assign(hook, {
+		e: (id: string) => {
+			depth[id] = (depth[id] ?? 0) + 1;
+		},
+		x: (id: string) => {
+			depth[id] = (depth[id] ?? 1) - 1;
+		}
+	});
 	(globalThis as unknown as Record<symbol, unknown>)[TWIN] = hook;
 	return () => ({ calls, hash: all.hex(), head });
 }

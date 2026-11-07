@@ -408,7 +408,15 @@ function caches_of(fn: Node, source: string, pos: Positions): CacheSite[] {
 			const test = get(n, 'test')!;
 			const cons = branch(get(n, 'consequent'));
 			const has = method_call(test, 'has');
-			if (has && returns_text(cons, source, null)) {
+			// a memo hands back what it keeps: `if (c.has(k)) return c.get(k)` (a membership test
+			// that returns anything else is not one)
+			const kept = has ? t(get(get(has, 'callee')!, 'object')!) : null;
+			const hands_back = cons.some((s) => {
+				const a = s.type === 'ReturnStatement' ? get(s, 'argument') : null;
+				const call = a ? method_call(a, 'get') : null;
+				return call !== null && t(get(get(call, 'callee')!, 'object')!) === kept;
+			});
+			if (has && hands_back) {
 				out.push({
 					start: test.start,
 					end: test.end,
@@ -769,7 +777,8 @@ export function rewrite(
 	const double = mutant?.operator === 'double';
 
 	let pro = '';
-	if (hook) pro += `const ${tw}=globalThis[Symbol.for('heisenbench.mutation.twin')];`;
+	if (hook)
+		pro += `const ${tw}=globalThis[Symbol.for('heisenbench.mutation.twin')];${tw}.e(${id});`;
 	// The depth of the mutant's own calls lives on globalThis (no module-level code is added): only
 	// the outermost call doubles, so a recursive function costs twice its steps, not 2^depth times.
 	if (double)
@@ -777,8 +786,8 @@ export function rewrite(
 	if (mutant?.operator === 'alloc' && mutant.loop === null) pro += `const ${p}a={n:0};`;
 	const needs_try = hook || double;
 	const catch_text = hook ? `catch(${p}x){${tw}(${id},${p}x,'t');throw ${p}x}` : '';
-	const finally_text = double
-		? `finally{if(--globalThis[${p}k]===0&&${p}rt){const ${p}e=2*${p}rt.s[0]-${p}t0;while(${p}rt.s[0]<${p}e){}}}`
+	const finally_text = needs_try
+		? `finally{${hook ? `${tw}.x(${id});` : ''}${double ? `if(--globalThis[${p}k]===0&&${p}rt){const ${p}e=2*${p}rt.s[0]-${p}t0;while(${p}rt.s[0]<${p}e){}}` : ''}}`
 		: '';
 	const fallthrough = hook ? (f.ctor ? `${tw}(${id},this,'c');` : `${tw}(${id},undefined);`) : '';
 	if (expr) {
