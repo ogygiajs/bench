@@ -14,7 +14,7 @@ import {
 	renderMarkdown,
 	renderSections
 } from '@bench/heisenbench';
-import type { DiffResult, Report, TimeComparison } from '@bench/heisenbench';
+import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { SearchRun } from './search.ts';
@@ -71,6 +71,26 @@ export interface Result {
 	weights?: WeightRun | null;
 	/** A PR's worst-case search over the changed cases that declare an input. */
 	search?: SearchRun | null;
+	/**
+	 * Growth from recorded calls (recorded.ts): the functions that grow quadratically or worse on
+	 * the inputs ogygia's tests and bench cases pass them. The whole report is in the artifact
+	 * (recorded/recorded.json); this keeps the findings.
+	 */
+	recorded?: RecordedSummary | null;
+}
+
+export interface RecordedSummary {
+	/** `all`: every source module; `changed`: a PR's changed modules only. */
+	scope: 'all' | 'changed';
+	/** Heisenbench's markdown of the findings, or why there are none. */
+	markdown: string;
+	error: string | null;
+	/** Recorded functions grown, and how many of them decided a curve. */
+	grown: number;
+	decided: number;
+	/** The grown functions that are findings. */
+	findings: RecordedGrowth[];
+	seconds: { build: number; record: number; grow: number };
 }
 
 const code = markdownCode;
@@ -302,6 +322,7 @@ function capped_sections(d: SectionsDiff): string {
 				findings: g.findings.slice(0, CAPS.growth),
 				better: g.better.slice(0, CAPS.growth),
 				same: g.same.slice(0, CAPS.growth_same),
+				unclear: (g.unclear ?? []).slice(0, CAPS.growth),
 				failed: g.failed.slice(0, CAPS.failed)
 			},
 			search: d.search && d.search.slice(0, CAPS.search)
@@ -311,11 +332,22 @@ function capped_sections(d: SectionsDiff): string {
 				? Math.max(0, g.findings.length - CAPS.growth) +
 					Math.max(0, g.better.length - CAPS.growth) +
 					Math.max(0, g.same.length - CAPS.growth_same) +
+					Math.max(0, (g.unclear ?? []).length - CAPS.growth) +
 					Math.max(0, g.failed.length - CAPS.failed)
 				: 0) + Math.max(0, (d.search?.length ?? 0) - CAPS.search);
 		parts.push(cut > 0 ? `${growth}\n${cut} more growth entries are in result.json.\n` : growth);
 	}
 	return parts.join('\n');
+}
+
+/** Growth from recorded calls: Heisenbench's findings, or one line on why there are none. */
+function recorded_lines(r: Result): string[] {
+	const rec = r.recorded;
+	if (!rec) return [];
+	if (rec.error) return ['', `**Growth from recorded calls failed**: ${code(one_line(rec.error))}`];
+	// a PR with no superlinear function in the modules it changed says nothing
+	if (rec.scope === 'changed' && rec.findings.length === 0) return [];
+	return ['', rec.markdown.trimEnd()];
 }
 
 /** The PR comment's `heisenbench` section. */
@@ -327,7 +359,8 @@ export function render_pr_section(r: Result): string {
 		lines.push(
 			`No bench file reaches the files this PR changes (${plural(sel.all.length, 'bench file')} checked, ${against}).${run_link(meta)}`
 		);
-		return lines.join('\n') + '\n';
+		lines.push(...recorded_lines(r));
+		return lines.join('\n').trimEnd() + '\n';
 	}
 	const why =
 		sel.mode === 'all'
@@ -365,6 +398,7 @@ export function render_pr_section(r: Result): string {
 	} else if (r.time?.comparison && r.time.comparison.cases.length > 0) {
 		lines.push('', r.time.markdown);
 	}
+	lines.push(...recorded_lines(r));
 	return lines.join('\n').trimEnd() + '\n';
 }
 
@@ -406,5 +440,6 @@ export function render_full_summary(r: Result): string {
 	}
 	// The price audit: a part only when some price is suspect.
 	if (r.head?.audit) lines.push(renderAudit(r.head.audit, { quiet: true }));
+	lines.push(...recorded_lines(r));
 	return lines.join('\n').trimEnd() + '\n';
 }
