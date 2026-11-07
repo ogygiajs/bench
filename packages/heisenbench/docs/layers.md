@@ -708,9 +708,10 @@ renamed variable, an unused function, a comment in the same file): 7 hunks in 4 
 over the threshold (`transformHost: a route page with twenty islands`, client and server leg,
 +10.5%). Blame names the three hunks of `transform.ts` that restore the walk, L1035–1049,
 L1058–1073 and L2143–2153, and none of the harmless ones, for both cases as one cause. The three
-only load together (the walk's method is renamed across them), so 14 of the trees tried did not
-load. 28 recounts, 46 reused, 20 s on an M4 Max with 4 side by side (2.1 s per tree that loads,
-0.65 s per tree that does not).
+only load together (the walk's method is renamed across them), so 20 of the 28 trees counted did
+not load. 28 recounts, 46 reused, 21 s on an M4 Max with 4 side by side (2.1 s per tree that
+loads, 0.65 s per tree that does not). The whole PR flow of the ogygia suite on the same two
+commits found the same answer in the same 28 recounts.
 
 ## Real-app weight
 
