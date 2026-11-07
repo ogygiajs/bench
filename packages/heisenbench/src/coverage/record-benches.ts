@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { join, relative, resolve, sep } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
 import { one_line } from '../report.ts';
@@ -22,6 +22,13 @@ export interface RecordBenchesOptions {
 	targets: Record<string, string[]>;
 	/** The sample file to write. */
 	out: string;
+	/**
+	 * Factors a case that declares `scale` runs at too (its input grown by its own scaler), so the
+	 * recorder sees the sizes a growth case would (`heisenbench prove --bench`). Default: none.
+	 */
+	scales?: number[];
+	/** Only the cases with these names (default: every case). */
+	names?: readonly string[];
 	log?: (line: string) => void;
 }
 
@@ -34,12 +41,14 @@ export async function record_benches(
 	register_record_hooks(
 		new Map(
 			Object.entries(o.targets).map(([m, paths]) => [
-				join(root, m),
+				// a module id is relative to the root; a dependency's file may be given as it is on disk
+				isAbsolute(m) ? m : join(root, m),
 				{ id: m, paths: new Set(paths) }
 			])
 		),
 		root
 	);
+	const wanted = o.names ? new Set(o.names) : null;
 	recorder.reset();
 	const start = cases().length;
 	for (const f of o.files) {
@@ -54,10 +63,16 @@ export async function record_benches(
 	let ran = 0;
 	let failed = 0;
 	for (const c of cases().slice(start)) {
+		if (wanted && !wanted.has(c.name)) continue;
 		try {
 			const ctx = c.setup ? await c.setup() : undefined;
 			await c.fn(ctx);
 			if (c.teardown) await c.teardown(ctx);
+			for (const k of c.scale ? (o.scales ?? []).filter((k) => k !== 1) : []) {
+				const grown = c.scale!(c.setup ? await c.setup() : undefined, k);
+				await c.fn(grown);
+				if (c.teardown) await c.teardown(grown);
+			}
 			ran++;
 		} catch (e) {
 			failed++;

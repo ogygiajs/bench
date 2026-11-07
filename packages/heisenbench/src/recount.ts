@@ -1,6 +1,6 @@
 import { builtin_call_name, load_prices } from './prices.ts';
 import type { Prices } from './prices.ts';
-import { price_units } from './units.ts';
+import { price_units, priced_size_terms } from './units.ts';
 import type { Units } from './units.ts';
 import type { CaseReport, FunctionReport, Report } from './report.ts';
 
@@ -14,7 +14,14 @@ import type { CaseReport, FunctionReport, Report } from './report.ts';
  * the old inclusive steps and says so (`prices.recounted_from`), and the diff ignores them.
  */
 
-function has_units(r: Report): boolean {
+/**
+ * Whether the report's units say everything `prices` charges for: units on every function, and
+ * every size term the prices use kept by the run (a report from before `parts` were kept has no
+ * parts to price, and would read as cheaper than the same run counted today).
+ */
+function has_units(r: Report, prices: Prices): boolean {
+	const kept = new Set(r.unit_terms ?? []);
+	for (const t of priced_size_terms(prices)) if (!kept.has(t)) return false;
 	return r.cases.every((c) => c.functions.every((f) => f.units !== undefined));
 }
 
@@ -92,7 +99,8 @@ function recount_case(c: CaseReport, prices: Prices): CaseReport {
 /** A report counted again with `prices` (the default: the current prices.json). */
 export function recount(report: Report, with_prices = load_prices()): Report {
 	if (report.prices.hash === with_prices.hash) return report;
-	if (!has_units(report)) throw new Error('heisenbench: the report has no units to recount from');
+	if (!has_units(report, with_prices.prices))
+		throw new Error('heisenbench: the report has no units to recount from');
 	return {
 		...report,
 		prices: {
@@ -116,7 +124,9 @@ export interface Aligned {
 /** Bring two reports to one price file: as they are when it is the same, else both recounted. */
 export function align_prices(base: Report, pr: Report, with_prices = load_prices()): Aligned {
 	if (base.prices.hash === pr.prices.hash) return { base, pr, comparable: true, recounted: null };
-	if (!has_units(base) || !has_units(pr)) return { base, pr, comparable: false, recounted: null };
+	const ready = (r: Report) =>
+		r.prices.hash === with_prices.hash || has_units(r, with_prices.prices);
+	if (!ready(base) || !ready(pr)) return { base, pr, comparable: false, recounted: null };
 	return {
 		base: recount(base, with_prices),
 		pr: recount(pr, with_prices),

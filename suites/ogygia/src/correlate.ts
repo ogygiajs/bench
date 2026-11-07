@@ -118,14 +118,14 @@ function git(cwd: string, args: string[]): string {
 }
 
 /** Packages that have a bench directory at `rev`. */
-function bench_packages(repo: string, rev: string): string[] {
+export function bench_packages(repo: string, rev: string): string[] {
 	return git(repo, ['ls-tree', '-d', '--name-only', `${rev}:packages`])
 		.split('\n')
 		.filter((p) => p && git(repo, ['ls-tree', '--name-only', rev, `packages/${p}/bench`]) !== '');
 }
 
 /** Lay the bench files of `rev` (and what they load) over a tree, and link Heisenbench into it. */
-function overlay(repo: string, rev: string, tree: Tree, packages: string[]): Tree {
+export function overlay(repo: string, rev: string, tree: Tree, packages: string[]): Tree {
 	const paths = [
 		...packages.map((p) => `packages/${p}/bench`),
 		'internal/heisenbench',

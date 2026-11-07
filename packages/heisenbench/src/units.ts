@@ -1,4 +1,4 @@
-import { OP_KINDS, builtin_cost } from './prices.ts';
+import { OP_KINDS, SIZE_TERMS, builtin_cost } from './prices.ts';
 import type { OpKind, Prices } from './prices.ts';
 import type { SiteKind } from './meta.ts';
 
@@ -12,9 +12,13 @@ import type { SiteKind } from './meta.ts';
  *   dyn.<price>          dynamic size units: characters built, keys spread, elements spread...
  *   bi.<key>.calls       calls of a priced built-in (`bi.Array.prototype.sort.calls`)
  *   bi.<key>.n           sum of its sizes; `.nlogn` sum of n log2 n; `.n2` sum of n^2
+ *   bi.<key>.<term>      sum of a size term (prices.ts SIZE_TERMS: `.parts` of a split...)
  *
  * The built-in size terms cover every price model (const, n, n log n, n^2), so a calibration
- * that changes a built-in's model recounts exactly too.
+ * that changes a built-in's model recounts exactly too. The size terms are kept for every
+ * built-in that has them, priced or not, so a price that adds one recounts exactly, and the
+ * audit can test one a price leaves out. Reports from before size terms were kept say so
+ * (`Report.unit_terms` absent): they cannot be recounted with a price that uses one.
  */
 
 export type Units = Record<string, number>;
@@ -40,7 +44,10 @@ export const DYNAMIC_PRICE: Record<SiteKind, DynamicPrice | null> = {
 	generator: null
 };
 
-export const BUILTIN_TERMS = ['calls', 'n', 'nlogn', 'n2'] as const;
+export const BUILTIN_TERMS = ['calls', 'n', 'nlogn', 'n2', ...SIZE_TERMS] as const;
+
+/** Where the size terms start in BUILTIN_TERMS (and in the runtime's slots of a built-in). */
+export const SIZE_TERM_OFFSET = 4;
 
 export function add_unit(u: Units, key: string, v: number): void {
 	if (v !== 0) u[key] = (u[key] ?? 0) + v;
@@ -63,7 +70,7 @@ export function price_units(u: Units, prices: Prices): number {
 			const key = k.slice(3, dot);
 			const term = BUILTIN_TERMS.indexOf(k.slice(dot + 1) as (typeof BUILTIN_TERMS)[number]);
 			let t = builtins.get(key);
-			if (!t) builtins.set(key, (t = [0, 0, 0, 0]));
+			if (!t) builtins.set(key, (t = Array.from({ length: BUILTIN_TERMS.length }, () => 0)));
 			if (term >= 0) t[term] += v;
 		} else {
 			steps += v * (prices.ops[k as OpKind] ?? 0);
@@ -77,19 +84,43 @@ export function price_units(u: Units, prices: Prices): number {
 	return Math.round(steps * 1e6) / 1e6;
 }
 
-/** Cost of `calls` calls with the given size sums: linear in the sums for every model. */
+/**
+ * Cost of `calls` calls with the given size sums (aligned with BUILTIN_TERMS): linear in the sums
+ * for every model and every size term.
+ */
 export function builtin_terms_cost(p: Prices['builtins'][string], t: number[]): number {
 	const [calls, n, nlogn, n2] = t;
+	let cost: number;
 	switch (p.model) {
 		case 'const':
-			return calls * builtin_cost(p, 0);
+			cost = calls * builtin_cost(p, 0);
+			break;
 		case 'n':
-			return calls * p.base + p.k * n;
+			cost = calls * p.base + p.k * n;
+			break;
 		case 'n_log_n':
-			return calls * p.base + p.k * nlogn;
+			cost = calls * p.base + p.k * nlogn;
+			break;
 		case 'n2':
-			return calls * p.base + p.k * n2;
+			cost = calls * p.base + p.k * n2;
+			break;
 	}
+	if (p.terms) {
+		for (let i = 0; i < SIZE_TERMS.length; i++) {
+			const per = p.terms[SIZE_TERMS[i]];
+			const v = t[SIZE_TERM_OFFSET + i] ?? 0;
+			if (per !== undefined && v) cost += per * v;
+		}
+	}
+	return cost;
+}
+
+/** The size terms a price uses (`parts`...): a report that kept none of them cannot be recounted with it. */
+export function priced_size_terms(prices: Prices): Set<string> {
+	const out = new Set<string>();
+	for (const p of Object.values(prices.builtins))
+		for (const t of Object.keys(p.terms ?? {})) out.add(t);
+	return out;
 }
 
 /** Sparse op units of an ops vector aligned with OP_KINDS, times `count`. */

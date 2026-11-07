@@ -148,7 +148,11 @@ export async function coverage_command(
 		// A file nothing could read on the PR's tree, that the base could read (or did not have).
 		const base_unreadable = new Set((base_inv?.errors ?? []).map((e) => e.file));
 		const unreadable = inv.errors.filter((e) => !base_unreadable.has(e.file));
-		const g = gate(measured, base_ids, exemptions, { renames, unreadable });
+		const g = gate(measured, base_ids, exemptions, {
+			renames,
+			unreadable,
+			contracts: inv.contracts
+		});
 		const md = render_gate(g);
 		const out = flags.get('out');
 		if (out) writeFileSync(out, JSON.stringify({ ...g, all: measured }, null, '\t') + '\n');

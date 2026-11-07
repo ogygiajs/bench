@@ -11,12 +11,16 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Engine health     | `heisenbench health`                                 | plain    | yes                                        | yes                  |
 | Growth            | `heisenbench growth`                                 | counting | cases with `scale`                         | cases with `scale`   |
 | Recorded growth   | `heisenbench growth --recorded`                      | counting | the changed source files                   | every source file    |
+| Contracts         | `heisenbench contracts`                              | none     | both trees, from what growth measured      | every contract       |
 | Price audit       | `heisenbench audit`                                  | both     | no                                         | cases with `scale`   |
 | Time              | `heisenbench time`, `heisenbench run --measure time` | plain    | yes                                        | yes                  |
 | Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
 | Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | nightly: every case  |
 | Blame             | `heisenbench blame`                                  | counting | regressed cases, 60 recounts or 5 min      | no                   |
+| Upgrades          | `heisenbench upgrade`                                | counting | a package counted at another version       | no                   |
+| Upstream draft    | `heisenbench upstream draft`                         | counting | no (on demand)                             | no (on demand)       |
+| Proof             | `heisenbench prove`                                  | counting | no (on demand)                             | no (on demand)       |
 | Mutation score    | `heisenbench mutate`                                 | counting | no                                         | nightly: all reached |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
 | Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
@@ -156,6 +160,13 @@ the cell says `· below resolution` and the metric is not judged.
 
 `heisenbench run --measure time` times one tree and puts p50 next to the steps in the report.
 
+### Odds it shows on the clock
+
+The step table gives each changed case the odds that its step change shows up here, as a
+verdict of this rule: a model fitted on timed step changes ([feel-odds.md](feel-odds.md)). The
+changes were timed on a busy machine, so the odds lean low. They are words next to the counts;
+pass or fail never reads them.
+
 ### Estimated ns and time-led cases
 
 A report also carries an estimate: the case's operation counts times the fitted ns per operation
@@ -169,7 +180,11 @@ comment lists time-led cases under the step table: for them, trust the time laye
 What V8 allocates. On the plain build the case is warmed until its code is optimized, then run in
 batches under V8's sampling heap profiler, with objects later collected kept in the profile, so
 every allocation counts, not only what survives. The child runs without inlining, so a function's
-frame holds its own bytes.
+frame holds its own bytes, and compiles optimized code on the main thread
+(`--no-concurrent-recompilation`), so the code the warm-up asked for is in before the first
+sample however busy the machine is. Compiled on a helper thread, it came in late beside 48 busy
+processes on 16 cores, and a function whose objects escape analysis removes read 450 B a call
+instead of 0.
 
 The interval starts small (32 B between samples) and doubles until a batch stays under 200,000
 samples, judged from a first coarse look at what one call allocates. Without that, a case that
@@ -239,11 +254,20 @@ evidence, and clean code can give none of them. In a child with `--expose-gc`:
    made by those rounds and are still held. Each gets its shortest strong retainer chain from the
    GC roots, where compiled code, feedback vectors, inline caches, hidden classes and allocation
    sites hold nothing. Read back from the object, the first variable that a function of a source
-   module keeps alive (a module `let` or `const`, or one a closure captured) owns it. Objects no
-   such variable owns belong to the engine, the bench file or a dependency, and are never a leak.
-   The owned objects are grouped by variable and type. The largest group is a leak when it holds
-   at least one object per 4 calls; its variable, the function that uses it, and the declaration
-   line are reported.
+   module or of a dependency keeps alive (a module `let` or `const`, or one a closure captured)
+   owns it. Objects no such variable owns belong to the engine or the bench file, and are never a
+   leak. The owned objects are grouped by variable and type. The largest group is a leak when it
+   holds at least one object per 4 calls; its variable, the function that uses it, and the
+   declaration line are reported, and for a dependency its package (`name@version`, as the
+   counting build names it) and how the variable holds the objects (`names → table → [44193]`:
+   a Map's table and an entry).
+
+A dependency's cache is the code's leak as much as its own: the code calls it on every request.
+It meets the same three rules, so a dependency's cache that fills once or stays bounded is not
+one. `test/measure.test.ts` plants two (a CommonJS package's module-level `Map` with a key per
+call, an ES module package's module-level array pushed per call) and their bounded twins (20
+keys, 20 entries): the two are found with their package, variable, function and line, the twins
+do not even grow.
 
 A leak held only by a global property (`globalThis.x = ...`) has no owning variable and is not
 reported. The log line gives the floor next to the growth, and says when a case grew but step 3
@@ -298,6 +322,37 @@ it is not counted: growth stops there and falls back to a doubling ladder of the
 ok       exponential  exponential (exponent 7.999; 89 / 341 / 5381 / 1376261 steps; exceeded the cap at 16x, grown on 1x / 2x / 4x / 8x)
 ```
 
+A size that overflows the call stack (code that recurses as deep as its input) stops growing the
+same way: the sizes below it are counted on the same ladder and fitted, and the line says where it
+overflowed. That is a finding of its own. neotraverse's `forEach` on a 32-level chain, before the
+case had a `scale` of its own:
+
+```
+ok       forEach · deep  quadratic (exponent 1.907; 22299 / 51439 / 132783 / 387727 / 561327 / 1266639 / 4500559 / 16872783 steps; odds quadratic >99%; overflowed the call stack at 100x, grown on 1x / 2x / 4x / 8x / 10x / 16x / 32x / 64x)
+```
+
+Two more notes keep a class from reading as more than it is:
+
+- **No step moved.** When the generic scaler grew the input but every size counted the same
+  steps, the class is `constant` and the line says the scaler did not grow what the work follows.
+  A walk over a flat object of 64 keys is constant in the length of its string values, which is
+  all the scaler grows there:
+
+  ```
+  ok       forEach · wide  constant (exponent 0; 10523 / 10523 / 10523 steps; odds constant 96%, linear 2%, log 1%; no step moved while the generic scaler grew the input from 169 to 6307: it grows strings, arrays, Maps, Sets and chains, not an object's keys or a number. If the work follows those, give the case a `scale`)
+  ```
+
+  The report marks the case `unmoved`.
+
+- **A fixed part.** Each class is fitted as `a + b f(k)`. When the fixed part `a` is half the steps
+  or more at the largest size, the exponent between the two largest sizes reads low, and the line
+  gives the share (`fixed_share` in the report). A `find` whose hit stays near the front of the
+  grown array:
+
+  ```
+  ok       find · array(256), hit near the end  linear (exponent 0.142; 343456 / 357280 / 495520 steps; odds linear 96%, n log n 3%; 69% of the steps at 100x are a fixed part, the rest grows linear)
+  ```
+
 Exact steps of one input scaled up never fall. When they do, the scaled input is most likely not
 valid input any more (a parser that stops at its first error, a function that refuses a repeated
 element): the class is `shrinks` (only down) or `irregular` (down and up), `shrinks: the scaled
@@ -326,9 +381,10 @@ in a PR names the function and the shares too.
 
 The input is grown by a generic scaler: arrays and strings repeated k times, `Map` and `Set`
 entries repeated with distinct keys, linked chains made k times deeper, plain objects scaled
-property by property. Each collection grows once, so the input grows linearly in k. An input that
-cannot grow that way (a size given as a number, a structure that must stay valid) declares its
-own:
+property by property. Each collection grows once, so the input grows linearly in k. A link back
+to an object being scaled (`o.self = o`, a parent pointer) points at that object's copy, so a
+cycle stays a cycle and is never followed round. An input that cannot grow that way (a size given
+as a number, an object's key count, a structure that must stay valid) declares its own:
 
 ```ts
 bench('match_path: every request against a 300-route table', ({ table, paths }) => ..., {
@@ -341,6 +397,52 @@ PR against base, a class change (linear to quadratic) is a finding. The same cla
 steps is not: the step table already shows that. A side that `shrinks` or is `irregular` is listed
 under "Steps that fell as the input grew", never a finding. CI grows only the cases that declare
 `scale` (`--scaled on`).
+
+### Growth odds
+
+The class is one name. The odds say how sure it is: `odds quadratic 93%, n log n 7%`. Counts are
+exact, but three sizes leave room: the doubt is about which curve made the points, not about noise
+in them. `src/growth/odds.ts` scores every shape as a model of the points and turns the scores into
+odds; it is a fixed sum on fixed grids, so the same points give the same odds, byte for byte.
+
+- **Models.** Each shape is `steps = scale × (a fixed part + its own term)`, its own term at least
+  1% of the steps at the largest size. When no single term fits, n log n and the shapes past it
+  also get a version with a linear part beside their own term (a quadratic loop inside a linear
+  pass). On three sizes that version fits any rising points exactly, so odds that rest on it count
+  as a close call (below).
+- **Misfit.** Relative, on log steps: 1.5% (the terms are simple functions of the scale factor;
+  real code's are close, not equal), plus one step of rounding for tiny counts.
+- **Evidence.** The likelihood averaged over each model's shares (and over the power of
+  `polynomial`, the rate of `exponential`), the overall scale integrated out exactly. A model with
+  more parts spreads its prior over more outcomes, so it wins only by fitting better. No BIC
+  penalty is added on top.
+- **Prior.** How often each shape shows up (`src/growth/priors.ts`): until a labeled dataset
+  exists, the classes of the 1,116 functions growth from recorded calls decided on ogygia's main
+  (mostly constant, log and linear; about 1 in 70 superlinear), each given half a count more.
+  `--growth-prior file.json` (shape → weight) replaces it.
+- **Late start.** A curve exactly flat up to a measured size and rising from there (a branch that
+  starts once the input is long enough) is its own model, with a prior of 20%. Seen on one rising
+  step, the shape after it is mostly the prior's.
+- **Another path.** When a function that ran at one size does not run at the next, the scaled
+  input took another path from there (it stopped being valid and the code returns early): the
+  odds are read from that size up (`odds_from`), with three sizes or more there (else none, and
+  active sizing counts one more).
+- **Noisy points** (recorded calls of different inputs) get odds from the power: log steps over
+  log size fitted with Student-t errors (a call far off the line weighs little), each shape a band
+  of powers with its prior spread over the band. The smallest calls pull the line most: when they
+  cost under a quarter of what the other calls' line says (a trivial input that returns at once),
+  they are left out.
+
+**Active sizing.** When the likeliest shape has under 90%, one more size between the two largest
+is counted (30x between 10x and 100x, 8x between 4x and 16x), under the same cap, and the odds are
+read again: `odds quadratic >99% (with 30x)`. The probe is kept apart (`probe`): the class stays
+fitted on the sizes asked, so it never moves the class a PR is compared on.
+
+**Gate.** A change to quadratic or worse is a finding only with at least 90% odds of superlinear
+growth on the PR side (`--superlinear-odds`); below, it is listed under "Class changes the odds do
+not back". A report from before the odds keeps the class rule alone. The planted cases are in
+`test/growth-odds.test.ts`, with bench #24's findings and false alarms on ogygia as a key
+(`test/growth-odds-key`).
 
 ## Growth from recorded calls
 
@@ -377,9 +479,11 @@ with the cap and the ladder above, and fitted exactly.
 
 A function **grows** (a finding) when its own steps are superlinear, or when a function its calls
 spend 5% or more of their steps in at the largest size is: the part that grows fastest is the part
-that takes over at sizes no test reached. Superlinear on recorded points means a power of 1.5 or
-more, r² of 0.8 or more and a rising work per unit, all with any one call left out (one trivial
-call at the smallest size does not make a line steep); on scaled points, quadratic or worse.
+that takes over at sizes no test reached. Superlinear means at least 90% odds of quadratic or worse
+(`--superlinear-odds`; [growth odds](#growth-odds)), with 1,000 steps or more at the largest size.
+On recorded points the power is fitted with Student-t errors, so one trivial call at the smallest
+size does not make a line steep, and the spread of sizes must hold with any one call left out and
+the most work sit at the largest size. On scaled points a close call counts 8x as well.
 
 ogygia at `57882cc`, with the `scale` of `transformHost: a route page as its island count grows`
 removed: its tests and bench cases called `transformHost` 280 times, on sources of 157 to 7,956
@@ -403,6 +507,113 @@ caller's parts); a sample a test built with state the replay lacks throws and is
 generic scaler cannot grow a source text into a valid larger one, so a compiler's curve comes from
 the sizes its tests and bench cases pass it.
 
+## Complexity contracts
+
+A speed limit written on the function. The growth layers find a function that grows too fast
+after the fact; a contract says up front how fast it may grow, and CI holds it to that.
+
+```ts
+/** @heisenbench linear in code */
+export function collect_flag_sites(code: string, id: string, file: string): FlagSite[] {
+```
+
+**Declaring.** The tag names a class (`constant`, `log`, `linear`, `n log n`, `quadratic`, `cubic`,
+`quartic`) and, after `in`, the parameter the growth is over; without `in` it is over the whole
+input. It binds to the function that starts right after its doc comment: a function declaration,
+a `const` holding a function or an arrow, a class method or an object method. On an overload
+signature it binds to the implementation. A tag with an unknown class, a parameter the function
+does not have, two tags in one comment, or no function after it is an error, and the check fails
+on it. `@heisenbench` in the middle of a sentence is a mention, not a tag.
+
+A tag on the function and not an entry in the bench file's config, because it is the least
+intrusive of the two: a comment changes nothing that runs (the counting transform, the plain
+build and the types ignore it), it sits where a reviewer reads the code it limits, and it moves
+and renames with the function. A config entry would name `module > path`, which a move or rename
+orphans without a word. And tools that read doc comments show it: tsc keeps it in the `.d.ts`
+(and so in API docs built from the declarations), and `heisenbench dts` keeps it on private
+functions, so an editor shows the contract wherever the function is called.
+
+**Measuring.** Two sources, both the growth layers' own:
+
+- **Growth cases.** Every growth case that runs a contracted function keeps that function's own
+  curve (`contracts` in the case): its inclusive steps per call at each size of the case, fitted
+  and given odds like the case. When the odds of the case or of a contracted function are a close
+  call, the one more size of [active sizing](#growth-odds) is counted for both. The size is the
+  case's scale factor, and the curve is per call, so a function the case calls once per row is
+  measured on what one call costs.
+
+  ```
+  ok       flag inventory: the flag calls of a module as it grows  linear (exponent 1.008; 570521 / 5669238 / 57681071 steps; odds linear >99%)
+             contract packages/core/src/compiler/flags.ts > collect_flag_sites  linear (exponent 1.008; 570521 / 5669238 / 57681071 steps per call; odds linear >99%)
+  ```
+
+- **Recorded calls.** [Growth from recorded calls](#growth-from-recorded-calls) of the function:
+  its steps per call over the recorded sizes of the argument the tag names. When growth chose
+  another argument, that argument's own fit is read (the report keeps each argument's odds); when
+  the sizes span too little, the largest call's argument is scaled.
+
+**Checking.** `heisenbench contracts <source files> --reports a.json,b.json` reads the tags and
+holds each against every curve the reports have of its function. Each curve says:
+
+| Verdict | When                                                                                                 |
+| ------- | ---------------------------------------------------------------------------------------------------- |
+| holds   | the declared class or a cheaper one has at least 90% odds                                            |
+| broken  | a steeper class has at least 90% odds (recorded calls: with 1,000 steps or more at the largest size) |
+| unsure  | neither                                                                                              |
+
+A contract is broken when any curve breaks it, holds when one holds it and none breaks it, and is
+unmeasured when nothing measured its function. The check passes only when every contract holds:
+broken, unsure, unmeasured and a tag that declares nothing all exit 1. The bar is 90%
+(`--contract-odds`), the one the growth layer already uses twice: a superlinear finding needs 90%
+odds of quadratic or worse, and odds under 90% on the likeliest shape are a close call that gets one
+more size counted. A contract that holds is one the growth layer itself calls settled, with at most
+one chance in ten of a steeper shape left. "The declared class or a cheaper one" is what a speed
+limit means: a function declared linear that is log is within it.
+
+A broken contract says what was measured, at which sizes, and which lines carry the steps at the
+largest size (the function's own lines and those of everything it calls). ogygia `01dc5b9`, the
+commit before #187, with #187's growth cases:
+
+```
+BROKEN   packages/core/src/compiler/flags.ts > collect_flag_sites `@heisenbench linear in code` is broken in growth case flag inventory: the flag calls of a module as it grows: measured quadratic (exponent 1.921), odds quadratic >99%; 1x / 10x / 100x (input sizes 2,058 / 20,638 / 213,638): 771,705 / 26,091,064 / 2,175,398,767 steps per call; at the largest size most steps on packages/core/src/compiler/flags.ts:47 (97%), rolldown@1.2.16/dist/shared/parse-Bgfg7ZwM.mjs:27 (2%); odds of linear or cheaper <1%
+```
+
+Line 47 is `line_at`'s loop, which counted each flag's line from the top of the file. The report
+section is `contracts`; `--md` writes the failures and, collapsed, the contracts that hold.
+
+**Hygiene.** A contract with no measurement source fails the check as unmeasured, and the
+[measurement-source gate](#the-measurement-source-gate) fails on it too: `heisenbench inventory`
+lists every contract, and a contracted function with no measurement source fails the gate whether
+it is new or not, and whatever exemption names it.
+
+**In a PR.** `heisenbench diff` shows a "Complexity contracts" part when the PR adds, changes or
+removes a contract, when one that did not hold on the base holds now, and for every contract that
+does not hold on the PR side. A PR that changes none and breaks none gets no part.
+
+**On ogygia.** The six functions #187 made linear, each with a contract (on a local branch: ogygia
+declares none yet). On main (`b46798f`) all six hold; on `01dc5b9`, with #187's bench files, all six
+are broken, each at the lines #187 changed. Growing the five cases took 4 s on main and 32 s on
+`01dc5b9` (M4 Max), and the check 1 s.
+
+| Function                           | Contract           | main `b46798f`                 | `01dc5b9`                  |
+| ---------------------------------- | ------------------ | ------------------------------ | -------------------------- |
+| `flags.ts > collect_flag_sites`    | `linear in code`   | holds: linear >99%             | broken: quadratic, `:47`   |
+| `page-insights.ts > lcp_rivals`    | `linear in visit`  | holds: log >99%                | broken: quadratic, `:2621` |
+| `gc.ts > attribute_gc`             | `n log n in input` | holds: linear 56%, n log n 40% | broken: quadratic, `:257`  |
+| `patterns.ts > find_wait_patterns` | `n log n in input` | holds: n log n >99%            | broken: quadratic, `:2084` |
+| `source-scan.ts > constant_work`   | `linear in source` | holds: linear >99%             | broken: quadratic, `:1309` |
+| `source-scan.ts > hoist_plan`      | `linear in source` | holds: linear >99%             | broken: quadratic, `:1309` |
+
+`attribute_gc` sorts the pauses' moments and the timeline's segments, so its contract says
+n log n: declared linear, three sizes give it 56% linear and 40% n log n, and the check calls it
+unsure.
+
+Limits: a growth case measures the function over whatever the case scales, so the parameter the
+tag names is checked only by recorded calls; a per-call curve averages the calls of one size, so a
+function called on inputs of very different sizes in one case reads their mean; `.svelte` files
+and dependencies are not read for tags; recorded calls replay only top-level functions, so a
+method's contract needs a growth case.
+
 ## Price audit
 
 Steps are only as good as the prices. Until `80ffd77`, every join (`s += x`, `a + b`, a template
@@ -414,11 +625,13 @@ quadratic while V8 ran them in linear time with cons strings. A person found it 
 For every case with a scaler it takes the steps the growth layer counted at 1x, 10x and 100x,
 split by kind (an op kind such as `call`, a dynamic cost such as `dyn.string_char`, a built-in
 such as `bi.Array.prototype.sort`), and times the plain build at the same sizes: 5 rounds, each
-in a fresh process. Then, per case and per round, it fits time over the sizes with competing
+in a fresh process, each size the median call of its median slice of three taken in turns (so a
+busy CI runner's waits do not bend one size). Then, per case and per round, it fits time over the sizes with competing
 models: the steps as they are; the steps plus a cost per call; the steps with an engine that gets
 a little slower per step as the input grows; and, for each kind that grows apart from the rest of
 the case, the steps with that one kind's price free (and, for a built-in, with a size term its
-price model leaves out). A kind is a **price suspect** when, in every round:
+price model leaves out). A kind is a **price suspect** when, in every round that has a say (a
+round no model explains abstains; most rounds, at least two, must be left):
 
 1. the steps miss the time by 15% or more (RMS over the sizes),
 2. freeing that kind's price removes 90% of the miss, and at least half of what a per-call cost or
@@ -455,10 +668,32 @@ The split is acorn's (counted since dependencies are counted by default):
 on a prefix of the template that grows with it. `split` is priced per character (366 + 18.5 n),
 but what it costs follows the parts it makes. Timed on its own on 40,000 characters of code with a
 line break every 23, it took 0.45x its price; on 48,000 characters with a separator every 4, 2.3x.
-The audit saw acorn's long lines at 0.1x. A price per part would fix it; that is a calibration
-change and is left for one.
+The audit saw acorn's long lines at 0.1x.
 
-The old pricing flags these four cases in both of its runs, and today's prices flag only
+Prices v3 price `split` per part (154 + 125 parts) and five more built-ins by their size terms
+([calibration/results.md](../calibration/results.md#size-terms-prices-v3-2026-11-07)). One full
+audit of all 11 files on ogygia `01dc5b9` (29 cases, 5 rounds), judged with each price file on the
+same points and times:
+
+| Prices | Misfit ≥ 15% | Findings                                   | `transformHost` (growing)          |
+| ------ | -----------: | ------------------------------------------ | ---------------------------------- |
+| v2     |            7 | `split` on `transformHost`, 0.17x          | misfit 0.384, suspect `split`      |
+| v3     |            8 | `Object.entries` on `lift_document`, 0.19x | misfit 0.308, `engine`, no suspect |
+
+On `transformHost` split is 18% of the steps at 100x instead of 91%; time grows with exponent
+1.69 against steps 1.87, which the engine model explains (the 100x template outgrows the caches,
+as `match_path`'s table does), and no price is blamed. The largest kind there now is Svelte's
+`template.slice(0, start).replace(/\S/g, ' ')` before each snippet's parameters, one match per
+character of the prefix: timed alone, 7.1 ns a match against 11.5 priced, inside the 4x bar.
+
+The v3 finding was there before, hidden: `lift_document`'s `replace` with a callback was priced
+per character, and priced by its matches it shrinks, so the `Object.entries` beside it stands out.
+`Object.keys`, `values`, `entries` and `assign` are priced n² because the calibration's objects
+turn into dictionary mode from 64 keys (`Object.entries` takes 40 ns on 16 keys, 4.4 µs on 64,
+362 µs on 4,096: linear from 64 on, with a step at the switch). That price is the next to fix,
+with calibration objects that stay in fast mode beside ones that do not.
+
+The old pricing flags these four cases in both of its runs, and the v2 prices flag only
 `split` in both of theirs (and nothing at all in four earlier runs that counted only devalue,
 Svelte and magic-string). 22 cases miss time by less than 15%. Of the other seven, none is a
 suspect in any run:
@@ -535,6 +770,53 @@ high, goes into a corpus (at most 48 inputs). The search climbs from the current
 change that is at least as dense, and after 40 tries without a new best restarts from the best
 input or from one in the corpus. Every random choice comes from one seeded generator.
 
+**Which edit.** Each edit operator is an arm of a bandit ([`src/search/bandit.ts`](../src/search/bandit.ts),
+Thompson sampling): the 11 grammar operators, the plain string edits, each of the 10 array
+edits, the number edges and the 2 object edits. An edit's reward is how much denser it made the
+input it edited, `gain / (gain + 0.25)` with `gain` the new density over the old one minus 1 (a
+25% gain is worth 1/2); an edit that is no denser, that the code rejects or that does not fit
+gets 0. Each try draws a reward rate for every operator that can change the input from its Beta
+posterior and runs one, in proportion to its share in the fixed schedule times its draw. Every
+operator starts from the same prior, the rate pooled over all operators, worth 16 tries: with a
+flat prior, an operator that ran a lot sinks to its true low rate while one that barely ran
+still looks like a coin flip, and the tries drift toward every operator equally. So before any
+evidence the bandit is the fixed schedule, and an operator moves off its share only on its own
+results. The draws come from the same seeded generator; same seed, same schedule.
+`--schedule fixed` is the schedule before it (operators by fixed weights, one try in six a plain
+edit anywhere): the same report as before the bandit, byte for byte. Each case reports
+`found_at` (the try that first found an input worth a look, as a finding defines it), `best_at`
+(the try that found the worst input) and `arms` (each operator's inputs run, and how many were
+denser).
+
+`node scripts/search-schedules.ts [--seeds 300] [--noise]` runs both schedules on the planted
+cases below and the answer key, with the same budget and seed, and counts the tries each takes
+to its planted input. Over seeds 1 to 300 (default budget of 300 tries):
+
+| case                   | found, fixed | found, bandit | median tries, fixed | median tries, bandit | all tries, fixed | all tries, bandit |
+| ---------------------- | ------------ | ------------- | ------------------- | -------------------- | ---------------- | ----------------- |
+| backtracking regex     | 226/300      | 246/300       | 122.5               | 101                  | 50878            | 45099             |
+| quadratic nesting      | 300/300      | 300/300       | 6                   | 6                    | 3130             | 3543              |
+| a loop that never ends | 300/300      | 300/300       | 2                   | 2                    | 1103             | 772               |
+| insertion sort (key)   | 300/300      | 300/300       | 7                   | 7                    | 3659             | 3441              |
+| substring count (key)  | 279/300      | 284/300       | 32                  | 31                   | 17962            | 16578             |
+
+"All tries" counts a search that never found its input as its whole budget. The final inputs:
+
+| case                  | median final, fixed | median final, bandit | per seed, bandit better / worse | fixed against itself on another seed |
+| --------------------- | ------------------- | -------------------- | ------------------------------- | ------------------------------------ |
+| backtracking regex    | never finishes      | never finishes       | 61 / 48                         | 65 / 79                              |
+| quadratic nesting     | 2.175x density      | 2.831x density       | 206 / 91                        | 156 / 139                            |
+| insertion sort (key)  | 12.954x             | 12.966x              | 49 / 42                         | 53 / 37                              |
+| substring count (key) | 4.67x               | 4.67x                | 120 / 126                       | 125 / 129                            |
+
+The two linear cases have no finding with either schedule. Three of the five planted inputs are
+found in under ten tries, before the bandit has much evidence; there it is the fixed schedule
+drawn from a different random stream, and the quadratic nesting takes 13% more tries in all
+(the same median; a few seeds wander for a hundred tries or more with either schedule). It pays
+where a search is long and one operator keeps paying, as the regex's runs do: 20 more seeds find
+it, in 11% fewer tries. A final input worse on one seed is chance: the fixed schedule against
+itself on another seed is as often worse. The nesting ends denser with the bandit on most seeds.
+
 **Regexes.** Built-ins are priced by input size, so V8 running a regex that backtracks costs no
 more steps than one that walks its input once. During the search's own runs (never `heisenbench
 run`), every match first runs on a model of V8's backtracking matcher
@@ -582,11 +864,12 @@ JSON section keeps every case; `--md` writes only the findings:
 A PR case is flagged when its worst input costs at least 4 times its typical one and at least
 twice the base's ratio, when it never finishes and the base does, or when its pattern grows
 superlinearly and the base's does not. `--guided off` is the plain search (random edits, the
-most steps wins, no corpus, no shrinking or growing) and `--regex off` drops the regex model.
+most steps wins, no corpus, no shrinking or growing), `--regex off` drops the regex model and
+`--schedule fixed` the bandit.
 
-In `heisenbench verify`, the search finds an input that costs 11.25x the typical steps for an
-insertion sort and 4.93x for a naive substring count, and nothing for a plain summing loop
-(1.00x).
+In `heisenbench verify`, the search finds an input that costs 11.24x the typical steps for an
+insertion sort and 8.11x for a naive substring count (the fixed schedule: 11.25x and 4.93x), and
+nothing for a plain summing loop (1.00x).
 
 **The planted tests** ([`test/search.test.ts`](../test/search.test.ts)), seeds 1 to 3:
 
@@ -594,14 +877,15 @@ insertion sort and 4.93x for a naive substring count, and nothing for a plain su
   the regex model on and the same 300 tries, finds no slow input on any seed (1.03x, 1.95x,
   1.13x the typical steps, never a runaway): its edits break the JSON or cannot grow a value
   past its seed length. The guided search finds a value the regex backtracks on without end on
-  every seed, within 42 to 111 tries, and shrinks it to one member: `{"":"llllllllllllll+"}`,
-  `{"":"11111111111111/"}`, `{"":"oooooooooooooo-"}` (about 100 characters to 23).
+  every seed, within 158, 42 and 106 tries (the fixed schedule: 93, 42, 111), and shrinks it to
+  one member: `{"":"eeeeeeeeeeeeee{"}`, `{"":"aaaaaaaaaaaaaa+"}`, `{"":"aaaaaaaaaaaaaa?"}` (about
+  100 characters to 23).
 - A parser that checks its brackets balance, then scans each group to its close: linear on flat
   input, quadratic on deep valid nesting. The plain mutator finds nothing (1.02x to 1.03x): its
   edits unbalance the brackets, which the parser rejects. The guided search finds it on every
-  seed, shrinks it to one or two groups (`(m)`, `(3)`, `()(())`) and grows it by nesting:
-  quadratic, exponent 1.97 to 1.99, with all of the extra steps on the three lines of the inner
-  scan.
+  seed, worth a look after 4, 4 and 1 tries (the fixed schedule: 19, 7, 39), shrinks it to one
+  group (`()"`, `(8)`, `() `) and grows it by nesting: quadratic, exponent 1.97 to 1.98, with all
+  of the extra steps on the three lines of the inner scan.
 - A word counter: no finding (1.03x the setup's density on every seed).
 
 **On ogygia** main `01dc5b9` (M4 Max, seed 1, one process per bench file, every case bounded by
@@ -906,6 +1190,279 @@ copies gave the same verdict for every mutant as one stopped halfway and finishe
 `--work`. A sample that small is a rough estimate of the rarer operators: it put the quadratic
 score of the functions a case runs at 0% (the full run: 18%).
 
+## Dependency upgrades
+
+A PR that changes a version in the lockfile or a `package.json` changes code nobody reviews in
+the PR. The step table shows the upgraded package's functions next to the project's, mixed with
+whatever else the PR changed, and blame says the cost is outside the hunks: every candidate tree
+shares the head's `node_modules`. `heisenbench upgrade` holds the project's code still and changes
+only the dependencies:
+
+```bash
+heisenbench upgrade base.json pr.json --root <the PR's checkout, installed> --base-root <the base's checkout, installed>
+```
+
+1. **Upgrades.** A package the two reports count at different versions (`svelte@5.56.8` in one,
+   `svelte@5.57.3` in the other; `--packages` keeps some). A package only one side counts is
+   listed as added or removed. A transitive upgrade is found the same way: on ogygia, the svelte
+   bump also moved `@sveltejs/acorn-typescript` from 1.0.11 to 1.0.13.
+2. **Two trees.** Scratch copies of the PR's checkout, made with blame's tree machinery
+   (`mirror_tree`): one as it is, one whose every `node_modules` comes from the base's checkout
+   instead. pnpm's links to workspace packages are relative, so in the second tree they reach the
+   copy's packages: the PR's code with the base's dependencies.
+3. **Recounts.** The cases that count an upgraded package on either side, together with every
+   other case of their bench files (the files run as `heisenbench run` ran them), counted on both
+   trees with blame's recount child, side by side.
+4. **Lines.** The two counts are diffed the way `heisenbench diff` diffs a PR, with the package's
+   own `git diff --no-index -M` between its two installed versions as the line map, in module ids
+   (`svelte@5.56.8/src/x.js` → `svelte@5.57.3/src/x.js`). Lines that only moved compare one to one;
+   lines inside an upstream hunk are "new code" and marked "changed upstream". A function is the
+   same across the versions by its place and its code hash (identity.ts), through files the
+   package moved: svelte 5.57 moved `fuzzymatch.js` and `check_graph_for_cycles.js` to
+   `src/compiler/utils/`, and their functions pair as they are.
+5. **Controls.** A case that counts none of the upgraded packages runs the same code on both
+   trees. When its steps change anyway, the count depends on something else: module state left by
+   the cases before it in the process, or a package that changed without being counted. It is
+   listed apart, never blamed on the upgrade. A case whose recount with the PR's install differs
+   from the PR's report is listed too: its count depends on run order.
+
+Each case gets one line, and the functions and lines under it:
+
+```md
+- upgrading svelte 5.56.8 → 5.57.3 and @sveltejs/acorn-typescript 1.0.11 → 1.0.13 makes
+  `transformHost: a route page with twenty islands, client leg` **−66.1%** (−12.70M steps; 78% in
+  `svelte@5.57.3/src/compiler/phases/1-parse/state/tag.js > open` L489)
+- upgrading @sveltejs/acorn-typescript 1.0.11 → 1.0.13 and svelte 5.56.8 → 5.57.3 makes
+  `page data keys: which page.data keys a component reads` **+0.9%** (+34.1K steps: +67.4K in
+  `@sveltejs/acorn-typescript@1.0.13/index.js > adaptParser > EffectAdapter > updateContext`
+  L1369, −33.3K elsewhere)
+```
+
+That is a local branch of ogygia `b46798f` that bumps svelte from 5.56.8 to 5.57.3 in the
+workspace catalog (and the lockfile): of the 9 cases of the compiler bench file, 5 count svelte,
+and the upgrade made four of them faster. In the transformHost cases `open` reads the template
+far less (its line 489 −9.92M steps) and acorn's `Parser` is built 141 times instead of 202
+(−2.64M). The one that got slower pays for the effect tracking acorn-typescript 1.0.13 added: a
+new `updateContext` on every token. 139 files of svelte changed between the two versions; the two
+recounts took 10 s on an M4 Max. No case that counts neither package moved, and every recount with
+the PR's install matched the PR's report.
+
+The planted case in `test/upgrade.test.ts` is a file dependency at 1.0.0 and 1.1.0: 1.1.0 adds two
+comment lines at the top (every later line moves down), moves a helper to another file, and plants
+a loop over the words found so far in `tokenize`. The upgrade names the two planted lines as
+changed upstream, and nothing else: the moved lines compare one to one, the moved helper is the
+same function, and the bench file's case that never calls the dependency does not change.
+
+### Drafting the upstream report
+
+`heisenbench upstream draft upgrade.json` turns one finding (the case slowed most and the function
+with most of its change, or `--case`, `--function`) into an issue for the package's maintainers. It
+writes the issue and a `repro.ts` beside it, and never posts anything.
+
+1. **The call.** The package's function that code outside it called in the case (the upgrade
+   keeps these per case, from the call graph), imported the way a stranger would: the `exports`
+   specifier whose file is that function's module or re-exports it (`slowdep`, `svelte/compiler`).
+   `--entry svelte/compiler#parse` names one instead.
+2. **The input.** The arguments the case passed to that function, recorded by running the case
+   once with the recorder on that one function (coverage/recorder.ts), the largest argument
+   repeated `n` times. A path into the checkout becomes `/repro/<file name>`. Or `--input
+   generator.ts`: a module that exports `input(n)` (the arguments of one call), optionally
+   `call(...args)` (when one call is more than one export: a parser built from a plugin) and
+   `sizes`. It may import Node's built-ins, the package and the packages the package itself
+   resolves; never the project's files.
+3. **The script.** A standalone `repro.ts` that times the call at each size, after a warm-up, on
+   whatever version is installed. It runs here on both versions, each linked into a scratch
+   directory as `node_modules/<name>`: first to keep only the sizes both run, then for the numbers,
+   three turns each, taking turns, the lowest median kept.
+4. **The counts.** The same calls counted with Heisenbench on both versions and diffed with the
+   package's own diff: the function's steps, its calls and the lines that changed, measured on the
+   script's input, not the project's. A draft whose input does not reach the slower code is
+   refused (the script would show nothing), and so is one whose call as a whole got faster.
+5. **No project names.** The words that name the project (the scopes and names of its
+   `package.json` files, its git remote, `--redact`) must not appear in the issue or the script;
+   a draft that has one is refused with the word.
+
+The issue has a title that says what does how much more work (`` `tokenize` (index.js) does 27.4×
+as much work in 1.1.0 as in 1.0.0 ``), one paragraph, the script and how to run it on each
+version, the timings, the counts per size (with "the gap grows with the input" when it does), the
+lines whose count changed, the code around the first one and the function's change between the two
+versions, cut to the function. For the acorn-typescript finding above, with a generator that parses
+`n` typed functions through `Parser.extend(tsPlugin())`, the draft read:
+
+```md
+# `adaptParser > EffectAdapter > updateContext` (index.js), new in 1.0.13, makes the call do 5.7%
+more work than in 1.0.11
+
+Since @sveltejs/acorn-typescript 1.0.13 (from 1.0.11), the call below does 5.7% more work on the
+same input, and 64% of the extra work is in `adaptParser > EffectAdapter > updateContext`
+(`index.js`) at line 1369.
+
+| n | 1.0.11 | 1.0.13 | Change |
+| 16 | 216 µs | 223 µs | +3.0% |
+
+| n | One call, all it does | `adaptParser > EffectAdapter > updateContext`, its own lines | ... |
+| 16 | 1,204,179 → 1,273,069 (+5.7%) | 0 → 44,224 (new) | 0 → 994 |
+```
+
+followed by the code around line 1369 and the 14 lines of the change that hold the new method. The
+draft that started from svelte's own `parse` on the case's recorded component was refused, and
+said where to look instead: "has_lf_line_breaks_only holds 3% of the call's extra 34,102 steps on
+the script's input; the most is in
+`@sveltejs/acorn-typescript@1.0.13/index.js > adaptParser > EffectAdapter > updateContext`
+(+67,382)".
+
+## Proving a faster version
+
+Growth from recorded calls finds a function that grows too fast. `heisenbench prove` decides
+whether a replacement for it is a proven improvement: the same behavior, and fewer steps.
+
+```bash
+heisenbench prove packages/core/src/insights/page-insights.ts lcp_rivals \
+  --candidate faster.ts --records .heisenbench/unmeasured/records [--bench bench/insights.bench.ts]
+```
+
+The candidate is a file of top-level declarations. Each replaces the declaration of the same
+name in the module (all its overloads); a name the module does not have is added before the
+first one replaced. So a candidate can be one function, the function and a helper it needs, or
+the whole fixed module (declarations that did not change change nothing). An import is accepted
+only when the module already has it word for word. The function must be top level; a fix inside
+a closure is proven through the function that holds it.
+
+**Same behavior.** The original and the candidate run on the counting build, one fresh copy of
+each input per side:
+
+- every recorded input of the function: the test run's recordings (`--records`, the gate's
+  sample files), `heisenbench record`'s, and the bench cases of `--bench`, recorded at 1x, 10x
+  and 100x when a case declares `scale`
+- the three largest of them grown by the generic scaler at 1x, 10x and 100x, one argument at a
+  time
+- seeded edge cases of each recorded input's shape, one change each: an array empty, of one
+  element, with its first element twice more, every element twice, reversed, sorted, shuffled,
+  with ties; a string empty, of one character, doubled, with accented, combining and astral
+  characters, its lines doubled, reversed, cut, with CRLF ends; a number 0, -0, ±1, NaN,
+  ±Infinity, 2^53 - 1; a boolean flipped; a Map or Set empty, of one entry, reversed. Each keeps
+  the value's type and every key. `--edge all` also deletes keys and sets them to undefined:
+  inputs the function's types rule out.
+
+Each pair of runs is compared: the result deeply (NaN is NaN, -0 is not 0, a key set to
+undefined is not a missing key, Map and Set entries and object keys in order, Dates, typed
+arrays, class instances by their class's name), or the error by its name and message, and the
+arguments and `this` after the call (a candidate that sorts its caller's array differs there).
+One difference rejects the candidate. The input it differs on is shrunk (elements removed,
+strings halved, numbers made 0, while the two still differ) and reported.
+
+**Fewer steps.** The same runs are counted: steps, allocations and bytes per input, and the
+curve over the grown sizes, fitted as growth fits a case. The verdict is one of three:
+
+| Verdict           | Behavior  | Steps                                                                                                                                                                                        | Exit |
+| ----------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---: |
+| `proven`          | the same  | no recorded or grown input costs more than the original's steps + 5% + 256 (`--tolerance`, `--tolerance-steps`), and the total falls by 1% or the curve is better                            |    0 |
+| `proven at scale` | the same  | some inputs cost more than that, but it is cheaper at scale: a better curve (a lower class, or an exponent 0.25 lower) and cheaper at the largest grown size, or cheaper at every grown size |    3 |
+| `rejected`        | different | or it costs more and is not cheaper at scale                                                                                                                                                 |    1 |
+
+A fix that changes the curve usually builds something first (a Map of the list it used to
+search): on a short input that costs more than the loop did. Such a fix is proven at scale, not
+proven, and its headline says how much more it costs, on which inputs and sizes, and from which
+grown size on it is cheaper. `--setup-tolerance <pct>` is an opt-in: a candidate proven at scale
+whose costlier inputs each cost at most that much more is `proven` ("proven within the setup
+tolerance"). Edge cases decide behavior only: their steps are shown, never a regression.
+
+With `--weights` (app weights, `heisenbench weights`), the report says which sizes app traffic
+calls the function at: each app scenario that calls it costs the original `inclusive_steps /
+calls` steps a call there, and the size at which the original costs that many steps on the
+measured inputs (log-log between the two nearest) is the size that scenario passes it. Then the
+candidate's ratio at the measured inputs nearest those sizes says whether traffic lands where it
+is cheaper or costlier. Weights of real traffic are timed, not counted, and are not used for it.
+
+The five functions ogygia PR #187 made linear, each on the parent commit (`01dc5b9`, the test
+recordings of `packages/core` and `packages/devtools` for these functions) against the fixed
+declarations from `b46798f`, with that commit's app weights:
+
+| Function             | Verdict         | Growth          | Steps at 100x   | Costs more on smaller inputs                                                                                            | Identical on |
+| -------------------- | --------------- | --------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------- | -----------: |
+| `collect_flag_sites` | proven          | n^1.55 → n^1.01 | 1.70e7 → 3.59e6 | none                                                                                                                    |   101 inputs |
+| `lcp_rivals`         | proven          | n^1.88 → n^0.98 | 2.73e6 → 83,484 | none                                                                                                                    |   780 inputs |
+| `attribute_gc`       | proven at scale | n^1.94 → n^1.21 | 3.61e8 → 2.19e7 | +162% at most (3,022 → 7,915), 16 recorded + 2 grown, sizes 5..35,250; cheaper from 10x                                 | 1,817 inputs |
+| `find_wait_patterns` | proven at scale | n^1.83 → n^1.17 | 8.47e6 → 1.08e6 | +37% at most (4,522 → 6,189), 6 recorded, sizes 112..261; cheaper from 10x                                              |   811 inputs |
+| `constant_work`      | proven at scale | n^1.72 → n^0.98 | 1.11e8 → 1.12e7 | +18% at most (6.27e6 → 7.37e6, a grown input), 3 recorded + 4 grown, sizes 231..55,900; cheaper from 1x on the steepest |    68 inputs |
+
+```
+AT SCALE packages/devtools/src/profiler/gc.ts > attribute_gc  proven at scale: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, identical on 1,817 inputs; costs +162% (3,022 -> 7,915 steps) on 16 recorded and 2 grown inputs (sizes 5..35,250), cheaper from 10x up on the steepest grown input (from size 68,913); app traffic: not called in the 16 app scenarios
+```
+
+None of the five is called in the 16 app scenarios (they compile pages and read profiles; the
+apps serve them), so the weights cannot say which sizes traffic hits. `constant_work`'s most
+costly input is a recorded input grown 100x, on a shape where both versions are linear: the
+fix is cheaper on the steepest curve and 18% costlier on that one.
+
+`line_at` changed its parameters (the newline offsets instead of the text), so its fix is proven
+through `collect_flag_sites`, the exported function that calls it; `running_at`, `batched` and
+`impure` are closures, proven through `attribute_gc`, `find_wait_patterns` and `constant_work`.
+With `--edge all`, `attribute_gc` is rejected: the fix differs from the original on a running
+segment without `t1`, which `t1: number` rules out:
+
+```
+REJECTED packages/devtools/src/profiler/gc.ts > attribute_gc  rejected: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, differs on 2 of 1,942 inputs
+           rejected: behaves differently on 2 of 1942 inputs
+           differs on: [   { slices: [], events: [ { t: 38.73 } ], running: [ {}, { t1: 37.26 } ] } ]
+           out.pauses[0].running: present vs missing
+```
+
+`lcp_rivals` with its `files` list left without its dedupe is rejected on an image named twice:
+`out.files.length: 1 vs 2`.
+
+The JSON report goes to `--out` (default `heisenbench-prove.json`, schema `heisenbench-prove/1`):
+the verdict, the headline, every input's steps and outcome, the growth rows, the line blame of
+both sides at the largest input, and the patch. `--md` writes the section, the patch under it
+ready for `git apply`. Exit 0 when proven, 3 when proven at scale, 1 when rejected.
+
+### Where a candidate runs
+
+A candidate's code runs only in a child process, on the counting build, under Node's permission
+model: reads under the project root and Heisenbench, a write to its one result file, native
+addons (the parser the transform uses is one), and nothing else: no network, no child
+processes, no workers, no inspector. Every call has a step cap: the original's 10¹⁰ (`--cap`), the
+candidate's 20 times the original's steps on that input plus 10⁶, so a candidate that loops
+forever is stopped where it loops. Before it runs, its source is checked: it may not read
+`process`, `require`, `module`, `globalThis`, `global`, `self`, `window`, `fetch`, `WebSocket`,
+`eval`, `Function`, `WebAssembly` and the like as variables, may not import (an import the module
+already has excepted), use `import()` or `import.meta`, and may not name `constructor` or
+`__proto__` as a property or in a string (they reach the Function constructor from any value).
+The check is syntactic: a name built at run time (`x['con' + 'structor']`) passes it, and the
+permissions stop what it reaches (`test/prove.test.ts` plants one that tries to write a file).
+
+### Proposals
+
+`heisenbench prove <module> <function> --propose` asks a model for candidates and proves each
+one; proven ones are reported first, then the ones proven at scale, each under its verdict and
+with its patch, and a rejected one never. Up to `--proposals` (default 3), one at a time: each
+request says what the ones before it came to (a difference, or what one proven at scale still
+costs on small inputs). It uses the Claude API through
+the Anthropic SDK, which the project installs (`npm i -D @anthropic-ai/sdk`; Heisenbench does not
+depend on it), with `ANTHROPIC_API_KEY` set; the model is `claude-opus-5-5` unless `--model` names
+another. Without a key it prints how to set one, sends nothing and runs nothing.
+
+What is sent: the function's source, its lines with the most steps (the original counted on its
+own inputs) and its growth. Recorded inputs can hold secrets (a token in a test fixture, a
+customer page): three of the smallest are sent only with `--send-inputs`, and so is the input a
+rejected proposal differed on. What comes back is source only, checked and run as above.
+
+### Running it on a finding
+
+`heisenbench prove` is not part of PR CI: a proof runs a function thousands of times and is for
+the one finding someone is fixing. On ogygia, a finding of growth from recorded calls names the
+function; its inputs are in the gate's records (`node internal/heisenbench/src/unmeasured.ts`
+writes them to `.heisenbench/unmeasured/records`, for functions no bench runs), or record them
+for that function alone: a targets file `{ "<module>": ["<function>"] }`, the package's tests
+run with `HEISENBENCH_RECORD=<targets> HEISENBENCH_RECORD_OUT=<dir>`, then `--records <dir>`.
+`--bench` adds the bench files that call it.
+
+Limits: inputs are only as varied as the recordings; a function of one source string (a
+compiler pass) gets few edge cases, since a string's variants rarely stay valid source. Behavior
+is what the function returns, throws and does to its arguments: a candidate that changes module
+state, a global or a closure differently is not caught. The candidate's module is a second copy
+of the module: work it moves to module scope runs at import, uncounted.
+
 ## Real-app weight
 
 A change of 40 steps per call matters if the function runs 10,000 times per request, and not if
@@ -1137,6 +1694,10 @@ added one is new.
 A file the PR moved keeps its functions' history when the gate gets the git range
 (`--repo dir --base sha --head sha`): its unmeasured functions stay old, not new. A new file the
 transform cannot read fails the gate, since its functions are unknown.
+
+A function with a [complexity contract](#complexity-contracts) and no measurement source fails the
+gate whether it is new or old, and no exemption covers it: a speed limit nothing measures is a
+promise nobody checks. The inventory lists the contracts, so the gate needs no other input.
 
 On ogygia PR #180 (CI run 42288359583): 1,524 of 8,234 functions (18.5%) had a measurement
 source, 555 through a bench and 969 through recorded test inputs. Of the rest, 2,822 never ran,

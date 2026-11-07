@@ -1,0 +1,36 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	// a string built piece by piece: V8 appends without copying what is there (a cons string)
+	let seen = '';
+	for (const r of rows) {
+		seen += r.id + ':';
+		for (const t of r.tags) {
+			seen += t;
+			seen += ',';
+		}
+		seen += ';';
+		out.push(score(r));
+	}
+	return seen.length > 0 ? out : [];
+}
+
+export function sum_to(n: number): number {
+	let s = 0;
+	for (let i = 0; i < n; i++) {
+		s += i;
+	}
+	return s;
+}

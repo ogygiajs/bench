@@ -2,6 +2,7 @@
 import './warnings.ts';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { exit_on_signals } from './proc.ts';
 import { UsageError } from './usage.ts';
 import { REPORT_SCHEMA, one_line } from './report.ts';
@@ -16,9 +17,12 @@ import { DEFAULT_SIZES, run_growth } from './growth/index.ts';
 import { locate_findings, reusable_growth, run_audit } from './audit/index.ts';
 import { render_audit } from './audit/markdown.ts';
 import { render_recorded_growth, run_recorded_growth } from './growth/recorded.ts';
+import { SHAPES } from './growth/odds.ts';
+import type { OddsOptions, Shape } from './growth/odds.ts';
+import type { ShapePrior } from './growth/priors.ts';
 import { alias_records, read_record_dir } from './coverage/replay-run.ts';
 import { render_search, run_search } from './search/index.ts';
-import { diff_sections, render_sections, write_section } from './sections.ts';
+import { diff_sections, existing_report_text, render_sections, write_section } from './sections.ts';
 import { measure_command, measure_run, time_section } from './measure/cli.ts';
 import { app_command, app_diff_sections, diff_ranking } from './app/cli.ts';
 import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
@@ -27,6 +31,11 @@ import type { VerifyLayer } from './verify/index.ts';
 import { needs_bench_repo } from './own.ts';
 import { blame_command } from './blame/cli.ts';
 import { mutate_command } from './mutation/cli.ts';
+import { prove_command } from './prove/cli.ts';
+import { contracts_command } from './contracts/cli.ts';
+import { upgrade_command } from './upgrade/cli.ts';
+import { upstream_command } from './upstream/cli.ts';
+import { feel_command } from './models/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -35,6 +44,8 @@ Counting (the counting build)
       [--out heisenbench-report.json] [--root dir] [--filter text] [--sha sha]
       [--deps all|none|a,b]   dependencies counted (default all), blamed as name@version
       [--state fresh|shared] [--measure time,bytes,leaks|all] [--time-ms 300]
+      [--source-from sha]   these bench files on that commit's code: a repo's first PR, whose
+                            base has no bench files yet (files the commit lacks come from disk)
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
       [--time time.json] [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]
@@ -47,32 +58,61 @@ Counting (the counting build)
                                  quadratic, an allocation, a defeated cache) in every function of the
                                  sources: which ones the bench cases notice, and a case for each miss
       [--report base.json] [--operators double,quadratic,alloc,cache] [--sample 60|all] [--seed 1]
-      [--modules a.ts,b.ts] [--mutate-deps on|off] [--sizes 1,10,100] [--cap 2e9] [--records dir]
+      [--modules a.ts,b.ts] [--mutate-deps on|off] [--sizes 1,10,100] [--cap 5e8] [--records dir]
       [--alias built-to-source.json] [--weights app-weights.json[,real-weights.json]]
-      [--jobs n] [--max-recounts 3000] [--budget-ms 3600000] [--work dir] [--out mutation.json] [--md mutation.md]
+      [--jobs n] [--max-recounts 6000] [--budget-ms 3600000] [--work dir] [--out mutation.json] [--md mutation.md]
+  heisenbench upgrade <base.json> <pr.json> --root <pr checkout> --base-root <base checkout>
+                                 what the PR's dependency upgrades cost: the PR's code counted
+                                 with each side's install, the change placed on upstream lines
+      [--packages a,b] [--deps all|none|a,b] [--work dir] [--out upgrade.json] [--md upgrade.md]
+  heisenbench upstream draft <upgrade.json>   an issue for the upgraded package's maintainers: a
+                                 standalone repro script timed on both versions, the counts, the
+                                 line and the upstream change (written to files, never posted)
+      [--case text] [--function name] [--entry specifier#export] [--input generator.ts]
+      [--redact a,b] [--time-ms 1000] [--out issue.md] [--repro repro.ts] [--work dir]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
 Layers (each writes its section into --out, default heisenbench-report.json)
   heisenbench health <bench files...>   V8 tiers, deopts and inline caches on the plain build
       [--warmup 20] [--runs 3] [--check on|off] [--root dir] [--filter text] [--out file]
-  heisenbench growth <bench files...>   steps at 1x, 10x, 100x the input; the curve class
+  heisenbench growth <bench files...>   steps at 1x, 10x, 100x the input; the curve class and the
+                                 odds of each shape (one more size when the top two are close)
       [--sizes 1,10,100] [--scaled on|off] [--cap 1e10] [--deps all|none|a,b] [--root dir]
-      [--filter text] [--out file]
+      [--filter text] [--out file] [--superlinear-odds 0.9] [--growth-prior prior.json]
   heisenbench growth --recorded <dir>   growth from a test run's recorded calls (no bench files):
-                                 every recorded function's steps over its input sizes
+                                 every recorded function's steps over its input sizes; a finding
+                                 needs --superlinear-odds (default 0.9) of quadratic or worse
       [--modules a.ts,b.ts] [--alias built-to-source.json] [--cap 5e8] [--budget-steps n]
-      [--root dir] [--out file] [--md file]
+      [--root dir] [--out file] [--md file] [--superlinear-odds 0.9] [--growth-prior prior.json]
+  heisenbench contracts <source files...> --reports a.json[,b.json]   each complexity contract
+                                 (\`/** @heisenbench linear in items */\` on a function) held against
+                                 the growth those reports measured; exit 1 when one does not hold
+      [--list files.txt] [--root dir] [--out file] [--md file] [--contract-odds 0.9]
   heisenbench search <bench files...>   the input that costs the most work per unit of input:
                                  shrunk, grown 1x to 8x, blamed by line
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
-      [--shrink 200] [--flag 4] [--guided on|off] [--regex on|off] [--root dir]
-      [--filter text] [--out file] [--md file]
+      [--shrink 200] [--flag 4] [--guided on|off] [--regex on|off] [--schedule bandit|fixed]
+      [--root dir] [--filter text] [--out file] [--md file]
   heisenbench audit <bench files...>    the prices checked against time at every growth size
       [--sizes 1,10,100] [--scaled on|off] [--repeats 5] [--time-ms 200] [--root dir]
       [--filter text] [--out file] [--md audit.md]
   heisenbench time <bench files...> --base dir --pr dir   both trees timed in one process, in turns
       [--repeats 5] [--time-ms 300] [--filter text] [--out heisenbench-time.json] [--md time.md]
+
+Proving a faster version (on demand, not in PR CI)
+  heisenbench prove <module> <function> --candidate <file> --records dir[,dir] [--bench files]
+                                 proven (the same on every recorded, grown and edge-case input, no
+                                 input costlier), proven at scale (the same, cheaper at scale,
+                                 costlier on small inputs: exit 3) or rejected (exit 1)
+      [--root dir] [--deps all|none|a,b] [--sizes 1,10,100] [--cap 1e10] [--variants 160]
+      [--edge shapes|all] [--seed 1] [--tolerance 5] [--tolerance-steps 256]
+      [--setup-tolerance pct]   opt-in: proven at scale within it is proven
+      [--weights app-weights.json,...]   which input sizes the app scenarios call it at
+      [--out heisenbench-prove.json] [--md file]
+  heisenbench prove <module> <function> --propose [--proposals 3] [--model claude-opus-5-5] [--send-inputs]
+                                 candidates proposed by a model (ANTHROPIC_API_KEY), each proven
+                                 the same way; only proven and proven-at-scale ones are reported
 
 Real apps and the measurement-source gate
   heisenbench weights <app-report.json...> [--out app-weights.json]
@@ -96,8 +136,18 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
-  heisenbench verify [--layers steps,elision,leak,engine,growth,search,app,time] [--filter text]
+  heisenbench verify [--layers steps,elision,leak,engine,growth,contract,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
+  heisenbench feel train [--data-version 1] [--seed 1] [--out feel.json] [--md eval.md]
+                                 fit the odds a step change shows up on the clock from the
+                                 training dataset (calibration/data/), with its held-out scores
+  heisenbench feel check         fit them again: exit 1 unless feel.json comes out byte for byte
+
+Every command that loads bench files (run, health, growth, search, audit, time, blame, record,
+prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
+process it starts (resolve hooks for path aliases, Vite-only modules, globals the code expects).
+Relative imports of TypeScript sources (./x.js for x.ts, ./x for x.ts or x/index.ts) resolve
+without one.
 
 Optional peer dependencies, installed in the project when needed: typescript (heisenbench dts, and
 TypeScript that type stripping cannot run), svelte (.svelte files), playwright (the app layer).
@@ -161,7 +211,8 @@ async function recorded_growth_command(
 		records,
 		modules: modules === undefined ? undefined : new Set(modules.split(',').filter(Boolean)),
 		cap: num('cap'),
-		budget_steps: num('budget-steps')
+		budget_steps: num('budget-steps'),
+		odds: odds_options(flags)
 	});
 	write_section(out, 'recorded_growth', r, info);
 	const md = render_recorded_growth(r);
@@ -169,6 +220,43 @@ async function recorded_growth_command(
 	if (md_out) writeFileSync(md_out, md);
 	console.log(md);
 	return 0;
+}
+
+/**
+ * `--superlinear-odds 0.9` (the odds of quadratic or worse a growth finding needs) and
+ * `--growth-prior file.json` (shape -> weight, in place of the default prior of growth/priors.ts).
+ */
+function odds_options(flags: Map<string, string>): OddsOptions {
+	const out: OddsOptions = {};
+	const bar = flags.get('superlinear-odds');
+	if (bar !== undefined) {
+		const v = Number(bar);
+		if (!(v > 0 && v <= 1))
+			throw new UsageError(
+				`--superlinear-odds takes a number in (0, 1], not ${JSON.stringify(bar)}`
+			);
+		out.min_odds = v;
+	}
+	const file = flags.get('growth-prior');
+	if (file !== undefined) {
+		if (!existsSync(file)) throw new UsageError(`--growth-prior ${file}: no such file`);
+		const raw = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+		const prior = {} as ShapePrior;
+		for (const s of SHAPES) prior[s] = 0;
+		for (const [k, v] of Object.entries(raw)) {
+			if (!SHAPES.includes(k as Shape))
+				throw new UsageError(
+					`--growth-prior: ${JSON.stringify(k)} is not a shape (${SHAPES.join(', ')})`
+				);
+			if (typeof v !== 'number' || !(v >= 0))
+				throw new UsageError(`--growth-prior: ${k} takes a weight of 0 or more`);
+			prior[k as Shape] = v;
+		}
+		if (!SHAPES.some((s) => prior[s] > 0))
+			throw new UsageError('--growth-prior: every weight is 0');
+		out.prior = prior;
+	}
+	return out;
 }
 
 /** `--deps all|none|a,b`: which dependencies are counted (`fallback` when the flag is absent). */
@@ -191,19 +279,31 @@ interface Spec {
 	args: [number, number];
 	/** The positional arguments are files that must exist (`calibrate`: after its subcommand). */
 	files?: boolean;
+	/** Options of this command that take no value. */
+	switches?: readonly string[];
 }
 
-const BENCH = ['root', 'filter', 'out', 'deps', 'sha'];
+const BENCH = ['root', 'filter', 'out', 'deps', 'sha', 'import'];
 const MANY = Number.POSITIVE_INFINITY;
 
 const SPECS: Record<string, Spec> = {
 	run: {
-		values: [...BENCH, 'state', 'measure', 'time-ms'],
+		values: [...BENCH, 'state', 'measure', 'time-ms', 'source-from'],
 		args: [1, MANY],
 		files: true
 	},
 	diff: {
-		values: ['repo', 'base', 'head', 'out', 'json', 'time', 'weights', 'requests-per-day'],
+		values: [
+			'repo',
+			'base',
+			'head',
+			'out',
+			'json',
+			'time',
+			'weights',
+			'requests-per-day',
+			'superlinear-odds'
+		],
 		args: [2, 2],
 		files: true
 	},
@@ -224,8 +324,20 @@ const SPECS: Record<string, Spec> = {
 			'weights',
 			'requests-per-day',
 			'out',
-			'md'
+			'md',
+			'import'
 		],
+		args: [2, 2],
+		files: true
+	},
+	upgrade: {
+		values: ['root', 'base-root', 'packages', 'deps', 'work', 'out', 'md'],
+		args: [2, 2],
+		files: true
+	},
+	// `draft` and the upgrade JSON
+	upstream: {
+		values: ['case', 'function', 'entry', 'input', 'redact', 'time-ms', 'out', 'repro', 'work'],
 		args: [2, 2],
 		files: true
 	},
@@ -247,8 +359,15 @@ const SPECS: Record<string, Spec> = {
 			'alias',
 			'modules',
 			'budget-steps',
-			'md'
+			'md',
+			'superlinear-odds',
+			'growth-prior'
 		],
+		args: [0, MANY],
+		files: true
+	},
+	contracts: {
+		values: ['root', 'list', 'reports', 'out', 'md', 'sha', 'contract-odds'],
 		args: [0, MANY],
 		files: true
 	},
@@ -264,13 +383,14 @@ const SPECS: Record<string, Spec> = {
 			'flag',
 			'guided',
 			'regex',
+			'schedule',
 			'md'
 		],
 		args: [1, MANY],
 		files: true
 	},
 	time: {
-		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md'],
+		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md', 'import'],
 		args: [1, MANY]
 	},
 	// app reports, or `import` and production profiles
@@ -282,7 +402,7 @@ const SPECS: Record<string, Spec> = {
 	coverage: { values: ['app', 'packages', 'out', 'md'], args: [1, MANY], files: true },
 	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
 	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
-	record: { values: ['targets', 'root', 'out'], args: [1, MANY], files: true },
+	record: { values: ['targets', 'root', 'out', 'import'], args: [1, MANY], files: true },
 	unmeasured: {
 		values: [
 			'inventory',
@@ -344,6 +464,32 @@ const SPECS: Record<string, Spec> = {
 		],
 		args: [1, MANY],
 		files: true
+	},
+	feel: { values: ['data-version', 'seed', 'data', 'out', 'md'], args: [1, 1] },
+	prove: {
+		values: [
+			'candidate',
+			'records',
+			'bench',
+			'root',
+			'deps',
+			'out',
+			'md',
+			'sizes',
+			'cap',
+			'variants',
+			'edge',
+			'seed',
+			'tolerance',
+			'tolerance-steps',
+			'setup-tolerance',
+			'weights',
+			'proposals',
+			'model',
+			'import'
+		],
+		args: [2, 2],
+		switches: ['propose', 'send-inputs']
 	}
 };
 
@@ -369,14 +515,20 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	'requests-per-day': 'positive',
 	'max-recounts': 'count',
 	'min-ratio': 'positive',
-	suggestions: 'whole'
+	suggestions: 'whole',
+	variants: 'whole',
+	'tolerance-steps': 'whole',
+	'setup-tolerance': 'whole',
+	proposals: 'count',
+	'data-version': 'count'
 };
 
 const CHOICES: Record<string, readonly string[]> = {
 	state: ['fresh', 'shared'],
 	check: ['on', 'off'],
 	scaled: ['on', 'off'],
-	'mutate-deps': ['on', 'off']
+	'mutate-deps': ['on', 'off'],
+	edge: ['shapes', 'all']
 };
 
 function check_number(name: string, v: string): void {
@@ -426,7 +578,7 @@ function parse(cmd: string, argv: string[]): Parsed {
 		if (!a.startsWith('--')) throw new UsageError(`unknown option ${a}`);
 		const eq = a.indexOf('=');
 		const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
-		if (SWITCHES.has(name)) {
+		if (SWITCHES.has(name) || spec.switches?.includes(name)) {
 			flags.set(name, '');
 			continue;
 		}
@@ -468,7 +620,7 @@ function parse(cmd: string, argv: string[]): Parsed {
 	}
 	if (spec.files) {
 		const files =
-			cmd === 'calibrate' || (cmd === 'weights' && positional[0] === 'import')
+			cmd === 'calibrate' || cmd === 'upstream' || (cmd === 'weights' && positional[0] === 'import')
 				? positional.slice(1)
 				: positional;
 		for (const f of files) {
@@ -517,8 +669,13 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	check_dirs(cmd, flags);
+	await preload(flags.get('import'));
 	if (cmd === 'run') {
 		const deps = deps_of(flags.get('deps'), true);
+		const source_from = flags.get('source-from');
+		// the plain-build layers load the working tree's files, not the commit's
+		if (source_from !== undefined && flags.has('measure'))
+			throw new UsageError('--source-from counts only: it takes no --measure');
 		const report = await run_benches({
 			files: positional,
 			root: flags.get('root'),
@@ -527,7 +684,9 @@ async function main(argv: string[]): Promise<number> {
 			filter: flags.get('filter'),
 			sha: flags.get('sha') ?? null,
 			fresh: flags.get('state') !== 'shared',
-			log: (l) => console.log(l)
+			log: (l) => console.log(l),
+			debug: flags.has('debug') || process.env.HEISENBENCH_DEBUG === '1',
+			source_from
 		});
 		await measure_run(report, positional, flags);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
@@ -545,6 +704,9 @@ async function main(argv: string[]): Promise<number> {
 	const app = await app_command(cmd, positional, flags);
 	if (app !== null) return app;
 	if (cmd === 'verify') return verify_command(flags);
+	if (cmd === 'feel') return feel_command(positional, flags);
+	if (cmd === 'contracts') return contracts_command(positional, flags);
+	if (cmd === 'prove') return prove_command(positional, flags);
 	const coverage = await coverage_command(cmd, positional, flags);
 	if (coverage !== null) return coverage;
 	if (cmd === 'diff') {
@@ -558,7 +720,7 @@ async function main(argv: string[]): Promise<number> {
 				? git_diff(resolve(repo), base_sha, head_sha)
 				: null;
 		const result = diff_reports(base, pr, { files });
-		const sections = diff_sections(base, pr, files);
+		const sections = diff_sections(base, pr, files, odds_options(flags));
 		const extra = render_sections(sections);
 		const time = time_section(flags);
 		const ranking = diff_ranking(result, base, pr, flags);
@@ -586,6 +748,10 @@ async function main(argv: string[]): Promise<number> {
 	if (cmd === 'mutate') {
 		return mutate_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
 	}
+	if (cmd === 'upgrade') {
+		return upgrade_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
+	}
+	if (cmd === 'upstream') return upstream_command(positional, flags);
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
@@ -619,7 +785,7 @@ async function main(argv: string[]): Promise<number> {
 		}
 		if (cmd === 'audit') {
 			const sizes = flags.get('sizes')?.split(',').map(Number) ?? DEFAULT_SIZES;
-			const existing = existsSync(out) ? read_report(out) : null;
+			const existing = existing_report_text(out) !== null ? read_report(out) : null;
 			const growth = reusable_growth(existing, sizes);
 			if (growth) console.log(`audit   steps at every size from the growth section of ${out}`);
 			const r = await run_audit({
@@ -647,13 +813,18 @@ async function main(argv: string[]): Promise<number> {
 				...common,
 				sizes,
 				cap: num('cap'),
-				scaled: flags.get('scaled') === 'on'
+				scaled: flags.get('scaled') === 'on',
+				odds: odds_options(flags)
 			});
 			write_section(out, 'growth', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;
 		}
+		const schedule = flags.get('schedule');
+		if (schedule !== undefined && schedule !== 'bandit' && schedule !== 'fixed')
+			throw new UsageError('--schedule takes bandit or fixed');
 		const r = await run_search({
 			...common,
+			schedule,
 			evals: num('evals'),
 			steps: num('budget-steps'),
 			ms: num('budget-ms'),
@@ -682,12 +853,34 @@ async function main(argv: string[]): Promise<number> {
 	throw new UsageError(`unknown command ${cmd}`);
 }
 
+/**
+ * `--import a.ts,b.ts`: each file imported here, before any bench file, and added to
+ * NODE_OPTIONS as `--import=<absolute path>`, so every process this one starts (health, time,
+ * bytes and leak children, blame recounts) loads it first too. The same as setting
+ * `NODE_OPTIONS=--import=./a.ts` by hand.
+ */
+async function preload(list: string | undefined): Promise<void> {
+	if (list === undefined) return;
+	for (const f of list.split(',').filter(Boolean)) {
+		const abs = resolve(f);
+		if (!existsSync(abs) || !statSync(abs).isFile())
+			throw new UsageError(`--import ${f}: no such file`);
+		if (/\s/.test(abs))
+			throw new UsageError(`--import ${f}: a path with a space cannot go in NODE_OPTIONS`);
+		await import(pathToFileURL(abs).href);
+		const opts = process.env.NODE_OPTIONS ?? '';
+		process.env.NODE_OPTIONS = `${opts} --import=${abs}`.trim();
+	}
+}
+
 /** `--root` must be a directory, and the directories `--out`, `--md` and `--json` write into must exist. */
 function check_dirs(cmd: string, flags: Map<string, string>): void {
-	const root = flags.get('root');
-	if (root !== undefined && !(existsSync(root) && statSync(root).isDirectory()))
-		throw new UsageError(`--root ${root} is not a directory`);
-	for (const k of ['out', 'md', 'json', 'targets']) {
+	for (const k of ['root', 'base-root']) {
+		const d = flags.get(k);
+		if (d !== undefined && !(existsSync(d) && statSync(d).isDirectory()))
+			throw new UsageError(`--${k} ${d} is not a directory`);
+	}
+	for (const k of ['out', 'md', 'json', 'targets', 'repro']) {
 		const f = flags.get(k);
 		if (f === undefined) continue;
 		const dir = dirname(resolve(f));

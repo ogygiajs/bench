@@ -1,5 +1,6 @@
 import { LoaderCore } from './core.ts';
 import type { LoaderConfig } from './core.ts';
+import { resolve_source_async } from './resolve.ts';
 
 /*
  * Loader hooks for `module.register`:
@@ -43,8 +44,10 @@ export async function resolve(
 ): Promise<ResolveResult> {
 	const c = get_core();
 	if (c.is_virtual(specifier)) return { url: specifier, shortCircuit: true };
-	const r = await next(specifier, context);
-	const url = c.with_generation(r.url, (context as { parentURL?: string }).parentURL);
+	const r = await resolve_source_async(specifier, context as { parentURL?: string }, next);
+	const ctx = context as { parentURL?: string; conditions?: string[] };
+	c.note_resolved(r.url, ctx.parentURL, ctx.conditions);
+	const url = c.with_generation(r.url, ctx.parentURL);
 	return url === r.url ? r : { ...r, url };
 }
 
@@ -59,7 +62,7 @@ export async function load(url: string, context: object, next: NextLoad): Promis
 	if (c.needs_own_read(url)) {
 		return {
 			format: 'module',
-			source: c.instrument(url, c.read(url), null) ?? '',
+			source: c.instrument(url, c.read(url), null)?.code ?? '',
 			shortCircuit: true
 		};
 	}
@@ -67,7 +70,7 @@ export async function load(url: string, context: object, next: NextLoad): Promis
 	if (r.source == null) return r;
 	const src =
 		typeof r.source === 'string' ? r.source : Buffer.from(r.source as Uint8Array).toString('utf8');
-	const code = c.instrument(url, src, r.format);
-	if (code === null) return r;
-	return { format: 'module', source: code, shortCircuit: true };
+	const out = c.instrument(url, src, r.format);
+	if (out === null) return r;
+	return { format: out.format, source: out.code, shortCircuit: true };
 }

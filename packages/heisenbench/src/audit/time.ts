@@ -11,8 +11,15 @@ import type { TimeOptions } from '../measure/time.ts';
 
 export interface SizeTimes {
 	sizes: number[];
-	/** Mean ns per call at each size (the mean, as calibration uses: a fast call's p50 is a tick). */
+	/** Mean ns per call at each size. */
 	mean_ns: number[];
+	/**
+	 * Median ns of one call at each size: what the audit fits. On a machine busy with other work
+	 * the process waits for a core for whole scheduler slices, which the mean of a slice of calls
+	 * takes in (1x read 3x slow in one slice and not in the next, on 16 cores running 48 other
+	 * processes), while one call rarely spans such a wait, so the median call does not see it. It
+	 * leaves out GC pauses rarer than every other call, at every size alike.
+	 */
 	p50_ns: number[];
 }
 
@@ -32,12 +39,32 @@ export function scaled_case(c: BenchCase, k: number): BenchCase {
 	};
 }
 
+/**
+ * Passes over the sizes in one round. A round's time budget per size is split into this many
+ * slices, timed in turns (1x, 10x, 100x, 1x, 10x, ...), and each size keeps the median slice: a
+ * burst of other work on a shared machine lands in one slice of one size and is dropped, instead
+ * of bending that size's time and with it the round's verdict.
+ */
+export const PASSES = 3;
+
+function median(xs: number[]): number {
+	const s = [...xs].sort((a, b) => a - b);
+	const h = s.length >> 1;
+	return s.length % 2 ? s[h] : (s[h - 1] + s[h]) / 2;
+}
+
 export async function time_sizes(c: BenchCase, o: AuditTimeOptions): Promise<SizeTimes> {
-	const out: SizeTimes = { sizes: o.sizes, mean_ns: [], p50_ns: [] };
-	for (const k of o.sizes) {
-		const t = await time_case(scaled_case(c, k), o);
-		out.mean_ns.push(t.mean_ns);
-		out.p50_ns.push(t.p50_ns);
+	const means: number[][] = o.sizes.map(() => []);
+	const p50s: number[][] = o.sizes.map(() => []);
+	const slice = Math.max(1, Math.round((o.time_ms ?? 300) / PASSES));
+	for (let pass = 0; pass < PASSES; pass++) {
+		// The first pass warms each size up; later passes find the code compiled.
+		const warmup_ms = pass === 0 ? o.warmup_ms : Math.min(o.warmup_ms ?? 100, 10);
+		for (let i = 0; i < o.sizes.length; i++) {
+			const t = await time_case(scaled_case(c, o.sizes[i]), { ...o, time_ms: slice, warmup_ms });
+			means[i].push(t.mean_ns);
+			p50s[i].push(t.p50_ns);
+		}
 	}
-	return out;
+	return { sizes: o.sizes, mean_ns: means.map(median), p50_ns: p50s.map(median) };
 }

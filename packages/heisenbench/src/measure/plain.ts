@@ -11,7 +11,8 @@ import {
 	ts_to_js
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
-import { GENERATION } from '../loader/core.ts';
+import { GENERATION, guess_format } from '../loader/core.ts';
+import { register_source_resolve } from '../loader/resolve.ts';
 import { OWN_DIR } from '../own.ts';
 
 /*
@@ -27,7 +28,17 @@ import { OWN_DIR } from '../own.ts';
  */
 
 const HEISENBENCH_DIR = OWN_DIR;
-const EXTENSIONS = ['.js', '.mjs', '.ts', '.mts', '.svelte'];
+const EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.svelte'];
+
+/**
+ * Whether the counting build reads a file as CommonJS (loader/core.ts guess_format): a `.cjs`
+ * file, or a `.js` file of a package that is not `"type": "module"`. Script positions V8 reports
+ * for it are mapped through the same transform the counting build ran.
+ */
+export function is_commonjs_source(filename: string): boolean {
+	if (is_ts(filename) || is_svelte_module(filename)) return false;
+	return guess_format(filename) === 'commonjs';
+}
 
 export interface PlainConfig {
 	/** Directories whose modules get the `__heisenbench` export (each checkout of a PR vs base run). */
@@ -92,6 +103,7 @@ export function register_plain(config: PlainConfig): void {
 	}
 	const cfg: PlainConfig = { roots: [...config.roots], svelte: config.svelte };
 	installed = cfg;
+	register_source_resolve();
 	registerHooks({
 		// a fresh copy (`?heisenbench_gen=N`, cases.ts) passes its query on to what it imports, so the whole
 		// graph is new; Heisenbench's own files stay shared
@@ -122,10 +134,15 @@ export function register_plain(config: PlainConfig): void {
 			}
 			if (ts) {
 				const src = readFileSync(path, 'utf8');
-				const { code, map } = ts_to_js(src, path);
+				const { code, map, elided } = ts_to_js(src, path);
 				if (map !== null) {
 					const js = plain ? code + expose_suffix(code, path, 'js') : code;
 					return { format: 'module', source: js + inline_map(map as object), shortCircuit: true };
+				}
+				// a type imported without `type`, blanked out (elide.ts): the offsets are still the source's
+				if (elided > 0) {
+					const js = plain ? code + expose_suffix(code, path, 'js') : code;
+					return { format: 'module', source: js, shortCircuit: true };
 				}
 				const source = plain ? src + expose_suffix(src, path) : src;
 				return { format: 'module-typescript', source, shortCircuit: true };

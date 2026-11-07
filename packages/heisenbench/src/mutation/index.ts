@@ -12,7 +12,8 @@ import {
 import { availableParallelism, tmpdir } from 'node:os';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { regressed_cases } from '../blame/index.ts';
-import { Lanes, run_child } from '../blame/lanes.ts';
+import { Lanes } from '../blame/lanes.ts';
+import { recount } from '../blame/recount.ts';
 import { remove_tree } from '../blame/tree.ts';
 import type { TreeFiles } from '../blame/hunks.ts';
 import { source_inventory } from '../coverage/gate.ts';
@@ -501,7 +502,7 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 	mkdirSync(join(made, 'counts'), { recursive: true });
 	const work = realpathSync(made);
 	const files = o.files.map((f) => relative(root, resolve(given_root, f)).split(sep).join('/'));
-	const lanes = new Lanes(root, work, jobs, new Map(), '', o.include_deps ? 'copy' : 'link');
+	const lanes = new Lanes(root, work, jobs, new Map(), '', o.include_deps === true);
 	const node_args = o.node_args ?? process.execArgv;
 	const env = o.env ?? process.env;
 	const identity = sha(`${engine_hash()}\n${root_hash(root) ?? ''}\n${JSON.stringify(deps)}`);
@@ -559,18 +560,23 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 			const left = budget_ms - (Date.now() - started);
 			const own_limit = job.growth ? GROWTH_LIMIT_MS : CHILD_LIMIT_MS;
 			const limit = Math.min(own_limit, Math.max(60_000, left));
+			let report: Report | null = null;
 			try {
 				lanes.put(lane, tree);
-				error = await run_child(
+				const got = await recount({
 					lane,
-					{
-						root: lane,
-						files: job.files,
-						cases: job.cases,
-						sha: null,
-						prefix: '',
-						deps,
-						out,
+					given_root,
+					root,
+					files: job.files,
+					cases: job.cases,
+					prefix: '',
+					deps,
+					out,
+					job_file: join(work, 'counts', `${key}.job.json`),
+					node_args,
+					env,
+					timeout_ms: limit,
+					job: {
 						twin: job.twin ? twin_out : null,
 						growth: job.growth ?? null,
 						recorded:
@@ -584,29 +590,21 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 								: null,
 						list: job.list ?? false,
 						cap: job.cap ?? null
-					},
-					join(work, 'counts', `${key}.job.json`),
-					{
-						given_root,
-						root,
-						node_args,
-						env,
-						timeout_ms: limit
 					}
-				);
+				});
+				report = got.report;
+				error = got.error;
 			} catch (e) {
 				error = `the recount ${one_line(e)}`;
 			} finally {
 				lanes.give(lane);
 			}
-			let report: Report | null = null;
 			let twin: TwinSummary | null = null;
-			if (error === null) {
+			if (error === null && job.twin) {
 				try {
-					report = JSON.parse(readFileSync(out, 'utf8')) as Report;
-					if (job.twin) twin = JSON.parse(readFileSync(twin_out, 'utf8')) as TwinSummary;
+					twin = JSON.parse(readFileSync(twin_out, 'utf8')) as TwinSummary;
 				} catch (e) {
-					error = `no report: ${one_line(e)}`;
+					error = `no twin records: ${one_line(e)}`;
 				}
 			}
 			const what = job.list

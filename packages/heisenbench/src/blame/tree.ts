@@ -1,6 +1,7 @@
 import {
 	constants,
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	readdirSync,
 	readlinkSync,
@@ -59,34 +60,48 @@ function mirror_dir(
 	dst_root: string,
 	s: string,
 	d: string,
-	modules: 'link' | 'copy'
+	modules_root: string,
+	copy_modules: boolean
 ): void {
 	mkdirSync(d, { recursive: true });
 	for (const e of readdirSync(s, { withFileTypes: true })) {
 		if (e.name === '.git') continue;
 		const from = join(s, e.name);
 		const to = join(d, e.name);
-		if (e.isSymbolicLink()) copy_link(src_root, dst_root, from, to);
+		if (e.name === 'node_modules' && modules_root !== src_root) {
+			// another install's dependencies, at the same place in that tree
+			const other = join(modules_root, relative(src_root, from));
+			if (existsSync(other)) mirror_modules(modules_root, dst_root, other, to);
+		} else if (e.isSymbolicLink()) copy_link(src_root, dst_root, from, to);
 		else if (e.isDirectory()) {
-			if (e.name === 'node_modules' && modules === 'link')
-				mirror_modules(src_root, dst_root, from, to);
-			else mirror_dir(src_root, dst_root, from, to, modules);
+			if (e.name === 'node_modules' && !copy_modules) mirror_modules(src_root, dst_root, from, to);
+			else mirror_dir(src_root, dst_root, from, to, modules_root, copy_modules);
 		} else if (e.isFile()) copyFileSync(from, to, constants.COPYFILE_FICLONE);
 	}
 }
 
 /**
- * A scratch copy of `root` at `dst` (which must not exist yet). `modules: 'copy'` copies the
- * installed dependencies too (links inside the root stay inside the copy), so a dependency's file
- * can be rewritten in the copy: the mutation layer's dependency mutants. Slower, and only asked for
- * then.
+ * A scratch copy of `root` at `dst` (which must not exist yet). With `modules_from` (another
+ * checkout of the same project, installed), every `node_modules` comes from that checkout instead:
+ * the project's files of `root` with the dependencies of the other install. Links into the other
+ * checkout (pnpm's links to workspace packages) reach the copy's packages, so the project's code
+ * is `root`'s wherever it is loaded from.
+ *
+ * `copy_modules` copies the root's own dependencies too (links inside the root stay inside the
+ * copy), so a dependency's file can be rewritten in the copy: the mutation layer's dependency
+ * mutants. Slower, and only asked for then.
  */
-export function mirror_tree(root: string, dst: string, modules: 'link' | 'copy' = 'link'): void {
+export function mirror_tree(
+	root: string,
+	dst: string,
+	o: { modules_from?: string; copy_modules?: boolean } = {}
+): void {
 	const src = resolve(root);
 	const out = resolve(dst);
-	if (inside(src, out))
-		throw new Error('heisenbench blame: the scratch tree cannot be inside the root');
-	mirror_dir(src, out, src, out, modules);
+	const modules = o.modules_from === undefined ? src : resolve(o.modules_from);
+	if (inside(src, out) || inside(modules, out))
+		throw new Error('heisenbench: the scratch tree cannot be inside the root');
+	mirror_dir(src, out, src, out, modules, o.copy_modules === true);
 }
 
 /**

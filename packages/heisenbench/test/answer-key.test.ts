@@ -171,7 +171,14 @@ for (const name of fixtures) {
 				assert.equal(leak.leaked, true, JSON.stringify(leak));
 				// the key names the leaking function by its place (no shape hash)
 				const s = leak.source!;
-				assert.deepEqual({ ...s, function: context_path(s.function) }, expect.leak);
+				const { module, variable, line } = s;
+				assert.deepEqual(
+					{ module, function: context_path(s.function), variable, line },
+					expect.leak
+				);
+				// the project's own variable: no package, held from the variable itself
+				assert.equal(s.package, null);
+				assert.equal(s.path[0], s.variable);
 				assert.equal(d.measure?.leaks.length, 1);
 				assert.ok(md.includes('**Leaks**') && md.includes(`\`${expect.leak.variable}\``), md);
 			}

@@ -14,7 +14,7 @@ export type { LoaderConfig } from './loader/register.ts';
 export { run_benches as runBenches } from './runner.ts';
 export type { RunOptions } from './runner.ts';
 export { diff_reports as diffReports } from './diff/index.ts';
-export type { DiffResult, Finding, FunctionChange } from './diff/index.ts';
+export type { DiffResult, FeelOdds, Finding, FunctionChange } from './diff/index.ts';
 export { render_markdown as renderMarkdown, SECTION_MARKER } from './diff/markdown.ts';
 export {
 	blame_regressions as blameRegressions,
@@ -37,6 +37,17 @@ export type {
 	FunctionResult as MutatedFunction
 } from './mutation/index.ts';
 export { render_mutation as renderMutation } from './mutation/markdown.ts';
+export { upgrade_diff as upgradeDiff, find_bumps as findBumps } from './upgrade/index.ts';
+export type {
+	Bump,
+	UpgradeCase,
+	UpgradeFunction,
+	UpgradeOptions,
+	UpgradeResult
+} from './upgrade/index.ts';
+export { render_upgrade as renderUpgrade } from './upgrade/markdown.ts';
+export { draft_upstream as draftUpstream } from './upstream/index.ts';
+export type { Draft, DraftOptions } from './upstream/index.ts';
 export { git_diff as gitDiff } from './diff/git.ts';
 export { code as markdownCode, cell as markdownCell } from './md.ts';
 export { env_mismatch as envMismatch, environment } from './report.ts';
@@ -78,6 +89,21 @@ export type { AuditReport, AuditCase, AuditFinding, AuditInput } from './audit/f
 export { render_audit as renderAudit } from './audit/markdown.ts';
 export type { SearchReport, SearchCase, SearchOptions } from './search/index.ts';
 export { diff_sections as diffSections, render_sections as renderSections } from './sections.ts';
+export {
+	check_contracts as checkContracts,
+	diff_contracts as diffContracts,
+	render_contracts as renderContracts,
+	render_contracts_diff as renderContractsDiff,
+	CONTRACT_ODDS
+} from './contracts/index.ts';
+export type {
+	ContractReport,
+	ContractResult,
+	ContractSource,
+	ContractsDiff
+} from './contracts/index.ts';
+export { read_contracts as readContracts } from './contracts/declare.ts';
+export type { Contract, ContractError } from './contracts/declare.ts';
 export { measure_layers as measureLayers } from './measure/index.ts';
 export type { Layer, MeasureOptions } from './measure/index.ts';
 export type { CaseMeasure, Estimate, BytesMeasure } from './measure/types.ts';

@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REPORT_SCHEMA, analyzeAudit, diffReports, loadPrices } from '@bench/heisenbench';
-import type { CaseReport, Report } from '@bench/heisenbench';
+import {
+	REPORT_SCHEMA,
+	analyzeAudit,
+	diffContracts,
+	diffReports,
+	loadPrices
+} from '@bench/heisenbench';
+import type { CaseReport, Report, UpgradeResult } from '@bench/heisenbench';
 import { parseComment, upsertSection } from '@bench/compare';
 import { merge_reports } from '../src/run.ts';
 import {
@@ -244,6 +250,79 @@ test('engine and growth findings are capped', () => {
 	assert.match(md, /25 more engine entries are in result\.json\./);
 });
 
+test('a dependency upgrade gets its part after the step table, or says it failed', () => {
+	const diff = {
+		...diffReports(report('c', [case_of('c', 1)]), report('a', [case_of('c', 2)]), {
+			files: null
+		}),
+		engine: null,
+		growth: null,
+		search: null
+	};
+	const upgrade: UpgradeResult = {
+		schema: 'heisenbench-upgrade/1',
+		root: '/w/head',
+		base_root: '/w/base',
+		bumps: [
+			{
+				name: 'slowdep',
+				from: '1.0.0',
+				to: '1.1.0',
+				dirs: { from: '/w/base/x', to: '/w/head/x' },
+				changed_files: 2
+			}
+		],
+		added: [],
+		removed: [],
+		cases: [
+			{
+				case: 'c',
+				file: 'x.bench.ts',
+				old_steps: 1,
+				new_steps: 2,
+				delta: 1,
+				packages: ['slowdep'],
+				by_package: [{ package: 'slowdep@1.1.0', delta: 1 }],
+				functions: [
+					{
+						module: 'slowdep@1.1.0/index.js',
+						function: 'tokenize',
+						old_module: 'slowdep@1.0.0/index.js',
+						line: 6,
+						end_line: 20,
+						package: 'slowdep@1.1.0',
+						old_self_steps: 1,
+						new_self_steps: 2,
+						delta_self_steps: 1,
+						calls: { old: 1, new: 1 },
+						only: null,
+						upstream: true,
+						lines: [{ line: 14, kind: 'new code', delta_steps: 1, upstream: true }]
+					}
+				],
+				entries: {}
+			}
+		],
+		unexplained: [],
+		order_dependent: [],
+		failed: [],
+		spent: { files: 1, cases: 1, ms: 10 }
+	};
+	const md = render_pr_section(
+		result({ selection: sel_one(), diff, upgrade: { result: upgrade, error: null } })
+	);
+	assert.match(md, /#### What the dependency upgrades cost/);
+	assert.match(
+		md,
+		/- upgrading slowdep 1\.0\.0 → 1\.1\.0 makes `c` \*\*\+100\.0%\*\* \(\+1 steps; all in `slowdep@1\.1\.0\/index\.js > tokenize` L14\)/
+	);
+	assert.ok(md.indexOf('steps per function') < md.indexOf('What the dependency upgrades cost'));
+	const failed = render_pr_section(
+		result({ selection: sel_one(), diff, upgrade: { result: null, error: 'no install' } })
+	);
+	assert.match(failed, /\*\*Dependency upgrade diff failed\*\*: `no install`/);
+});
+
 test('the weight line comes before the step table, the search line after it', () => {
 	const diff = {
 		...diffReports(report('c', [case_of('c', 1)]), report('a', [case_of('c', 2)]), {
@@ -394,4 +473,105 @@ test('the mutation score: a full run shows Heisenbench markdown, or one line whe
 		/\*\*The mutation score failed\*\*: `heisenbench mutate exited 2`/
 	);
 	assert.doesNotMatch(render_pr_section(result({})), /Mutation score/);
+});
+
+test('complexity contracts: a PR shows the ones it changes or breaks, a full run lists them all', () => {
+	const contract = (path: string, text: string, verdict: 'holds' | 'broken') => ({
+		id: `x.ts > ${path}`,
+		module: 'x.ts',
+		path,
+		line: 2,
+		tag_line: 1,
+		class: 'linear' as const,
+		param: 'rows',
+		argument: 0,
+		text,
+		verdict,
+		sources: []
+	});
+	const check = (cs: ReturnType<typeof contract>[]) => ({
+		schema: 'heisenbench-contracts/1' as const,
+		bar: 0.9,
+		contracts: cs,
+		errors: [],
+		pass: cs.every((c) => c.verdict === 'holds')
+	});
+	const base = check([contract('a', 'linear in rows', 'holds')]);
+	const same = render_pr_section(
+		result({ contracts: { head: base, base, diff: diffContracts(base, base), error: null } })
+	);
+	assert.doesNotMatch(same, /Complexity contracts/, 'nothing changed and all hold: no part');
+	const head = check([
+		contract('a', 'linear in rows', 'broken'),
+		contract('b', 'linear in rows', 'holds')
+	]);
+	const pr = render_pr_section(
+		result({ contracts: { head, base, diff: diffContracts(base, head), error: null } })
+	);
+	assert.match(pr, /#### Complexity contracts/);
+	assert.match(pr, /- \*\*broken\*\*: `x\.ts > a` `@heisenbench linear in rows` is broken/);
+	assert.match(pr, /- new: `x\.ts > b`/);
+	const full = render_full_summary(
+		result({
+			meta: { ...result({}).meta, kind: 'main', pr: null, base: null, merge_base: null },
+			selection: select_all(['x.bench.ts'], 'a full run'),
+			contracts: { head, base: null, diff: null, error: null }
+		})
+	);
+	assert.match(full, /1 of 2 contracts hold/);
+	const failed = render_pr_section(
+		result({ contracts: { head: null, base: null, diff: null, error: 'it crashed' } })
+	);
+	assert.match(failed, /\*\*Complexity contracts failed\*\*: `it crashed`/);
+});
+
+/** A case of one function whose steps are all arithmetic, with the units a recount reads. */
+function counted_case(name: string, steps: number): CaseReport {
+	return {
+		...case_of(name, steps),
+		functions: [
+			{
+				id: 'src/walk.ts > walk',
+				module: 'src/walk.ts',
+				path: 'walk',
+				kind: 'function',
+				line: 1,
+				end_line: 4,
+				calls: 1,
+				self_steps: steps,
+				inclusive_steps: steps,
+				allocations: 0,
+				bytes: 0,
+				shape: [1],
+				blocks: [],
+				sites: [],
+				builtins: [],
+				lines: [{ line: 2, steps, allocations: 0, bytes: 0, units: { arith: steps } }],
+				units: { arith: steps }
+			}
+		]
+	};
+}
+
+test('each changed case shows the odds it shows on the clock, next to its steps', () => {
+	const prices = loadPrices();
+	const priced = (r: Report): Report => ({
+		...r,
+		prices: { version: prices.prices.version, hash: prices.hash }
+	});
+	const base = priced(report('c', [counted_case('walk', 1_000_000), counted_case('tiny', 50_000)]));
+	const head = priced(report('a', [counted_case('walk', 2_000_000), counted_case('tiny', 50_500)]));
+	const diff = {
+		...diffReports(base, head, { files: null }),
+		engine: null,
+		growth: null,
+		search: null
+	};
+	const md = render_pr_section(result({ selection: sel_one(), head, base, diff }));
+	assert.match(md, /\| Case \| Steps \| Δ \| Odds it shows on the clock \|/);
+	const odds = (name: string) =>
+		Number(md.match(new RegExp(`\\| ${name} \\|[^\\n]*\\| (\\d+)% \\|\\n`))![1]);
+	assert.ok(odds('walk') > 80, `twice the steps: ${odds('walk')}%`);
+	assert.ok(odds('tiny') < 20, `+1%: ${odds('tiny')}%`);
+	assert.match(md, /Pass or fail never uses them/);
 });

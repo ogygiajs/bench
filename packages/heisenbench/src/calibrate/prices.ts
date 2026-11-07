@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { Bench } from 'tinybench';
-import { builtin_size } from '../runtime/builtins.ts';
-import { load_prices } from '../prices.ts';
-import type { BuiltinModel, BuiltinPrice, Prices } from '../prices.ts';
+import { builtin_size, builtin_terms } from '../runtime/builtins.ts';
+import { SIZE_TERMS, load_prices } from '../prices.ts';
+import type { BuiltinModel, BuiltinPrice, Prices, SizeTerm } from '../prices.ts';
 import { INPUTS, builtin_function } from './inputs.ts';
 import { nnls, r_squared } from './nnls.ts';
 
@@ -25,6 +25,8 @@ export interface PricePoint {
 	key: string;
 	/** The size the runtime charges for (builtin_size), not the input parameter. */
 	n: number;
+	/** The call's size terms (builtin_terms), aligned with SIZE_TERMS, for a built-in that has them. */
+	terms?: number[];
 	ns: number;
 }
 
@@ -32,6 +34,8 @@ export interface CurveFit {
 	model: BuiltinModel;
 	base_ns: number;
 	k_ns: number;
+	/** ns per unit of each size term the points vary (a built-in with size terms). */
+	terms_ns?: Partial<Record<SizeTerm, number>>;
 	r2: number;
 }
 
@@ -48,21 +52,47 @@ function term(model: BuiltinModel, n: number): number {
 	}
 }
 
+/**
+ * Fits `ns = base + k f(n) + sum_t k_t t` for each model f; the size terms that vary in the points
+ * (a built-in with size terms, timed at several shapes per size) are columns of every model. The
+ * columns are scaled to unit size before the fit: per-call ns and per-character ns differ by
+ * orders of magnitude, and so do their columns.
+ */
 export function fit_curve(points: PricePoint[]): CurveFit {
+	const used = SIZE_TERMS.map((_, i) => points.some((p) => (p.terms?.[i] ?? 0) > 0));
+	const extra = (p: PricePoint): number[] =>
+		SIZE_TERMS.flatMap((_, i) => (used[i] ? [p.terms?.[i] ?? 0] : []));
 	const fits = MODELS.map((model) => {
-		const a = points.map((p) =>
-			model === 'const' ? [1 / p.ns] : [1 / p.ns, term(model, p.n) / p.ns]
+		const cols = points.map((p) =>
+			model === 'const' ? [1, ...extra(p)] : [1, term(model, p.n), ...extra(p)]
 		);
-		const b = points.map(() => 1);
-		const [base, k = 0] = nnls(a, b);
-		const predicted = points.map((p) => base + k * term(model, p.n));
+		const width = cols[0].length;
+		const scale = Array.from({ length: width }, (_, j) =>
+			Math.max(...cols.map((r, i) => Math.abs(r[j]) / points[i].ns), 1e-300)
+		);
+		const a = cols.map((r, i) => r.map((v, j) => v / points[i].ns / scale[j]));
+		const x = nnls(
+			a,
+			points.map(() => 1)
+		).map((v, j) => v / scale[j]);
+		const predicted = cols.map((r) => r.reduce((s, v, j) => s + v * x[j], 0));
+		const base = x[0];
+		const k = model === 'const' ? 0 : x[1];
+		const rest = x.slice(model === 'const' ? 1 : 2);
+		const terms_ns: Partial<Record<SizeTerm, number>> = {};
+		let j = 0;
+		for (let i = 0; i < SIZE_TERMS.length; i++) if (used[i]) terms_ns[SIZE_TERMS[i]] = rest[j++];
 		return {
 			model,
 			base_ns: base,
 			k_ns: k,
+			...(used.some(Boolean) ? { terms_ns } : {}),
+			// On the log scale, as the fit is relative: on the raw scale the largest calls are all
+			// of R^2, and a model that misses every small shape 30x (a join of strings priced as a
+			// join of numbers) scores 0.998.
 			r2: r_squared(
-				points.map((p) => p.ns),
-				predicted
+				points.map((p) => Math.log(p.ns)),
+				predicted.map((v) => Math.log(Math.max(v, 1e-9)))
 			)
 		};
 	});
@@ -152,19 +182,18 @@ export async function time_builtins(
 		const input = INPUTS[key];
 		const fn = builtin_function(key);
 		if (!input || !fn) continue;
-		for (const size of sizes) {
-			const sample = input.make(size);
-			const n = builtin_size(
-				key,
-				sample.self,
-				sample.args,
-				Reflect.apply(fn, sample.self, sample.args)
-			);
-			const fresh = input.fresh === true;
-			const ns = await time_call(fn, () => input.make(size), fresh, o);
-			// never below a tenth of the raw time: the overhead is an estimate too
-			const own = Math.max(ns - (fresh ? overhead.single : overhead.batched), ns * 0.1);
-			out.push({ key, n, ns: own });
+		for (let shape = 0; shape < (input.shapes ?? 1); shape++) {
+			for (const size of sizes) {
+				const sample = input.make(size, shape);
+				const result = Reflect.apply(fn, sample.self, sample.args);
+				const n = builtin_size(key, sample.self, sample.args, result);
+				const terms = builtin_terms(key, sample.self, sample.args, result);
+				const fresh = input.fresh === true;
+				const ns = await time_call(fn, () => input.make(size, shape), fresh, o);
+				// never below a tenth of the raw time: the overhead is an estimate too
+				const own = Math.max(ns - (fresh ? overhead.single : overhead.batched), ns * 0.1);
+				out.push({ key, n, ...(terms ? { terms } : {}), ns: own });
+			}
 		}
 	}
 	return out;
@@ -190,13 +219,30 @@ export function prices_from_fits(
 ): Record<string, BuiltinPrice> {
 	const out: Record<string, BuiltinPrice> = {};
 	for (const [key, f] of Object.entries(fits)) {
-		out[key] = {
+		const p: BuiltinPrice = {
 			model: f.model,
 			base: quantize_price(f.base_ns / step_ns),
 			k: f.model === 'const' ? 0 : quantize_price(f.k_ns / step_ns)
 		};
+		// A term the fit put at 0 stays out of the price: the audit can still test it.
+		const terms: Partial<Record<SizeTerm, number>> = {};
+		for (const [t, ns] of Object.entries(f.terms_ns ?? {})) {
+			const per = quantize_price(ns / step_ns);
+			if (per > 0) terms[t as SizeTerm] = per;
+		}
+		if (Object.keys(terms).length > 0) p.terms = terms;
+		out[key] = p;
 	}
 	return out;
+}
+
+function same_price(a: BuiltinPrice, b: BuiltinPrice): boolean {
+	return (
+		a.model === b.model &&
+		a.base === b.base &&
+		a.k === b.k &&
+		JSON.stringify(a.terms ?? {}) === JSON.stringify(b.terms ?? {})
+	);
 }
 
 /** The price file with new built-in prices; the version goes up when anything changed. */
@@ -208,7 +254,7 @@ export function next_prices(
 	let changed = false;
 	for (const [key, p] of Object.entries(builtins)) {
 		const old = current.builtins[key];
-		if (!old || old.model !== p.model || old.base !== p.base || old.k !== p.k) changed = true;
+		if (!old || !same_price(old, p)) changed = true;
 		merged.builtins[key] = p;
 	}
 	if (changed) merged.version = current.version + 1;
@@ -225,7 +271,10 @@ export interface PriceCalibration {
 
 type PriceFile = Prices & { note?: string; calibration?: PriceCalibration };
 
-/** prices.json as the repository keeps it: one line per built-in. */
+/** The repository formatter's line width (.oxfmtrc.json `printWidth`). */
+const PRINT_WIDTH = 100;
+
+/** prices.json as the repository keeps it: one line per built-in while it fits. */
 export function format_prices(p: PriceFile): string {
 	const t = '\t';
 	const lines = ['{', `${t}"version": ${p.version},`];
@@ -234,16 +283,40 @@ export function format_prices(p: PriceFile): string {
 		const block = JSON.stringify(p.calibration, null, t).split('\n').join(`\n${t}`);
 		lines.push(`${t}"calibration": ${block},`);
 	}
+	const one_line = (o: object): string =>
+		`{ ${Object.entries(o)
+			.map(
+				([a, b]) =>
+					`${JSON.stringify(a)}: ${b !== null && typeof b === 'object' ? one_line(b as object) : JSON.stringify(b)}`
+			)
+			.join(', ')} }`;
 	const block = (name: string, obj: Record<string, unknown>, last: boolean, inline = false) => {
 		const keys = Object.keys(obj);
 		lines.push(`${t}${JSON.stringify(name)}: {`);
 		keys.forEach((k, i) => {
-			const v = inline
-				? `{ ${Object.entries(obj[k] as object)
-						.map(([a, b]) => `${JSON.stringify(a)}: ${JSON.stringify(b)}`)
-						.join(', ')} }`
-				: JSON.stringify(obj[k]);
-			lines.push(`${t}${t}${JSON.stringify(k)}: ${v}${i === keys.length - 1 ? '' : ','}`);
+			const comma = i === keys.length - 1 ? '' : ',';
+			const head = `${t}${t}${JSON.stringify(k)}: `;
+			if (!inline) {
+				lines.push(`${head}${JSON.stringify(obj[k])}${comma}`);
+				return;
+			}
+			const v = one_line(obj[k] as object);
+			// The repository's formatter keeps a price on one line while it fits in 100 columns
+			// (a tab is 2), and puts each field on a line of its own when it does not.
+			if (head.length + v.length + comma.length + 2 <= PRINT_WIDTH) {
+				lines.push(`${head}${v}${comma}`);
+				return;
+			}
+			lines.push(`${head}{`);
+			const fields = Object.entries(obj[k] as object);
+			fields.forEach(([a, b], j) => {
+				const value =
+					b !== null && typeof b === 'object' ? one_line(b as object) : JSON.stringify(b);
+				lines.push(
+					`${t}${t}${t}${JSON.stringify(a)}: ${value}${j === fields.length - 1 ? '' : ','}`
+				);
+			});
+			lines.push(`${t}${t}}${comma}`);
 		});
 		lines.push(`${t}}${last ? '' : ','}`);
 	};

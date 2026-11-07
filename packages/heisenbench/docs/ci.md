@@ -135,13 +135,30 @@ In this repository:
     on 4 cores. A PR with no case over the threshold costs nothing here. With the weights step 9
     ranks by, the blamed change gets the same real cost as the ranked findings: CPU time per day on
     the imported traffic, with its range, for the change and per hunk.
-13. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+13. **Dependency upgrades** (`suites/ogygia/src/upgrade.ts`). When the base and the head count a
+    package at different versions (the PR changed the lockfile or a `package.json`, so every bench
+    file ran), `upgradeDiff` counts the head's code again with each tree's install, on two
+    scratch copies of the head tree, and puts the step change of the cases that count the package
+    on the package's own lines ([layers.md](layers.md#dependency-upgrades)). Both trees are
+    installed already, so it costs two recounts of the bench files that reach the package, side by
+    side: 9 s for the compiler bench file on an M4 Max. `--upgrade off` turns it off. The draft of
+    an upstream report (`heisenbench upstream draft`) is not run here: it runs the package's code
+    on its own and times it, on demand.
+14. **Complexity contracts** (`suites/ogygia/src/contracts.ts`). The source files of each tree that
+    hold an `@heisenbench` tag go to `heisenbench contracts`, with what that tree measured: the head
+    against its growth cases and its growth from recorded calls, the base against its growth cases
+    ([layers.md](layers.md#complexity-contracts)). The comment shows the contracts the PR adds,
+    changes or removes, and every one that does not hold on the head; a PR that changes none and
+    breaks none gets no part. A PR that ran no bench file has no base tree (it is not installed for
+    this alone), so its comment shows only the head's contracts that do not hold. The check reads
+    only the tagged files and the growth already counted: about a second.
+15. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
     job checks it (below), then `result.json` goes to the `results` branch and `section.md`
     becomes the `heisenbench` section of the PR's comment.
 
 ### Who can write
 
-Steps 3 to 12 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
+Steps 3 to 14 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
 that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
 token is left in `.git/config` for that code to find.
 
@@ -184,7 +201,8 @@ with every source file a target), and the summary lists what grows quadratically
 `01dc5b9` (M4 Max): 4,868 functions recorded, 1,299 grown (the rest had fewer than two samples,
 are closures or class methods, or their module does not load outside Vite), 1,116 of them decided,
 in 60 s of recording and 152 s of growing (6.2×10⁹ counted steps). Two recordings gave the same
-findings, and growing the same records twice the same report.
+findings, and growing the same records twice the same report. Then every complexity contract is
+checked against the growth cases and those recorded calls, and the summary lists them all.
 
 The nightly run also searches every case that declares an input for its worst input
 (`--search all`, [layers.md](layers.md#worst-case-search)): one `heisenbench search` process per
@@ -227,6 +245,48 @@ file `heisenbench weights` writes, labelled with the commit and stamped with the
 it. A `publish-weights` job checks the artifact (schema, the commit) and stores it on the
 `results` branch. A manual run with `app_weights` counts them too and keeps them as an artifact
 only.
+
+### Slow creep across main
+
+A PR that adds 1% is easy to wave through; five of them are 5%. So a main or nightly run also
+reads main's earlier full runs from the `results` branch (`heisenbench/main/<sha>.json`, a
+blobless clone, so only the runs it reads are fetched), puts them in ogygia's first-parent order
+with this run as the newest, at most 60 runs, and runs each case's steps through Heisenbench's
+change-point model (`@bench/heisenbench/trend`). The summary gets one line per creeping case:
+
+```
+- ⚠️ steps of `<case>` started rising at `<sha>` (+5.1% over 9 commits, in 5 rises; still rising)
+```
+
+and one line naming the commits where cases took a step instead (2% or more in one commit, which
+that PR's own comment and blame already showed). It is report-only: no count, verdict or gate
+changes.
+
+The model. Steps are exact, so a series moves only when a commit changes the code a case runs:
+what looks like noise is real code churn. The series is the log of the steps (a rise is a ratio)
+cut into flat and sloped pieces by exact penalized least squares, the objective PELT solves,
+computed by optimal partitioning since a series is a few hundred points at most. A cut costs
+β = 2·ln n and a slope γ = ln n (the Bayesian information criterion: each number the fit uses
+must buy back ln n of fit), with misfit in units of σ = 0.5%. One commit that moves the steps by
+2% or more is a step, never part of a creep. Inside each run of rising pieces the creep is the
+span, from a small rise to a small rise, whose sum beats churn the most; it is reported when that
+sum is 2% or more, comes from 3 commits or more, and is at least 4.5 churn deviations
+(sum / (churn · √moves), where churn is the root mean square of the case's small moves outside
+every rising stretch, never below 0.1%). The span is the best of about n²/2, so the bar sits well
+above the usual 2 or 3. Every number is an option of `detect_trend`.
+
+On simulated series (`packages/heisenbench/test/trend.test.ts`, 40 commits each): churn alone
+(0.2%, 0.5% or 1% on every commit, or 0.6% on one commit in five) shows a creep in 2 of 800
+series; eight 1% rises on 0.3% churn are found at their first commit for 173 of 200 seeds and
+within one commit for 194. The model takes 118 ms for 57 cases of 300 commits each. `heisenbench verify --layers trend` checks the
+planted series: a flat series and a single step say no creep, five 1% PRs among flat commits are
+found at the first of them, and a creep then a revert, a creep on churn and two separate creeps
+come out as planted.
+
+A change of the counter (a newer Heisenbench, or another Node) can move steps too. The model does
+not guess which moves were the counter's; each step and creep says when the counter changed with
+it. A run that was not given a history (`--history`) says nothing; a history that is not there,
+or a single run so far, is one line.
 
 Every main push has its own concurrency group, and the nightly run has another, so no full run
 cancels or replaces another (GitHub keeps only one waiting run per group, so a shared group would
@@ -291,6 +351,8 @@ The `heisenbench` section, in order:
    one more line for each flagged case, with its worst input.
 9. **Time.** The time table for every case of the selected files. When no case got slower or
    faster beyond noise, one line says so and the table is collapsed under it.
+10. **Complexity contracts**, after growth from recorded calls: the contracts the PR adds, changes
+    or removes, and each one that does not hold, with the class measured, the sizes and the lines.
 
 Every list is capped (20 bench files, 10 files that did not run, 15 engine and growth findings)
 with a count of the rest, which are in `result.json`. Names and errors are escaped for markdown
@@ -367,9 +429,12 @@ Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones an
 `--weights app-weights.json` (rank a PR by those weights), `--real-weights real-weights.json` (and by
 real cost on that traffic), `--requests-per-day <n>`, `--search changed|all|off` (default
 `changed` for a PR, `off` for a full run; the nightly run passes `all`), `--search-budget
-<seconds>` (default 240 for a PR, 1800 for a full run, `0` turns the search off), `--mutate
-all|<n>|off` (a full run: the mutation score of every function a case runs, or of a sample of n;
-default off, the nightly run passes `all`), `--mutate-budget <seconds>` (default 4500). On an M4 Max,
+<seconds>` (default 240 for a PR, 1800 for a full run, `0` turns the search off), `--history <dir>`
+(a full run: the `results` branch, a checkout or a blobless clone, for the trend over main),
+`--mutate all|<n>|off` (a full run: the mutation score of every function a case runs, or of a
+sample of n; default off, the nightly run passes `all`), `--mutate-budget <seconds>` (default
+4500). The trend alone, on the runs the history already holds:
+`node suites/ogygia/src/trend-cli.ts --repo <ogygia clone> --history <dir>`. On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
 already installed.
 
@@ -389,5 +454,12 @@ every non-draft PR. Locally: `pnpm build:lib`, then `pnpm bench:unmeasured`.
    exemptions in `internal/heisenbench/unmeasured.json`.
 
 It writes `.heisenbench/unmeasured/gate.md` (also the job summary) and `gate.json`, and exits 1 when the
-PR adds a function with no measurement source. The numbers from PR #180 are in
-[layers.md](layers.md#the-measurement-source-gate).
+PR adds a function with no measurement source, or when any function with a complexity contract
+has none (the inventory lists the contracts; no change to ogygia's script needed). The numbers
+from PR #180 are in [layers.md](layers.md#the-measurement-source-gate).
+
+The contracts themselves are checked in this repository's run (step 14) and shown in the comment.
+To make a broken contract a failing check in ogygia's own CI too, a job would run
+`heisenbench growth <bench files> --scaled on --out r.json` and then
+`heisenbench contracts --list <tagged files> --reports r.json`, which exits 1 when one does not
+hold; this PR does not change ogygia's workflows.

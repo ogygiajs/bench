@@ -1,18 +1,21 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { relative, resolve, sep } from 'node:path';
 import type { FileDiff } from './diff/git.ts';
 import { diff_engine, render_engine_markdown } from './engine/diff.ts';
 import type { EngineDiff } from './engine/diff.ts';
 import { diff_growth } from './growth/index.ts';
 import type { GrowthDiff } from './growth/index.ts';
+import type { OddsOptions } from './growth/odds.ts';
 import { diff_search } from './search/index.ts';
 import type { SearchFinding } from './search/index.ts';
-import { load_prices } from './prices.ts';
+import { SIZE_TERMS, load_prices } from './prices.ts';
 import { REPORT_SCHEMA, environment } from './report.ts';
 import { code } from './md.ts';
 import { render_audit } from './audit/markdown.ts';
 import type { AuditReport } from './audit/fit.ts';
+import { diff_contracts, render_contracts_diff } from './contracts/index.ts';
+import type { ContractsDiff } from './contracts/index.ts';
 import type { Report } from './report.ts';
 
 /*
@@ -22,7 +25,7 @@ import type { Report } from './report.ts';
  * renders an "Engine" and a "Growth" part under the step table.
  */
 
-type Section = 'engine' | 'growth' | 'recorded_growth' | 'search' | 'audit';
+type Section = 'engine' | 'growth' | 'recorded_growth' | 'search' | 'audit' | 'contracts';
 
 function git(root: string, args: string[]): string | null {
 	try {
@@ -36,6 +39,16 @@ function git(root: string, args: string[]): string | null {
 	}
 }
 
+/**
+ * The report text already at `out`, or null when there is none to merge into: no file, an empty
+ * one, or not a regular file (`--out /dev/null` prints the lines and keeps nothing).
+ */
+export function existing_report_text(out: string): string | null {
+	if (!existsSync(out) || !statSync(out).isFile()) return null;
+	const text = readFileSync(out, 'utf8');
+	return text.trim() === '' ? null : text;
+}
+
 /** Write one section into `out` (an heisenbench report), keeping everything else in it. */
 export function write_section<K extends Section>(
 	out: string,
@@ -44,8 +57,13 @@ export function write_section<K extends Section>(
 	info: { root: string; sha?: string | null }
 ): Report {
 	let report: Report;
-	if (existsSync(out)) {
-		report = JSON.parse(readFileSync(out, 'utf8')) as Report;
+	const text = existing_report_text(out);
+	if (text !== null) {
+		try {
+			report = JSON.parse(text) as Report;
+		} catch {
+			throw new Error(`heisenbench: ${out} is not JSON (write to another --out)`);
+		}
 		if (report.schema !== REPORT_SCHEMA)
 			throw new Error(`heisenbench: ${out} is not an heisenbench report`);
 		// One report holds one environment: its layers must not mix Node versions.
@@ -67,7 +85,8 @@ export function write_section<K extends Section>(
 				sha: info.sha ?? git(root, ['rev-parse', 'HEAD']),
 				prefix: top ? relative(top, root).split(sep).join('/') : ''
 			},
-			cases: []
+			cases: [],
+			unit_terms: [...SIZE_TERMS]
 		};
 	}
 	report[key] = value;
@@ -81,9 +100,16 @@ export interface SectionsDiff {
 	search: SearchFinding[] | null;
 	/** The PR side's price audit (a property of the prices, not a change): shown when suspect. */
 	audit?: AuditReport | null;
+	/** Complexity contracts the PR adds, changes or removes, and those that do not hold on its side. */
+	contracts?: ContractsDiff | null;
 }
 
-export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null): SectionsDiff {
+export function diff_sections(
+	base: Report,
+	pr: Report,
+	files: FileDiff[] | null,
+	odds: OddsOptions = {}
+): SectionsDiff {
 	// What V8 did is only comparable on one V8: across Node versions the engine part is left out.
 	const same_engine = base.node === pr.node && base.env?.v8 === pr.env?.v8;
 	return {
@@ -95,9 +121,10 @@ export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null
 						pr_prefix: pr.git.prefix
 					})
 				: null,
-		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth) : null,
+		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth, odds) : null,
 		search: base.search && pr.search ? diff_search(base.search, pr.search) : null,
-		audit: pr.audit ?? null
+		audit: pr.audit ?? null,
+		contracts: pr.contracts ? diff_contracts(base.contracts, pr.contracts) : null
 	};
 }
 
@@ -125,6 +152,11 @@ export function render_sections(d: SectionsDiff): string {
 				for (const f of g.unclear) lines.push(`- ${f.text}`);
 				lines.push('');
 			}
+			if ((g.unsure ?? []).length > 0) {
+				lines.push('Class changes the odds do not back (not findings):', '');
+				for (const f of g.unsure!) lines.push(`- ${f.text}`);
+				lines.push('');
+			}
 			if (g.same.length > 0) {
 				lines.push(
 					'<details><summary>Same growth, different steps at the largest size</summary>',
@@ -146,6 +178,8 @@ export function render_sections(d: SectionsDiff): string {
 		}
 		parts.push(lines.join('\n'));
 	}
+	const contracts = d.contracts ? render_contracts_diff(d.contracts) : '';
+	if (contracts) parts.push(contracts);
 	const prices = d.audit ? render_audit(d.audit, { quiet: true }) : '';
 	if (prices) parts.push(prices);
 	return parts.join('\n');

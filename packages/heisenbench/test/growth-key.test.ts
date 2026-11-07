@@ -68,6 +68,10 @@ test('growth: the base is linear, counted exactly at 1x / 10x / 100x', async () 
 	assert.equal(sum.scaler, 'case');
 	assert.equal(sum.class, 'linear');
 	assert.ok(sum.steps[2] > 90 * sum.steps[0] * 0.9);
+	for (const c of [rank, sum]) {
+		assert.equal(c.odds?.odds[0].shape, 'linear', JSON.stringify(c.odds));
+		assert.ok(c.odds!.odds[0].p >= 0.95, JSON.stringify(c.odds));
+	}
 });
 
 for (const name of readdirSync(GROWTH).filter((d) => d !== 'base')) {
@@ -81,6 +85,12 @@ for (const name of readdirSync(GROWTH).filter((d) => d !== 'base')) {
 		const [b, p] = await Promise.all([growth_base(), cli(dir, ['growth']).then((r) => r.growth!)]);
 		const d = diff_growth(b, p);
 		const shown = JSON.stringify(d.findings);
+		// every planted case keeps its class in the odds, with at least 95% on it
+		for (const c of p.cases) {
+			assert.equal(c.odds?.odds[0].shape, c.class, `${c.name}: ${JSON.stringify(c.odds)}`);
+			assert.ok(c.odds!.odds[0].p >= 0.95, `${c.name}: ${JSON.stringify(c.odds)}`);
+		}
+		assert.deepEqual(d.unsure, [], 'a planted change is backed by its odds');
 		assert.deepEqual(
 			d.findings.map((f) => ({ case: f.case, base: f.base, pr: f.pr })),
 			expect.flags,
@@ -130,9 +140,18 @@ test('search answer key: slow inputs are found, linear code has none', async () 
 	assert.ok(of(p, 'count').input.includes('aaaa'), of(p, 'count').input);
 	// linear: the worst input costs what the typical one does
 	assert.ok(of(p, 'total').ratio <= 1.05, JSON.stringify(of(p, 'total')));
-	// the base has no slow input: split on more separators makes more parts (a few % more), far
-	// below a slow input's 3x
-	for (const c of b.cases) assert.ok(c.ratio <= 1.25, `base ${c.name}: ${c.ratio}`);
+	// the base has no slow input: order and total cost what the typical input does
+	for (const c of b.cases.filter((x) => x.name !== 'count'))
+		assert.ok(c.ratio <= 1.25, `base ${c.name}: ${c.ratio}`);
+	// Its count splits on the pattern: a text full of it cuts more parts, and a split costs per
+	// part (prices v3), so its worst text costs more, but one part per pattern's length at most:
+	// not a slow input, and far below what the naive loop's worst text costs.
+	const base_count = of(b, 'count').ratio;
+	assert.ok(base_count < 4, `base count: ${base_count}`);
+	assert.ok(
+		of(p, 'count').ratio >= 2 * base_count,
+		`count: base ${base_count}x, pr ${of(p, 'count').ratio}x`
+	);
 
 	const found = diff_search(b, p).map((f) => f.case);
 	assert.deepEqual(found.sort(), ['count', 'order']);

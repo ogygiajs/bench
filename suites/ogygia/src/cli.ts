@@ -20,14 +20,19 @@
  * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
  * modules only, or none; default all for a full run, changed for a PR), --blame-budget <seconds>
  * (a PR: which hunks made the regressed cases slower, recounted on scratch copies of the head
- * tree; default 300, 0 turns it off).
+ * tree; default 300, 0 turns it off), --upgrade on|off (a PR whose trees count a dependency at
+ * different versions: the head's code counted with each tree's install, upgrade.ts; default on),
+ * --history <dir> (a full run: the results branch, a checkout
+ * or a blobless clone; each case's steps over main's earlier full runs, in first-parent order,
+ * are checked for slow creep, trend.ts; report-only).
  *
  * A PR: both commits are checked out and installed, the PR is measured against the merge base of
  * the two, and only the bench files whose import graph reaches a changed file run: counted, health
  * checked and grown on both trees, then timed with both trees in one process, taking turns. Real
  * bytes and leaks cost about 15 s a case a side, so a PR leaves them to the main and nightly runs
  * unless --measure asks. A full run (no --base): every bench file of the one commit, with every
- * plain-build layer. Writes to --out:
+ * plain-build layer. Both kinds then check the complexity contracts (`@heisenbench linear in x`
+ * tags, contracts.ts) against what was measured. Writes to --out:
  *
  *   section.md    the `heisenbench` section of the PR comment (a full run: a summary of every case)
  *   result.json   meta, selection, both reports, the diff and the time comparison (the results
@@ -64,6 +69,11 @@ import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
 import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
 import { MUTATION_BUDGET_MS, run_mutation } from './mutation.ts';
+import { run_contracts } from './contracts.ts';
+import { run_upgrade } from './upgrade.ts';
+import type { Tree } from './checkout.ts';
+import type { RecordedGrowthReport } from '@bench/heisenbench';
+import { run_trend } from './trend.ts';
 
 const { values } = parseArgs({
 	options: {
@@ -85,7 +95,9 @@ const { values } = parseArgs({
 		recorded: { type: 'string' },
 		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) },
 		mutate: { type: 'string', default: 'off' },
-		'mutate-budget': { type: 'string', default: String(MUTATION_BUDGET_MS / 1000) }
+		'mutate-budget': { type: 'string', default: String(MUTATION_BUDGET_MS / 1000) },
+		upgrade: { type: 'string', default: 'on' },
+		history: { type: 'string' }
 	}
 });
 if (values.mutate !== 'off' && values.mutate !== 'all' && !(Number(values.mutate) > 0))
@@ -94,6 +106,7 @@ if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.
 	throw new Error('--recorded takes all, changed or off');
 if (values.search !== undefined && !['all', 'changed', 'off'].includes(values.search))
 	throw new Error('--search takes all, changed or off');
+if (!['on', 'off'].includes(values.upgrade)) throw new Error('--upgrade takes on or off');
 
 const LAYERS = /^(all|none|(time|bytes|leaks)(,(time|bytes|leaks))*)$/;
 
@@ -174,11 +187,12 @@ async function main(): Promise<void> {
 		time: null
 	};
 
+	let base_tree: Tree | null = null;
 	if (selection.selected.length > 0) {
 		// Both trees side by side, each on half the cores (one at a time when measuring time). Engine
 		// health checks that V8 does the same thing twice everywhere, PRs included: only that check
 		// can mark a function unstable, and an unstable one is never a finding in the comment.
-		const base_tree = mb ? prepare_tree(repo, work, mb, HEISENBENCH_DIR, log) : null;
+		base_tree = mb ? prepare_tree(repo, work, mb, HEISENBENCH_DIR, log) : null;
 		const present = new Set(base_tree?.benches ?? []);
 		const base_files = selection.selected.filter((f) => present.has(f));
 		const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
@@ -267,6 +281,15 @@ async function main(): Promise<void> {
 					}
 				);
 			}
+			// a dependency counted at another version: what the upgrade alone costs
+			if (result.head && result.base && values.upgrade !== 'off') {
+				result.upgrade = await run_upgrade(head, base_tree, result.head, result.base, work, log);
+				const u = result.upgrade;
+				if (u)
+					log(
+						`dependency upgrades: ${u.error ? `failed: ${u.error}` : `${u.result!.bumps.map((b) => `${b.name} ${b.from} → ${b.to}`).join(', ')}; ${u.result!.cases.filter((c) => c.delta !== 0).length} of ${u.result!.cases.length} case(s) changed`}`
+					);
+			}
 		}
 		// every case of the selected files, on the head (the nightly run)
 		if (search === 'all' && search_ms > 0) {
@@ -287,6 +310,7 @@ async function main(): Promise<void> {
 	// Growth from recorded calls: a full run grows every recorded function; a PR only those of the
 	// source files it changed (docs/ci.md has the cost of each).
 	const recorded = values.recorded ?? (mb ? 'changed' : 'all');
+	let recorded_report: RecordedGrowthReport | null = null;
 	if (recorded !== 'off') {
 		const changed = mb
 			? changed_files(repo, mb, sha).filter((f) => /^packages\/[^/]+\/src\//.test(f))
@@ -298,11 +322,43 @@ async function main(): Promise<void> {
 				log,
 				recorded === 'all' ? null : changed
 			);
+			recorded_report = run.report;
 			result.recorded = summarize(run, recorded === 'all' ? 'all' : 'changed');
 			log(
 				`growth from recorded calls: ${result.recorded.findings.length} findings of ${result.recorded.grown} grown (build ${run.seconds.build} s, record ${run.seconds.record} s, grow ${run.seconds.grow} s)${run.error ? `; ${run.error}` : ''}`
 			);
 		}
+	}
+
+	// Complexity contracts: each tree's tags against its own growth cases (and the head's recorded
+	// growth). A PR that ran no bench file has no base tree (it is never installed for this alone):
+	// its comment shows only the head's contracts that do not hold.
+	result.contracts = await run_contracts(
+		{
+			tree: head,
+			report: result.head,
+			recorded: recorded_report ? { recorded_growth: recorded_report } : null
+		},
+		base_tree ? { tree: base_tree, report: result.base } : null,
+		join(out, 'contracts'),
+		log,
+		mb !== null
+	);
+	if (result.contracts) {
+		const c = result.contracts;
+		const held = c.head?.contracts.filter((x) => x.verdict === 'holds').length ?? 0;
+		log(
+			`complexity contracts: ${c.error ? `failed: ${c.error}` : `${held} of ${c.head?.contracts.length ?? 0} hold on the head`}`
+		);
+	}
+
+	// a full run: slow creep over main's earlier full runs, with this run as the newest
+	if (!mb && result.head && values.history !== undefined) {
+		result.trend = run_trend({ repo, history: resolve(values.history), result });
+		const t = result.trend;
+		log(
+			`trend over main: ${t.error ? `failed: ${t.error}` : `${t.creeps.length} creeping of ${t.cases} cases over ${t.runs.length} full runs${t.note ? ` (${t.note})` : ''}`} (${t.ms} ms)`
+		);
 	}
 
 	// with real traffic, the recorded findings are ranked too: by what each takes on it now

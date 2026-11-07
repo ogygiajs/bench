@@ -52,10 +52,14 @@ code as it ships, nothing counted) next to the count:
 | Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?     |
 | Growth            | Is the case constant, linear, n log n, quadratic or worse in its input size?       |
 | Recorded growth   | Which function grows quadratically on its tests' real inputs, with no growth case? |
+| Contracts         | Does each function grow no faster than its `@heisenbench` contract says?           |
 | Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?      |
 | Worst-case search | Which input costs the most work per unit of input, and how does it grow?           |
+| Proof             | Is this faster version the same on every input, and cheaper? (on demand)           |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
 | Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
+| Upgrades          | What does a dependency upgrade cost, on which of the package's lines?              |
+| Upstream draft    | The upgrade's slowdown as an issue for the package: a repro, the counts, the line. |
 | Mutation score    | Would a case notice? Slowdowns planted in each function, and which ones it caught. |
 
 [docs/layers.md](docs/layers.md) explains each one.
@@ -95,6 +99,11 @@ The full comment is in [docs/sample-comment.md](docs/sample-comment.md).
 You need Node 26.4 or newer. CI runs the tests on Node 26.4.0 and on the newest 26, and counts on
 the newest 26. Node 22 does not work: on 22.18, 6 of the 166 tests fail (`using` declarations,
 which its V8 does not parse, and engine health).
+
+That is the Node Heisenbench runs on, not the Node your library supports. A library tested on
+Node 20 or 24 counts its benches in a separate CI job on Node 26, and the counts are as valid: a
+count depends on the code and its input, not on the Node version (two Node 26 releases gave the
+same steps for all of ogygia's cases, see [Reading the numbers](#reading-the-numbers)).
 
 In a new project:
 
@@ -180,6 +189,14 @@ npx heisenbench diff base.json pr.json --repo .
 
 **1** function changed in 1 case(s). Steps are exact counts, not timings.
 
+| Case | Steps | Δ | Odds it shows on the clock |
+| --- | ---: | ---: | ---: |
+| rank: twenty rows | 897 → 1,417 | +520 (+58.0%) | 57% |
+
+<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from 475 timed changes (dataset v1). They were timed on a busy machine, so the odds lean low. Pass or fail never uses them.</sub>
+
+By function:
+
 | Case | Function | Self steps | Δ | Δ allocs | Δ bytes | Δ inclusive |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | rank: twenty rows | `src/rank.ts > score` | 620 → 1,140 | +520 (+83.9%) ≈ +21 ns | 0 | 0 | +520 |
@@ -197,6 +214,23 @@ npx heisenbench diff base.json pr.json --repo .
 `--repo .` lets the diff read `git diff` between the two reports' commits, so unchanged lines are
 matched even when they moved, and changed lines are marked "new code". Without it, lines are
 compared by number.
+
+The first table is the case as a whole (58% more steps); the second is each changed function's
+own steps (84% more in `score`). When no function changed, the section says so and then shows the
+PR's own counts: the ten heaviest cases, the function and line with the most steps in each, their
+growth class when the report has a growth section, and every case that grows faster than linear.
+A bench file that did not load on one side is listed under "Did not run" with its error, and its
+cases are left out of "New cases" and "Removed cases".
+
+A repository's first PR, the one that adds the bench files, has a base with none. Count the PR's
+bench files on the base's code for it:
+
+```bash
+npx heisenbench run bench/*.bench.ts --source-from "$(git merge-base origin/main HEAD)" --out base.json
+```
+
+Every counted file the base commit has is read as it is there (from git; the working tree is not
+touched), and what only the PR has, like the bench files, from disk.
 
 ## Bench files
 
@@ -256,11 +290,36 @@ With that file in the project, `tsc` checks the bench file like any other. ogygi
 before every run and keeps it out of git. Class `#private` methods are measured through their
 public callers.
 
+### Complexity contracts
+
+A function can say how fast it may grow, in its doc comment:
+
+```ts
+/** @heisenbench linear in rows */
+export function rank(rows: Row[]): number[] {
+```
+
+`heisenbench growth` keeps the curve of every contracted function a growth case runs, and
+`heisenbench contracts src/*.ts --reports report.json` holds each contract against it: the declared
+class or a cheaper one needs 90% odds, or the check fails with the class it measured, the exponent,
+the sizes and the lines with the most steps at the largest size. A contract nothing measures fails
+too. [layers.md](docs/layers.md#complexity-contracts) has the details.
+
 ### What a bench file can load
 
 - TypeScript. Types are stripped, as Node does it. A module that stripping cannot run (`enum`,
   `namespace`, parameter properties) is compiled with the project's TypeScript, and its lines map
   back through the compiler's source map.
+- Relative imports the way TypeScript projects write them. When Node cannot find one, the source
+  file it names is tried: `./clone.js` loads `clone.ts` (`.mjs` loads `.mts`), and `./core` with
+  no extension loads `core.ts`, `core.mts`, `core.js`, `core.mjs`, `core/index.ts` or
+  `core/index.js`. Packages in `node_modules` resolve the way they ship.
+- A type imported without `type` (`import { Rule, apply } from './rules.js'`, where `Rule` is an
+  `export type`). Node's type stripping keeps that import and the module would not link ("does
+  not provide an export named 'Rule'"); a named import that nothing in the module reads is
+  dropped instead, as `tsc` does. The module it names still loads.
+- Anything else Node cannot load by itself (path aliases, modules only a bundler serves, globals
+  the code expects) through a preload: `--import <file>` (below).
 - A bench file that throws, does not parse or defines no cases is reported on its own; the other
   files still run.
 - `.svelte` components and `.svelte.ts` modules, compiled with the project's own Svelte (server
@@ -271,9 +330,11 @@ public callers.
   dropped 1.9 times, because Svelte's template parser, which calls acorn once per expression
   with the whole file, was not counted. Counted, the case grown to 100 times its input is 78%
   acorn (see [growth](docs/layers.md#growth)). `--deps none` counts
-  your code alone, `--deps devalue,svelte` only those packages. CommonJS dependencies run as
-  they are (the transform is for ES modules), and Node's built-in modules are never counted:
-  the built-ins they reach are priced where counted code calls them.
+  your code alone, `--deps devalue,svelte` only those packages. CommonJS dependencies are
+  counted the same way (`typescript@6.0.3/lib/typescript.js > <anonymous>~2726fa > createScanner
+  > scan`, inside the bundle's wrapper function), and Node's
+  > built-in modules are never counted: the built-ins they reach are priced where counted code
+  > calls them.
 
 ## CLI
 
@@ -285,13 +346,17 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
 | `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
+| `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.     |
+| `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.  |
 | `heisenbench mutate <bench files> --root <dir> --list <sources>`                       | Plants slowdowns that keep the output in every function; scores what the cases catch, a case for each miss.        |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
 | `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
-| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
+| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input, the fitted curve class and the odds of each shape.                               |
 | `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
 | `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
+| `heisenbench contracts <source files> --reports <a.json,b.json>`                       | Each `@heisenbench` complexity contract held against the growth the reports measured; exit 1 when one fails.       |
 | `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.              |
+| `heisenbench prove <module> <function> --candidate <file>`                             | Accepts a faster version only when it behaves the same on every input and costs fewer steps.                       |
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
 | `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |
 | `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
@@ -299,16 +364,48 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
 | `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
 | `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
+| `heisenbench feel train\|check`                                                        | Fit the odds a step change shows on the clock; `check` fits `feel.json` again, byte for byte.                      |
 
-`health`, `growth`, `search` and `audit` write their section into the report given by `--out`, so
+`health`, `growth`, `search`, `audit` and `contracts` write their section into the report given by `--out`, so
 one JSON file per commit holds everything `diff` needs.
 
-`calibrate` and `verify` run only in a clone of this repository. The npm package does not ship
-the calibration corpus or the planted cases, and from npm both commands say so and stop.
+`calibrate`, `verify` and `feel` run only in a clone of this repository. The npm package does not
+ship the calibration corpus, the training dataset or the planted cases, and from npm these
+commands say so and stop. It does ship the fitted `feel.json`.
+
+Every command that loads bench files (`run`, `health`, `growth`, `search`, `audit`, `time`,
+`blame`, `record`, `prove`) takes `--import <file>[,<file>]`: a preload imported before the
+bench files, in that process and in every process it starts (engine health, time, real bytes
+and leak children, blame's recounts). A preload that registers a resolve hook
+([`module.registerHooks`](https://nodejs.org/api/module.html#customization-hooks)) maps the
+imports only a bundler knows, like ogygia's `virtual:ogygia/*` and `$app/*`:
+
+```ts
+// bench/preload.ts
+import { registerHooks } from 'node:module';
+
+registerHooks({
+	resolve(specifier, context, next) {
+		if (specifier.startsWith('~/')) {
+			return next(new URL(`../src/${specifier.slice(2)}`, import.meta.url).href, context);
+		}
+		return next(specifier, context);
+	}
+});
+```
+
+```bash
+npx heisenbench run bench/*.bench.ts --import bench/preload.ts
+```
+
+It is the same as `NODE_OPTIONS=--import=./bench/preload.ts`, which works too.
 
 Exit codes: 0 when everything ran, 1 when a case, a bench file or a layer failed (the report
 says which), 2 when the command line is wrong. Errors are one line; `--debug` adds the stack.
-Ctrl-C stops the run and every process it started.
+A case or a bench file that throws keeps where it threw: the line says `(at helper
+(src/lib.ts:7:34))`, the report keeps the frames of the code under test (`error_stack` of the
+case, `stack` of a load error), and `--debug` prints them all. Ctrl-C stops the run and every
+process it started.
 
 ## The PR comment
 
@@ -327,6 +424,10 @@ of this repository under `heisenbench/`. [docs/ci.md](docs/ci.md) has the detail
 The step table shows any change, down to one step: counts do not need a noise floor. The time table
 uses one.
 
+Another repository gets the same comparison on its PRs from one workflow file:
+[docs/ci-any-repo.md](docs/ci-any-repo.md) has it, about 80 lines, with the first PR and the
+read-only and comment jobs handled.
+
 ## Reading the numbers
 
 **A step** is one simple operation: a property read, a comparison, an assignment, an arithmetic
@@ -341,6 +442,12 @@ display. Counts are still exact.
 
 **The ns next to a Δ** (`≈ +21 ns`) is an estimate: the change in each kind of operation times its
 fitted cost in ns. It is not a measurement. Only the time layer measures.
+
+**The odds it shows on the clock** (`57%` above) are a bet from a small model fitted on timed
+changes: of step changes like this one, how many the time layer saw beyond noise. They were
+timed on a busy machine, so they lean low, and pass or fail never uses them.
+[docs/feel-odds.md](docs/feel-odds.md) has the model, its held-out scores and what the busy
+machine means.
 
 **The same code with the same input always counts the same.** Inside the measuring window:
 
@@ -427,7 +534,15 @@ only comparable on one V8.
 - **Blame sees hunks, not their meaning.** It names the smallest set of hunks that carries the
   extra steps. Hunks that only load together (a renamed function and its callers) come out as one
   set; a regression from a dependency or the lockfile is said to be outside the hunks, since every
-  candidate tree shares the head's `node_modules`.
+  candidate tree shares the head's `node_modules`. `heisenbench upgrade` answers that one: it counts
+  the PR's code with the base's install and with its own.
+- **An upgrade is placed on lines, not on the upstream commit.** It names the package's function
+  and lines between the two installed versions; which release or commit between them made the
+  change is left to the package's own history.
+- **An upstream draft needs a call a stranger can make.** The function the project called must be
+  exported, and its recorded arguments must rebuild as source (strings, numbers, arrays, plain
+  objects, Map, Set, Date, RegExp). Otherwise `--entry` and `--input` say what to call and with
+  what.
 
 ## How it compares
 
@@ -455,7 +570,7 @@ CI runs it on every pull request and every push to main of this repository. Outp
 Node 26.4.0:
 
 ```
-Heisenbench verify: 34 of 34 planted cases pass
+Heisenbench verify: 36 of 36 planted cases pass
 pass  steps/comments             no-op    nothing flagged
 pass  steps/extra-allocation     planted  flagged lines 17 (+240 steps)
 pass  steps/extra-loop           planted  flagged lines 11,12 (+520 steps)
@@ -480,8 +595,10 @@ pass  engine/shape-order         planted  deopt in total:18, inline cache in tot
 pass  engine/shape-order-twin    no-op    nothing flagged
 pass  growth/constant-factor     no-op    no class change
 pass  growth/quadratic           planted  rank: linear -> quadratic
-pass  search/order               planted  worst/typical 11.25, flagged
-pass  search/count               planted  worst/typical 4.93, flagged
+pass  contract/broken            planted  broken: measured quadratic, most steps on lib.ts:22
+pass  contract/holds             no-op    holds
+pass  search/order               planted  worst/typical 11.24, flagged
+pass  search/count               planted  worst/typical 8.11, flagged
 pass  search/total               no-op    worst/typical 1.00, not flagged
 pass  app/cold-large             planted  configure: cold, shown (+774 steps/call)
 pass  app/cold-small             planted  configure: cold, suppressed (+5 steps/call)
@@ -541,7 +658,11 @@ handles, and 369 corpus files. What it found is fixed, each with a test in
 
 - [How counting works](docs/how-counting-works.md): the transform, prices, built-ins, determinism,
   source maps, the shadow call stack, allocations and the byte model.
-- [Layers](docs/layers.md): engine health, time, real bytes, leaks, growth, search, app weights,
-  coverage and the gate.
+- [Layers](docs/layers.md): engine health, time, real bytes, leaks, growth, search, proofs of a
+  faster version, app weights, coverage and the gate.
 - [CI](docs/ci.md): the ogygia suite, the workflows, the comment, the results branch.
+- [CI for any repo](docs/ci-any-repo.md): one workflow that counts a PR and its base and posts
+  the diff.
 - [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.
+- [Odds it shows on the clock](docs/feel-odds.md): the model behind the odds next to a step
+  change, its held-out scores, and why a busy machine makes them lean low.

@@ -70,6 +70,71 @@ calibrated built-in price by 0.5, 0.33 or 0.2 gives 0.847, 0.845 and 0.841. Op p
 seed prices (a step is one simple op). Built-ins are now 83% of an ogygia case's steps (median),
 against 35% before.
 
+### Size terms: prices v3 (2026-11-07)
+
+The price audit flagged `String.prototype.split` on ogygia's growing `transformHost` case: acorn
+splits the template up to each expression into lines, and `split` was priced per character
+(366 + 18.5 n), while its time follows the parts it cuts. A built-in's price can now have size
+terms beside n (`base + k f(n) + Σ kₜ t`, [how-counting-works.md](../docs/how-counting-works.md#built-ins)),
+and six built-ins were calibrated again at several input shapes per size, so the fit can tell
+characters from parts, matches, callbacks and converted elements apart.
+
+**Two calibrations agree.** `heisenbench calibrate prices --keys <the six>` twice, one after the
+other (M4 Max, Node 26.4.0, load average 6 to 9 from other work): `calibrate agree` on the two
+files, the six built-ins at 16, 256 and 4,096 and every shape (78 prices): **median |Δ| 1.22%**,
+p90 2.31%, worst `Array.from` at 16 with no callback (10.3%, 86 vs 78 steps). Allowed: 5%. The
+committed prices are the mean of the two, in ns, quantized as before.
+
+**The step.** The corpus reference read 0.151 to 0.155 ns per step that day, against 0.0997 when
+the file was calibrated, while the built-ins that did not change timed as they did then
+(`Map.prototype.get` 2.3 ns, priced 24.5 steps = 2.44 ns; `String.prototype.slice` 1.8 ns,
+priced 1.77 ns). The reference moved, not the machine's built-ins, so the new prices are in the
+file's step, 0.0997 ns: dividing by the day's reading would have made these six 35% cheaper than
+the other 51.
+
+| Built-in                      | v2            | v3                                | R² (log) |
+| ----------------------------- | ------------- | --------------------------------- | -------: |
+| `String.prototype.split`      | 366 + 18.5 n  | 154 + 125 parts                   |    0.984 |
+| `String.prototype.replace`    | 294 + 12.5 n  | 242 + 115 matches + 206 callbacks |    0.997 |
+| `String.prototype.replaceAll` | 246 + 15 n    | 121 + 135 matches                 |    0.998 |
+| `String.prototype.match`      | 363 + 0.516 n | 162 + 0.359 n + 7.375 matches     |    0.938 |
+| `Array.prototype.join`        | 33 n          | 59.25 + 2.03 n + 223 items        |    0.951 |
+| `Array.from`                  | 98 + 1.09 n   | 107 + 1.20 n + 137 callbacks      |    0.993 |
+
+**Evidence.** Each built-in timed again at 16, 256 and 4,096 at every shape, and each price
+divided by the time (1.00x is right; above it the price charges too much):
+
+| Built-in                      | Shapes | v2 price / time | v3 price / time |
+| ----------------------------- | -----: | --------------- | --------------- |
+| `String.prototype.split`      |      6 | 0.38x to 25.04x | 0.67x to 1.27x  |
+| `String.prototype.replace`    |      6 | 0.08x to 11.27x | 0.80x to 1.23x  |
+| `String.prototype.replaceAll` |      6 | 0.21x to 12.25x | 0.88x to 1.27x  |
+| `String.prototype.match`      |      3 | 0.18x to 2.80x  | 0.54x to 1.27x  |
+| `Array.prototype.join`        |      3 | 0.92x to 20.20x | 0.30x to 1.25x  |
+| `Array.from`                  |      2 | 0.01x to 1.14x  | 0.82x to 1.25x  |
+| `JSON.parse`                  |      3 | 0.33x to 2.24x  | (unchanged)     |
+| `JSON.stringify`              |      3 | 0.88x to 1.32x  | (unchanged)     |
+
+`JSON.parse` and `JSON.stringify` keep their v2 prices: within 3x and 1.4x on numbers, small
+records and long strings, the evidence does not call for more. Their `values` term is kept in the
+units, so the audit can test it. `replaceAll`'s callbacks cost nothing beyond its matches (the fit
+puts them at 0). A `/\S/g` replace that matches almost every character (Svelte blanking the code
+before a snippet's parameters) times 7.1 ns per match against 11.5 priced, 19.2 with a callback
+against 32: 1.6x over, inside the audit's 4x.
+
+**On ogygia** (`01dc5b9`, all 57 cases): 34 cases count differently with v3, 33 of them fewer
+steps. The largest moves are the cases built on `replace`, `split` and `join` over long strings:
+`frontmatter` 0.10x, `search: strip and excerpt` 0.15x, `absolutize` 0.29x, `lift_document`
+0.30x; `fill: the href of every link` 1.43x (a `join` of numbers). The two rows of the real-world
+check (section 4) where steps overstated time were `lift_document` and `absolutize`, put down to
+`replace` with a callback priced too high on that code: v3 prices them at 0.30x and 0.29x of v2.
+
+**Recounts.** Every report now keeps its size terms (`unit_terms`) and recounts with v3 exactly.
+A report from before them has no parts or matches to price: `recount` refuses it and a diff
+calls the two reports not comparable, rather than read the old side as cheaper. The stored
+reports of the real-world check (section 4) are such reports; it is to be measured again before
+it is recounted with v3. `weights.json` is still the fit on v2 prices: it only feeds `≈ ns`.
+
 ## 3. Weights (steps to nanoseconds)
 
 Fitted on 250 points (the corpus and ogygia's 57 cases, both agreeing sets): **R² 0.91** on the

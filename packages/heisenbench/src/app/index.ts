@@ -3,7 +3,7 @@
  * its pages counted per load and per interaction under virtual time, as one app report.
  */
 import { REPORT_SCHEMA } from '../report.ts';
-import { load_prices } from '../prices.ts';
+import { SIZE_TERMS, load_prices } from '../prices.ts';
 import { apply_estimates } from '../calibrate/estimate.ts';
 import type { AppCaseReport, AppReport, LoadedModules } from './types.ts';
 
@@ -37,6 +37,7 @@ export function app_report(o: {
 		node: process.version,
 		git: { sha: o.sha, prefix: '' },
 		cases: o.cases,
+		unit_terms: [...SIZE_TERMS],
 		app: {
 			packages: o.packages,
 			ogygia: o.ogygia,

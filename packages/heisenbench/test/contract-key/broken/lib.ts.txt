@@ -1,0 +1,27 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+
+/** Each row's score, and how many rows before it have a smaller id.
+ * @heisenbench linear in rows
+ */
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (let i = 0; i < rows.length; i++) {
+		let before = 0;
+		for (let j = 0; j < i; j++) {
+			if (rows[j].id < rows[i].id) before++;
+		}
+		out.push(score(rows[i]) + before * 0);
+	}
+	return out;
+}

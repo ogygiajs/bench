@@ -2,7 +2,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from './bench.ts';
 import type { BenchCase } from './bench.ts';
-import { GENERATION } from './loader/core.ts';
+import { GENERATION, forget_commonjs } from './loader/core.ts';
 
 /*
  * Fresh module state per measured run (spec 3). Every run of a case gets its own copy of the
@@ -19,14 +19,19 @@ import { GENERATION } from './loader/core.ts';
  * block and stay exact. A worker would need the counters shipped back and every module transformed
  * again per run; a vm context has its own built-ins, which the wrappers would have to patch per run.
  *
+ * CommonJS files are cached by path, whatever the query: each new generation drops the ones the
+ * bench graph loaded from `require.cache` (forget_commonjs), so they are evaluated again too, and
+ * count into the same counters (Runtime.counters, keyed by file).
+ *
  * Cost: ES modules are never unloaded, so each copy stays in memory until the process ends (three
- * copies of a case's module graph per case). CommonJS dependencies are cached by file name and stay
- * shared. `fresh: false` (`heisenbench run --state shared`) runs every case on one copy instead.
+ * copies of a case's module graph per case). `fresh: false` (`heisenbench run --state shared`)
+ * runs every case on one copy instead.
  */
 
 let generation = 0;
 
 export function next_generation(): number {
+	forget_commonjs();
 	return ++generation;
 }
 

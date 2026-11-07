@@ -193,12 +193,43 @@ test('a case past 2e8 / 256 steps still gets its tries: the budget grows with th
 	assert.equal(s.stopped, 'evals');
 });
 
+test('the fixed schedule is kept behind a flag: it still finds both planted inputs', async () => {
+	for (const seed of SEEDS) {
+		const w = await search_case(words, me, { seed, schedule: 'fixed' });
+		assert.equal(w.stopped, 'runaway', JSON.stringify(w));
+		assert.equal(w.arms, undefined);
+		const g = await search_case(nesting, me, { seed, schedule: 'fixed' });
+		assert.ok(g.finding?.reasons.includes('superlinear'), JSON.stringify(g.finding));
+	}
+});
+
+test('the report says when the slow input was found, and what each operator did', async () => {
+	const s = await search_case(nesting, me, { seed: 1 });
+	// found within the tries the search made, and the worst input no earlier than that
+	assert.ok(s.found_at !== null && s.found_at! >= 1 && s.found_at! <= s.evals, String(s.found_at));
+	assert.ok(s.best_at! >= 1 && s.best_at! <= s.evals, String(s.best_at));
+	const arms = s.arms!;
+	assert.ok(arms.length > 1);
+	assert.ok(arms.every((a) => a.gains <= a.tries));
+	// every input run came from one operator (the doubled inputs the search measures did not)
+	assert.ok(arms.reduce((n, a) => n + a.tries, 0) <= s.evals);
+	assert.ok(
+		arms.some((a) => a.arm === 'node: nest' && a.gains > 0),
+		JSON.stringify(arms)
+	);
+	// a linear case has nothing worth a look
+	const l = await search_case(linear, me, { seed: 1 });
+	assert.equal(l.found_at, null);
+});
+
 test('the same seed finds the same thing', async () => {
 	const strip = (s: SearchCase) => JSON.stringify(s);
 	for (const c of [words, nesting, linear]) {
-		const a = await search_case(c, me, { seed: 7 });
-		const b = await search_case(c, me, { seed: 7 });
-		assert.equal(strip(a), strip(b), c.name);
+		for (const schedule of ['bandit', 'fixed'] as const) {
+			const a = await search_case(c, me, { seed: 7, schedule });
+			const b = await search_case(c, me, { seed: 7, schedule });
+			assert.equal(strip(a), strip(b), `${c.name}, ${schedule}`);
+		}
 	}
 	const md = render_search({
 		schema: 'heisenbench-search/2',
@@ -212,7 +243,8 @@ test('the same seed finds the same thing', async () => {
 			shrink: 200,
 			flag: 4,
 			guided: true,
-			regex: true
+			regex: true,
+			schedule: 'bandit'
 		},
 		cases: [await search_case(nesting, me, { seed: 1 }), await search_case(linear, me, { seed: 1 })]
 	});

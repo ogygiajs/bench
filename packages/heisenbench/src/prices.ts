@@ -35,10 +35,28 @@ export const OP_INDEX: Record<OpKind, number> = Object.fromEntries(
 
 export type BuiltinModel = 'const' | 'n' | 'n_log_n' | 'n2';
 
+/**
+ * The sizes beside n that drive a built-in's work, each priced linearly (`terms`). One list for
+ * every built-in; which ones a built-in has is in runtime/builtins.ts (SIZE_OF_TERMS):
+ *
+ *   parts      strings a `split` cuts
+ *   matches    matches a `replace`, `replaceAll` or global `match` finds
+ *   callbacks  calls a built-in makes into the code (a `replace` callback, `Array.from`'s mapFn)
+ *   values     values `JSON.parse` builds or `JSON.stringify` visits
+ *   items      elements a `join` turns into text (the ones that are not strings already)
+ *
+ * The order is fixed: it is the order of the runtime's unit slots (units.ts BUILTIN_TERMS).
+ */
+export const SIZE_TERMS = ['parts', 'matches', 'callbacks', 'values', 'items'] as const;
+
+export type SizeTerm = (typeof SIZE_TERMS)[number];
+
 export interface BuiltinPrice {
 	model: BuiltinModel;
 	base: number;
 	k: number;
+	/** Steps per unit of each size term (`{ "parts": 48 }`): `base + k f(n) + sum terms[t] * t`. */
+	terms?: Partial<Record<SizeTerm, number>>;
 }
 
 export interface Prices {
@@ -108,17 +126,35 @@ export function n_log_n(n: number): number {
 	return n > 1 ? Math.round(n * Math.log2(n) * 64) / 64 : n;
 }
 
-export function builtin_cost(p: BuiltinPrice, n: number): number {
+/**
+ * Steps of one call of size `n`; `sizes` are its size terms, aligned with SIZE_TERMS (absent: 0).
+ * The model's term comes first, then the size terms in SIZE_TERMS order: the order the units
+ * reprice them in (units.ts), so a recount gives the same number.
+ */
+export function builtin_cost(p: BuiltinPrice, n: number, sizes?: ArrayLike<number> | null): number {
+	let cost: number;
 	switch (p.model) {
 		case 'const':
-			return p.base;
+			cost = p.base;
+			break;
 		case 'n':
-			return p.base + p.k * n;
+			cost = p.base + p.k * n;
+			break;
 		case 'n_log_n':
-			return p.base + p.k * n_log_n(n);
+			cost = p.base + p.k * n_log_n(n);
+			break;
 		case 'n2':
-			return p.base + p.k * n * n;
+			cost = p.base + p.k * n * n;
+			break;
 	}
+	const t = p.terms;
+	if (t && sizes) {
+		for (let i = 0; i < SIZE_TERMS.length; i++) {
+			const per = t[SIZE_TERMS[i]];
+			if (per !== undefined && sizes[i]) cost += per * sizes[i];
+		}
+	}
+	return cost;
 }
 
 /**

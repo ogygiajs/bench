@@ -146,18 +146,30 @@ function deepen(head: Obj, key: string, k: number): Obj {
 	return first ?? head;
 }
 
-function scale(v: unknown, k: number, inside: boolean): unknown {
-	if (inside || k === 1) return clone(v);
+/**
+ * `up` holds the objects being scaled around `v` (its ancestors) and their copies. An edge back to
+ * one (`o.self = o`, a parent link) points at the ancestor's copy: a cycle stays a cycle and is
+ * never followed round. Every copy of a part made inside starts from those edges alone, so two
+ * repeats of an element still share nothing but the ancestors.
+ */
+function scale(v: unknown, k: number, inside: boolean, up: Map<unknown, unknown>): unknown {
+	if (v !== null && typeof v === 'object' && up.has(v)) return up.get(v);
+	const copy = (x: unknown): unknown => clone(x, new Map(up));
+	if (inside || k === 1) return copy(v);
 	if (typeof v === 'string') return v.repeat(k);
 	if (Array.isArray(v)) {
 		const out: unknown[] = [];
-		for (let j = 0; j < k; j++) for (let i = 0; i < v.length; i++) out.push(clone(v[i]));
+		up.set(v, out);
+		for (let j = 0; j < k; j++) for (let i = 0; i < v.length; i++) out.push(copy(v[i]));
+		up.delete(v);
 		return out;
 	}
 	if (v instanceof Map) {
 		const out = new Map();
+		up.set(v, out);
 		const span = key_span(v.keys());
-		for (let j = 0; j < k; j++) for (const [key, x] of v) out.set(rekey(key, j, span), clone(x));
+		for (let j = 0; j < k; j++) for (const [key, x] of v) out.set(rekey(key, j, span), copy(x));
+		up.delete(v);
 		return out;
 	}
 	if (v instanceof Set) {
@@ -170,7 +182,9 @@ function scale(v: unknown, k: number, inside: boolean): unknown {
 		const link = chain_key(v);
 		if (link !== null) return deepen(v, link, k);
 		const out: Obj = Object.create(Object.getPrototypeOf(v)) as Obj;
-		for (const key of data_keys(v)) out[key] = scale(v[key], k, false);
+		up.set(v, out);
+		for (const key of data_keys(v)) out[key] = scale(v[key], k, false, up);
+		up.delete(v);
 		copy_accessors(v, out);
 		return out;
 	}
@@ -179,7 +193,7 @@ function scale(v: unknown, k: number, inside: boolean): unknown {
 
 /** A copy of `v` about `k` times bigger (k a whole number >= 1). */
 export function scale_input<T>(v: T, k: number): T {
-	return scale(v, Math.max(1, Math.round(k)), false) as T;
+	return scale(v, Math.max(1, Math.round(k)), false, new Map()) as T;
 }
 
 /** How many values a size walk visits before it stops (one call's arguments). */

@@ -196,6 +196,16 @@ jobs:
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
+      # A main or nightly run checks each case's steps over main's earlier full runs for slow
+      # creep (suites/ogygia/src/trend.ts, report-only): the results branch, read as data. A
+      # blobless clone, so only the runs it reads are fetched. Without it the summary says so.
+      - name: Fetch main's earlier runs
+        if: needs.plan.outputs.base_sha == ''
+        continue-on-error: true
+        run: |
+          git clone --quiet --filter=blob:none --no-checkout --depth 1 --branch results \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$RUNNER_TEMP/history"
+
       # Clones ogygia, checks out and installs each commit, writes the bench files' types, selects
       # the bench files and counts them; section.md and result.json land in suites/ogygia/out. A
       # PR-style run also ranks by the weights and runs the worst-case search (4 minutes in all)
@@ -212,11 +222,13 @@ jobs:
           SEARCH_BUDGET: ${{ github.event_name == 'schedule' && '1800' || '240' }}
           # the nightly run mutates every function a case runs (docs/ci.md#the-mutation-score)
           MUTATE: ${{ github.event_name == 'schedule' && 'all' || '' }}
+          HISTORY: ${{ needs.plan.outputs.base_sha == '' && format('{0}/history', runner.temp) || '' }}
         run: |
           set -euo pipefail
           WEIGHTS=""
           if [ -n "$BASE_SHA" ] || [ -n "$MUTATE" ]; then WEIGHTS="$GITHUB_WORKSPACE/_weights/heisenbench/main/app-weights.json"; fi
           node suites/ogygia/src/cli.ts --sha "$SHA" ${BASE_SHA:+--base "$BASE_SHA"} ${PR:+--pr "$PR"} \
+            ${HISTORY:+--history "$HISTORY"} \
             ${WEIGHTS:+--weights "$WEIGHTS"} \
             ${BASE_SHA:+--real-weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/real-weights.json"} \
             ${SEARCH:+--search "$SEARCH"} --search-budget "$SEARCH_BUDGET" \

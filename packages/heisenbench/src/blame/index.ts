@@ -6,15 +6,14 @@ import { diff_reports } from '../diff/index.ts';
 import type { DiffResult } from '../diff/index.ts';
 import type { LoaderConfig } from '../loader/register.ts';
 import { one_line } from '../report.ts';
+import { recount } from './recount.ts';
 import type { Report } from '../report.ts';
 import { ddmin } from './ddmin.ts';
 import type { Outcome, Tester } from './ddmin.ts';
 import { diff_units } from './hunks.ts';
 import type { Unit, Units } from './hunks.ts';
-import { Lanes, run_child } from './lanes.ts';
+import { Lanes } from './lanes.ts';
 import { remove_tree } from './tree.ts';
-
-export { move_args } from './lanes.ts';
 import type { FunctionChange } from '../diff/index.ts';
 import { load_weights } from '../calibrate/weights.ts';
 import { rank_changes } from '../weight/rank.ts';
@@ -263,6 +262,8 @@ interface Count {
 	error: string | null;
 }
 
+export { move_args } from './recount.ts';
+
 /** The units a set leaves applied, sorted. */
 function ids(s: Iterable<number>): number[] {
 	return [...s].sort((a, b) => a - b);
@@ -307,38 +308,32 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 		const lane = await lanes.take();
 		const t0 = Date.now();
 		const out = join(work, 'counts', `${hash}.json`);
-		const job_file = join(work, 'counts', `${hash}.job.json`);
-		let error: string | null = null;
+		let got: { report: Report | null; error: string | null };
 		try {
 			lanes.put(lane, units.tree(applied));
-			const left = budget_ms - (Date.now() - started);
-			error = await run_child(
+			got = await recount({
 				lane,
-				{ root: lane, files, cases: names, sha: null, prefix, deps: o.deps ?? true, out },
-				job_file,
-				{
-					given_root,
-					root,
-					node_args,
-					env,
-					timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, left))
-				}
-			);
+				given_root,
+				root,
+				files,
+				cases: names,
+				prefix,
+				deps: o.deps ?? true,
+				out,
+				job_file: join(work, 'counts', `${hash}.job.json`),
+				node_args,
+				env,
+				timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, budget_ms - (Date.now() - started)))
+			});
 		} catch (e) {
-			error = `the recount ${one_line(e)}`;
+			got = { report: null, error: `the recount ${one_line(e)}` };
 		} finally {
 			lanes.give(lane);
 		}
+		const { report } = got;
+		const error = got.error;
 		const steps = new Map<string, number | null>();
 		const errors = new Map<string, string>();
-		let report: Report | null = null;
-		if (error === null) {
-			try {
-				report = JSON.parse(readFileSync(out, 'utf8')) as Report;
-			} catch (e) {
-				error = `no report: ${one_line(e)}`;
-			}
-		}
 		for (const c of o.cases) {
 			const key = case_key(c);
 			const got = report?.cases.find((x) => x.file === c.file && x.name === c.name);

@@ -149,6 +149,12 @@ export interface InstrumentOptions {
 	/** Append `export const __heisenbench = {...}` with every private top-level binding. Default true. */
 	expose?: boolean;
 	lang?: 'js' | 'jsx' | 'ts' | 'tsx';
+	/**
+	 * A CommonJS module: parsed as one (sloppy mode, a `return` at the top), it takes its counters
+	 * from the runtime (`Runtime.counters`) instead of importing a counter module, names itself by
+	 * `__filename` where an ES module says `import.meta.url`, and exports nothing (`expose` off).
+	 */
+	commonjs?: boolean;
 }
 
 export interface InstrumentResult {
@@ -261,7 +267,7 @@ class Instrumenter {
 	pos: Positions;
 	prices: Float64Array;
 	builtin_names: Set<string>;
-	n: { c: string; d: string; f: string; b: string; s: string; R: string; r: string };
+	n: { c: string; d: string; f: string; b: string; s: string; R: string; r: string; u: string };
 
 	fns: FnRec[] = [];
 	blocks: BlockRec[] = [];
@@ -297,8 +303,17 @@ class Instrumenter {
 			b: p + 'b',
 			s: p + 's',
 			R: p + 'R',
-			r: p + 'r'
+			r: p + 'r',
+			u: p + 'u'
 		};
+	}
+
+	/** The module's meta, once `finalize` made it (the CommonJS header embeds it). */
+	meta: ModuleMeta | null = null;
+
+	/** What the module says where a call site names its own module (`site_any`). */
+	self_url(): string {
+		return this.opts.commonjs ? this.n.u : 'import.meta.url';
 	}
 
 	// ---------------------------------------------------------------- records
@@ -558,10 +573,10 @@ class Instrumenter {
 		const header_pos = first < body.length ? body[first].start : this.code.length;
 		const n = this.n;
 		const spec = JSON.stringify(this.opts.module_specifier);
-		this.open(
-			header_pos,
-			() =>
-				`import{c as ${n.c},d as ${n.d},f as ${n.f},b as ${n.b},s as ${n.s},r as ${n.R}}from${spec};`
+		this.open(header_pos, () =>
+			this.opts.commonjs
+				? `const{c:${n.c},d:${n.d},f:${n.f},b:${n.b},s:${n.s},r:${n.R}}=globalThis[Symbol.for("heisenbench.runtime")].counters(${spec},${JSON.stringify(JSON.stringify(this.meta))}),${n.u}=__filename;`
+				: `import{c as ${n.c},d as ${n.d},f as ${n.f},b as ${n.b},s as ${n.s},r as ${n.R}}from${spec};`
 		);
 		this.scope_block = null;
 		if (first < body.length) {
@@ -1447,7 +1462,7 @@ class Instrumenter {
 			});
 			const base = this.n.b;
 			const R = this.n.R;
-			const url = plan.any ? ',import.meta.url' : '';
+			const url = plan.any ? `,${this.self_url()}` : '';
 			if (args.length === 0) {
 				const fn = plan.any ? 'site_any_zero' : 'site_zero';
 				this.add_zero_arg(call, () => `...${R}.${fn}(${base}+${k}${url})`);
@@ -1938,7 +1953,7 @@ function lang_of(filename: string): 'js' | 'jsx' | 'ts' | 'tsx' {
 
 export function instrument(code: string, opts: InstrumentOptions): InstrumentResult {
 	const parsed = parseSync(opts.filename, code, {
-		sourceType: 'module',
+		sourceType: opts.commonjs ? 'commonjs' : 'module',
 		lang: opts.lang ?? lang_of(opts.filename),
 		preserveParens: false
 	});
@@ -1949,6 +1964,7 @@ export function instrument(code: string, opts: InstrumentOptions): InstrumentRes
 	const ins = new Instrumenter(code, opts);
 	ins.run(program);
 	const meta = ins.finalize();
+	ins.meta = meta;
 
 	const s = new MagicString(code);
 	for (const e of ins.edits) {
@@ -1957,7 +1973,7 @@ export function instrument(code: string, opts: InstrumentOptions): InstrumentRes
 		else s.prependLeft(e.pos, e.text());
 	}
 
-	if (opts.expose ?? true) {
+	if ((opts.expose ?? true) && !opts.commonjs) {
 		const bindings = private_bindings(program);
 		if (!bindings.some((b) => b.name === '__heisenbench')) {
 			const props = bindings.map((b) => (b.live ? `get ${b.name}(){return ${b.name}}` : b.name));

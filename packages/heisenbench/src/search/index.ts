@@ -7,7 +7,9 @@ import { fit_growth, growth_label, is_superlinear, SUPERLINEAR_POWER } from '../
 import type { GrowthClass } from '../growth/fit.ts';
 import { build_case_report } from '../report.ts';
 import type { CaseReport } from '../report.ts';
-import { GrammarPlan, Rng, mutate, mutate_guided } from './mutate.ts';
+import { GrammarPlan, Rng, arms_of, mutate, mutate_arm, mutate_guided } from './mutate.ts';
+import { Bandit, density_reward } from './bandit.ts';
+import type { ArmStat } from './bandit.ts';
 import { RegexModel, RegexRunawayError } from './regex.ts';
 import type { RegexRun, RegexUse } from './regex.ts';
 import { blame, emptied, growers, shrink } from './shrink.ts';
@@ -39,6 +41,11 @@ import type { Snapshot } from '../runtime/index.ts';
  * run there and is reported as exceeding the cap at its size (`runaway`), never as the worst
  * input. A try that would need more than what is left of the budget is not run. Shrinking and
  * growing the winner have as many steps again.
+ *
+ * Which edit each try makes is a bandit's choice (bandit.ts): every mutation operator is an arm,
+ * rewarded by the density gain its edits make, so the tries go to the operators that keep finding
+ * denser inputs. `schedule: 'fixed'` is the schedule before it: an operator picked by fixed
+ * weights (one try in six a plain edit anywhere).
  *
  * `guided: false` is the plain search: random mutations (mutate.ts), the most steps wins, no
  * corpus, no shrinking or growing.
@@ -100,6 +107,15 @@ export interface SearchCase {
 	/** worst / typical. */
 	ratio: number;
 	evals: number;
+	/** The try that found the worst input. */
+	best_at?: number;
+	/**
+	 * The first try that found an input worth a look (its density `flag` times the setup input's,
+	 * doubling it grew the steps 2^1.5 times or more, or it never finished), or null.
+	 */
+	found_at?: number | null;
+	/** The bandit schedule: how often each operator ran, and how often it made the input denser. */
+	arms?: ArmStat[];
 	/** What ended the search (`runaway`: a try went past its own cap). */
 	stopped: 'evals' | 'steps' | 'time' | 'runaway';
 	/** The worst input, as JSON (shortened). */
@@ -155,10 +171,26 @@ export interface SearchBudget {
 	guided?: boolean;
 	/** Count regex backtracking with the matcher model (default true). */
 	regex?: boolean;
+	/**
+	 * How a guided try picks its edit: `bandit` (the operators that keep making the input denser
+	 * run more) or `fixed` (fixed weights, the schedule before the bandit). Default `bandit`.
+	 */
+	schedule?: 'bandit' | 'fixed';
 }
 
 export interface SearchOptions extends LoadOptions, SearchBudget {
 	log?: (line: string) => void;
+}
+
+/** The search's best so far, each time it changes (for comparing schedules). */
+export interface SearchProgress {
+	/** The try that found it. */
+	evals: number;
+	total: number;
+	density: number;
+	g2: number | null;
+	/** It went past its cap: the search ends here. */
+	runaway: boolean;
 }
 
 const DEFAULTS: Required<SearchBudget> = {
@@ -171,7 +203,8 @@ const DEFAULTS: Required<SearchBudget> = {
 	shrink: 200,
 	flag: 4,
 	guided: true,
-	regex: true
+	regex: true,
+	schedule: 'bandit'
 };
 
 /** The input's data, never its getters (shown as `<getter>`), for the JSON preview. */
@@ -241,7 +274,8 @@ function growth_bonus(g2: number | null): number {
 export async function search_case(
 	c: BenchCase,
 	m: Measurer,
-	budget: SearchBudget = {}
+	budget: SearchBudget = {},
+	watch?: (p: SearchProgress) => void
 ): Promise<SearchCase> {
 	const o = { ...DEFAULTS, ...budget };
 	const out: SearchCase = {
@@ -396,6 +430,16 @@ export async function search_case(
 		let runaway: { input: unknown; trail: string[] } | null = null;
 		let stale = 0;
 		let tries = 0;
+		const bandit = o.guided && o.schedule === 'bandit' ? new Bandit() : null;
+		// worth a look: what makes a finding (dense, steep when doubled), on any try
+		let found_at: number | null = null;
+		const worth = (e: Entry): boolean =>
+			(seed_entry.density > 0 ? e.density >= o.flag * seed_entry.density : e.density > 0) ||
+			(e.g2 !== null && e.g2 >= GROWTH2_FLAG);
+		const new_best = (e: Entry, at: number): void => {
+			out.best_at = at;
+			watch?.({ evals: at, total: e.total, density: e.density, g2: e.g2, runaway: false });
+		};
 		while (true) {
 			if (out.evals >= o.evals) {
 				out.stopped = 'evals';
@@ -409,16 +453,35 @@ export async function search_case(
 				out.stopped = 'time';
 				break;
 			}
-			const next = o.guided
-				? mutate_guided(
-						cur.input,
-						rng,
-						plan,
-						{ size: cur.size, min: 0, max: limit },
-						corpus.slice(-16).map((x) => x.input)
-					)
-				: mutate(cur.input, rng);
+			const room = { size: cur.size, min: 0, max: limit };
+			let arm: string | null = null;
+			let next: { input: unknown; what: string } | null;
+			if (!o.guided) next = mutate(cur.input, rng);
+			else if (bandit) {
+				const arms = arms_of(cur.input, plan);
+				arm = arms.length > 0 ? bandit.pick(arms, rng) : null;
+				next = arm
+					? mutate_arm(
+							cur.input,
+							arm,
+							rng,
+							plan,
+							room,
+							corpus.slice(-16).map((x) => x.input)
+						)
+					: null;
+			} else {
+				next = mutate_guided(
+					cur.input,
+					rng,
+					plan,
+					room,
+					corpus.slice(-16).map((x) => x.input)
+				);
+			}
 			if (next === null || input_size(next.input) > limit) {
+				// an edit that does not fit pays nothing
+				if (arm) bandit!.miss(arm);
 				// only growing mutations left (an empty input): count them, so the search ends
 				if (++tries > o.evals * 20) break;
 				continue;
@@ -430,11 +493,15 @@ export async function search_case(
 				break;
 			}
 			out.evals++;
+			const at = out.evals;
 			let r: Counted;
 			try {
 				r = await count(next.input, 'replay', try_cap);
 			} catch (e) {
 				if (e instanceof StepCapError) {
+					if (arm) bandit!.reward(arm, 1);
+					if (o.guided) found_at ??= at;
+					watch?.({ evals: at, total: try_cap, density: 0, g2: null, runaway: true });
 					// past its own cap: it may never end. Said as such, never the worst input.
 					spent += try_cap;
 					out.runaway = true;
@@ -448,6 +515,7 @@ export async function search_case(
 					out.stopped = 'runaway';
 					break;
 				}
+				if (arm) bandit!.reward(arm, 0);
 				stale++;
 				continue; // an input the code rejects is not a slow input
 			}
@@ -470,6 +538,7 @@ export async function search_case(
 					best = entry;
 					best_snap = r.snap;
 					best_regex = r.regex;
+					new_best(entry, at);
 					stale = 0;
 				} else if (++stale >= o.patience) {
 					cur = best;
@@ -477,6 +546,8 @@ export async function search_case(
 				}
 				continue;
 			}
+			// the operator's reward: how much denser it made the input it edited
+			if (arm) bandit!.reward(arm, density_reward(cur.density, entry.density));
 			const fresh = cover(r.snap);
 			const high = entry.density > best_density;
 			entry.score = entry.density;
@@ -484,6 +555,7 @@ export async function search_case(
 				entry.g2 = await growth2(entry);
 				entry.score = entry.density * growth_bonus(entry.g2);
 			}
+			if (found_at === null && worth(entry)) found_at = at;
 			if (high) best_density = entry.density;
 			if (high || fresh > 0) {
 				corpus.push(entry);
@@ -500,6 +572,7 @@ export async function search_case(
 				best = entry;
 				best_snap = r.snap;
 				best_regex = r.regex;
+				new_best(entry, at);
 				stale = 0;
 			} else if (++stale >= o.patience) {
 				cur = rng.int(2) === 0 ? best : rng.pick(corpus);
@@ -510,7 +583,10 @@ export async function search_case(
 		out.ratio = out.typical > 0 ? r3(best.total / out.typical) : 1;
 		out.input = preview(best.input);
 		out.mutations = best.trail;
+		out.best_at ??= 0;
 		if (!o.guided) return out;
+		out.found_at = found_at;
+		if (bandit) out.arms = bandit.stats();
 
 		out.size = { setup: seed_size, worst: best.size };
 		const setup_density = seed_entry.density;

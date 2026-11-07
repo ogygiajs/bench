@@ -5,10 +5,12 @@ const sorted = (): number[] => Array.from({ length: 40 }, (_, i) => i * 7);
 
 bench('order', ({ xs }) => order(xs), { setup: () => ({ xs: sorted() }) });
 
-bench('count', ({ text, pat }) => count(text, pat), {
+// The pattern is the code's, not the input's: the search grows and bends the text only.
+const PAT = 'aaaaaaaaaaaaaaab';
+
+bench('count', ({ text }) => count(text, PAT), {
 	setup: () => ({
-		text: 'the quick brown fox jumps over the lazy dog and a cat naps in a sunny spot',
-		pat: 'aaaaaaab'
+		text: 'the quick brown fox jumps over the lazy dog and a cat naps in a sunny spot'
 	})
 });
 

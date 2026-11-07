@@ -11,9 +11,9 @@ import type { Snapshot } from './runtime/index.ts';
 import { Builtins } from './runtime/builtins.ts';
 import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
-import { REPORT_SCHEMA, build_case_report, environment, one_line } from './report.ts';
+import { REPORT_SCHEMA, build_case_report, environment, error_frames, one_line } from './report.ts';
 import type { LoadError } from './report.ts';
-import { load_prices } from './prices.ts';
+import { SIZE_TERMS, load_prices } from './prices.ts';
 import { apply_estimates } from './calibrate/estimate.ts';
 import { fresh_copy, next_generation, positions } from './fresh.ts';
 import { GENERATION } from './loader/core.ts';
@@ -36,6 +36,31 @@ export interface RunOptions {
 	sha?: string | null;
 	out?: string;
 	log?: (line: string) => void;
+	/** Log every frame of a failure the report keeps, not only the first. */
+	debug?: boolean;
+	/**
+	 * A commit (any name git takes) whose code these bench files count: every counted file it has
+	 * is read as it is there, the bench files and what only the working tree has from disk
+	 * (LoaderConfig `source_from`). The report is that commit's.
+	 */
+	source_from?: string;
+}
+
+/** The commit `rev` names in the git repository around `root`, and that repository's top level. */
+export function source_commit(root: string, rev: string): { sha: string; top: string } {
+	const top = git(root, ['rev-parse', '--show-toplevel']);
+	if (top === null)
+		throw new Error(`heisenbench: --source-from needs a git checkout; ${root} is not in one`);
+	const sha = git(root, ['rev-parse', '--verify', '--quiet', `${rev}^{commit}`]);
+	if (!sha) throw new Error(`heisenbench: --source-from ${rev}: no such commit (fetch it first)`);
+	return { sha, top };
+}
+
+/** After a FAILED line: ` (at <first frame>)`, or with `all` every frame on a line of its own. */
+function where_lines(frames: readonly string[], all: boolean): string {
+	if (frames.length === 0) return '';
+	if (!all) return ` (at ${frames[0]})`;
+	return frames.map((f) => `\n           at ${f}`).join('');
 }
 
 let registered: { root: string } | null = null;
@@ -143,8 +168,9 @@ export async function run_case(
 export async function run_benches(opts: RunOptions): Promise<Report> {
 	const root = resolve(opts.root ?? process.cwd());
 	const log = opts.log ?? (() => {});
+	const source_from = opts.source_from ? source_commit(root, opts.source_from) : undefined;
 	if (!registered) {
-		register_heisenbench({ root, deps: opts.deps, svelte: opts.svelte });
+		register_heisenbench({ root, deps: opts.deps, svelte: opts.svelte, source_from });
 		registered = { root };
 	} else if (registered.root !== root) {
 		throw new Error('heisenbench: one process measures one root');
@@ -169,8 +195,9 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
 		} catch (e) {
 			const error = one_line(e);
-			load_errors.push({ file, error });
-			log(`FAILED   ${file}: ${error}`);
+			const frames = error_frames(e, root);
+			load_errors.push(frames.length > 0 ? { file, error, stack: frames } : { file, error });
+			log(`FAILED   ${file}: ${error}${where_lines(frames, opts.debug === true)}`);
 		}
 	}
 	let list = cases().slice(start);
@@ -202,6 +229,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			);
 		} catch (e) {
 			const msg = one_line(e);
+			const frames = error_frames(e, root);
 			results.push({
 				name: c.name,
 				file: c.file,
@@ -209,11 +237,12 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 				timers: 0,
 				runaway_timers: false,
 				error: msg,
+				...(frames.length > 0 ? { error_stack: frames } : {}),
 				totals: { steps: 0, allocations: 0, bytes: 0, calls: 0 },
 				functions: [],
 				edges: []
 			});
-			log(`FAILED   ${c.name}: ${msg}`);
+			log(`FAILED   ${c.name}: ${msg}${where_lines(frames, opts.debug === true)}`);
 		}
 	}
 
@@ -224,10 +253,11 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		node: process.version,
 		env: environment(),
 		git: {
-			sha: opts.sha ?? git(root, ['rev-parse', 'HEAD']),
+			sha: opts.sha ?? source_from?.sha ?? git(root, ['rev-parse', 'HEAD']),
 			prefix: toplevel ? relative(toplevel, root).split(sep).join('/') : ''
 		},
-		cases: results
+		cases: results,
+		unit_terms: [...SIZE_TERMS]
 	};
 	if (load_errors.length > 0) report.load_errors = load_errors;
 	apply_estimates(report);

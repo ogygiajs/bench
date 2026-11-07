@@ -1,5 +1,5 @@
-import { builtin_call_name, builtin_cost } from '../prices.ts';
-import type { BuiltinPrice } from '../prices.ts';
+import { SIZE_TERMS, builtin_call_name, builtin_cost } from '../prices.ts';
+import type { BuiltinPrice, SizeTerm } from '../prices.ts';
 import { ANY_RECEIVER } from './index.ts';
 import type { Runtime } from './index.ts';
 import {
@@ -250,6 +250,113 @@ const SIZES: Record<string, Size> = {
 	'Set.prototype.delete': constant
 };
 
+// Originals for counting what a call did that its result does not show (how many matches).
+const string_match = String.prototype.match;
+const regexp_exec = RegExp.prototype.exec;
+
+/** Occurrences of `needle` in `s` that a `replaceAll` replaces (an empty needle: every gap). */
+function occurrences(s: string, needle: string): number {
+	if (needle.length === 0) return s.length + 1;
+	let n = 0;
+	for (let at = 0; ; at += needle.length) {
+		at = reflect_apply(string_index_of, s, [needle, at]) as number;
+		if (at < 0) return n;
+		n++;
+	}
+}
+
+/**
+ * The matches a `replace` (`all`: `replaceAll`) replaced. A global regex is matched again (its
+ * `lastIndex` kept as the call left it); a plain regex or a string matches at most once.
+ */
+function replaced(self: unknown, args: unknown[], result: unknown, all: boolean): number {
+	const s = String(self);
+	const p = args[0];
+	if (p instanceof RegExp) {
+		const last = p.lastIndex;
+		try {
+			if (p.global) {
+				const m = reflect_apply(string_match, s, [p]) as unknown[] | null;
+				return m === null ? 0 : m.length;
+			}
+			if (p.sticky) return result !== s ? 1 : 0;
+			return reflect_apply(regexp_exec, p, [s]) === null ? 0 : 1;
+		} finally {
+			p.lastIndex = last;
+		}
+	}
+	const needle = String(p);
+	if (all) return occurrences(s, needle);
+	return (reflect_apply(string_index_of, s, [needle]) as number) >= 0 ? 1 : 0;
+}
+
+/** A size term of a call: what else the built-in's work follows, beside n. */
+type Term = (self: unknown, args: unknown[], result: unknown) => number;
+
+/** Elements of an array a `join` turns into text: every one that is not a string already. */
+const converted: Term = (self) => {
+	if (!is_array(self)) return 0;
+	const xs = self as unknown[];
+	let n = 0;
+	for (let i = 0; i < xs.length; i++) if (typeof xs[i] !== 'string') n++;
+	return n;
+};
+
+const replace_matches: Term = (self, args, result) => replaced(self, args, result, false);
+const replace_all_matches: Term = (self, args, result) => replaced(self, args, result, true);
+
+/**
+ * The size terms of each built-in (prices.ts SIZE_TERMS). They are kept in the units of every call,
+ * priced or not: a price can then start using one and still recount exactly, and the audit can
+ * test one a price leaves out. What a call costs follows them as well as n: a `split` of 16,384
+ * characters takes 0.4 µs into 5 parts and 83 µs into 8,193; a `replace` with a callback calls
+ * the code once per match; `Array.from(xs, f)` calls f per element.
+ */
+const SIZE_OF_TERMS: Record<string, Partial<Record<SizeTerm, Term>>> = {
+	'String.prototype.split': { parts: result_len },
+	'String.prototype.replace': {
+		matches: replace_matches,
+		callbacks: (self, args, result) =>
+			typeof args[1] === 'function' ? replace_matches(self, args, result) : 0
+	},
+	'String.prototype.replaceAll': {
+		matches: replace_all_matches,
+		callbacks: (self, args, result) =>
+			typeof args[1] === 'function' ? replace_all_matches(self, args, result) : 0
+	},
+	// the list of whole matches of a global regex (a match without /g is sized by n, like exec)
+	'String.prototype.match': {
+		matches: (_self, _args, result) =>
+			is_array(result) && typeof (result as { index?: unknown }).index !== 'number'
+				? (result as unknown[]).length
+				: 0
+	},
+	// a number costs ~20 ns to turn into text, a string element ~3 (and its characters are in n)
+	'Array.prototype.join': { items: converted },
+	'Array.from': {
+		callbacks: (_self, args, result) => (typeof args[1] === 'function' ? len(result) : 0)
+	},
+	'JSON.parse': { values: (_self, _args, result) => graph_size(result) },
+	'JSON.stringify': { values: (_self, args) => graph_size(args[0]) }
+};
+
+/** The size term functions of a built-in, aligned with SIZE_TERMS (null: it has none). */
+function terms_of(key: string): Array<Term | null> | null {
+	const t = SIZE_OF_TERMS[key];
+	return t ? SIZE_TERMS.map((name) => t[name] ?? null) : null;
+}
+
+/** A call's size terms, aligned with SIZE_TERMS (null: the built-in has none). */
+export function builtin_terms(
+	key: string,
+	self: unknown,
+	args: unknown[],
+	result: unknown
+): number[] | null {
+	const t = terms_of(key);
+	return t ? t.map((f) => (f ? f(self, args, result) : 0)) : null;
+}
+
 /** Built-ins whose size depends on state the call changes: read before the call. */
 const STARTS: Record<string, Start> = {
 	'RegExp.prototype.exec': regex_start,
@@ -322,8 +429,11 @@ function make_wrapper(
 	key_id: number,
 	price: BuiltinPrice,
 	size: Size,
-	start: Start | null
+	start: Start | null,
+	terms: Array<Term | null> | null
 ): (...args: unknown[]) => unknown {
+	// One call's size terms (the runtime adds them up before the next call can start).
+	const sizes = terms === null ? null : new Float64Array(terms.length);
 	const wrapper = function (this: unknown, ...args: unknown[]): unknown {
 		const d = rt.depth;
 		const site = rt.site;
@@ -343,7 +453,13 @@ function make_wrapper(
 			// Sizing and charging run with the guard still up: nothing they touch is charged again.
 			const n = size(this, args, result, from);
 			const bytes = result_bytes(key, this, args, result);
-			rt.charge(site, builtin_cost(price, n), key_id, n, bytes);
+			if (terms !== null && sizes !== null) {
+				for (let i = 0; i < terms.length; i++) {
+					const f = terms[i];
+					sizes[i] = f === null ? 0 : f(this, args, result);
+				}
+			}
+			rt.charge(site, builtin_cost(price, n, sizes), key_id, n, bytes, sizes);
 			return result;
 		} finally {
 			rt.bdepth = prev;
@@ -377,7 +493,8 @@ export class Builtins {
 				key_id,
 				price,
 				SIZES[key] ?? this_len,
-				STARTS[key] ?? null
+				STARTS[key] ?? null,
+				terms_of(key)
 			);
 			this.#installed.push({ owner: at.owner, prop: at.prop, desc });
 			this.#wrappers.push({ owner: at.owner, prop: at.prop, desc: { ...desc, value: wrapper } });

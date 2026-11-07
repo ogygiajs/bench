@@ -12,16 +12,22 @@ import {
 	markdownCode,
 	renderAudit,
 	renderBlame,
+	renderContracts,
+	renderContractsDiff,
 	renderMarkdown,
-	renderSections
+	renderSections,
+	renderUpgrade
 } from '@bench/heisenbench';
 import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
 import { calls_text, cost_text } from '@bench/heisenbench/weight';
 import type { BlameRun } from './blame.ts';
+import type { ContractsRun } from './contracts.ts';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { FullSearchRun, SearchRun } from './search.ts';
 import type { Selection } from './select.ts';
+import type { TrendRun } from './trend.ts';
+import type { UpgradeRun } from './upgrade.ts';
 import type { WeightRun } from './weights.ts';
 import type { MutationRun } from './mutation.ts';
 
@@ -41,6 +47,8 @@ export const CAPS = {
 	search: 5,
 	search_full: 20,
 	weights: 5,
+	creeps: 10,
+	trend_steps: 8,
 	failed: 15,
 	full_rows: 200
 } as const;
@@ -88,6 +96,12 @@ export interface Result {
 	blame?: BlameRun | null;
 	/** The nightly run: the benchmarks tested by injected slowdowns (mutation.ts). */
 	mutation?: MutationRun | null;
+	/** A PR that counts a dependency at another version: what the upgrade alone costs (absent: none). */
+	upgrade?: UpgradeRun | null;
+	/** A full run: slow creep in each case's steps over main's earlier full runs (trend.ts). */
+	trend?: TrendRun | null;
+	/** Complexity contracts (contracts.ts): each tree's check, and what a PR changed (absent: no tags). */
+	contracts?: ContractsRun | null;
 }
 
 export interface RecordedSummary {
@@ -290,6 +304,60 @@ export function full_search_lines(s: FullSearchRun): string[] {
 	return lines;
 }
 
+function pct_text(ratio: number): string {
+	const p = ratio * 100;
+	return `${p < 0 ? '−' : '+'}${Math.abs(p).toFixed(1)}%`;
+}
+
+/**
+ * Slow creep over main's full runs: a line per creeping case, then the commits where cases took
+ * a step (each PR's own comment shows those). Nothing when the run was not given a history.
+ */
+export function trend_lines(t: TrendRun): string[] {
+	if (t.error) return [`**Trend over main failed**: ${code(one_line(t.error))}`, ''];
+	if (t.runs.length < 2) return t.note ? [`**Trend over main**: ${markdownCell(t.note)}.`, ''] : [];
+	const head = `**Trend over main** (${plural(t.runs.length, 'full run')} of main, ${short(t.runs[0])} to ${short(t.runs[t.runs.length - 1])}, ${plural(t.cases, 'case')})`;
+	const lines: string[] = [];
+	if (t.creeps.length === 0) lines.push(`${head}: no case is creeping.`, '');
+	else {
+		lines.push(`${head}: steps that rose in small moves, none of them a step of 2% or more:`, '');
+		for (const c of t.creeps.slice(0, CAPS.creeps)) {
+			const span = `${pct_text(c.ratio)} over ${plural(c.commits, 'commit')}, in ${plural(c.rises, 'rise')}`;
+			const counter =
+				c.counter_changes > 0
+					? `; ${c.counter_changes} of the rises came with a newer Heisenbench`
+					: '';
+			if (c.status === 'reverted') {
+				lines.push(
+					`- steps of ${code(c.case)} rose from ${short(c.start)} (${span}${counter}), given back at ${short(c.reverted_at)}`
+				);
+				continue;
+			}
+			const now = c.status === 'rising' ? 'still rising' : `to ${short(c.end)}, still there`;
+			lines.push(
+				`- ${c.status === 'rising' ? '⚠️ ' : ''}steps of ${code(c.case)} started rising at ${short(c.start)} (${span}; ${now}${counter})`
+			);
+		}
+		if (t.creeps.length > CAPS.creeps)
+			lines.push(`- and ${t.creeps.length - CAPS.creeps} more (in result.json)`);
+		lines.push('');
+	}
+	if (t.steps.length > 0) {
+		const shown = t.steps.slice(-CAPS.trend_steps).map((s) => {
+			const what = [s.up > 0 ? `${s.up} up` : '', s.down > 0 ? `${s.down} down` : '']
+				.filter(Boolean)
+				.join(' and ');
+			return `${short(s.sha)} ${what}${s.counter_changed ? ' (a newer Heisenbench too)' : ''}`;
+		});
+		const rest = t.steps.length - shown.length;
+		lines.push(
+			`Cases that took a step, 2% or more in one commit (each PR's comment has its own): ${shown.join(', ')}${rest > 0 ? `, and ${rest} older commits` : ''}.`,
+			''
+		);
+	}
+	return lines;
+}
+
 /** The first non-empty line of an error, trimmed and shortened: one table cell or list line. */
 export function one_line(error: string, max = 200): string {
 	const first = (error.split('\n').find((l) => l.trim() !== '') ?? '').trim();
@@ -415,6 +483,7 @@ function capped_sections(d: SectionsDiff): string {
 				better: g.better.slice(0, CAPS.growth),
 				same: g.same.slice(0, CAPS.growth_same),
 				unclear: (g.unclear ?? []).slice(0, CAPS.growth),
+				unsure: (g.unsure ?? []).slice(0, CAPS.growth),
 				failed: g.failed.slice(0, CAPS.failed)
 			},
 			search: d.search && d.search.slice(0, CAPS.search)
@@ -425,11 +494,25 @@ function capped_sections(d: SectionsDiff): string {
 					Math.max(0, g.better.length - CAPS.growth) +
 					Math.max(0, g.same.length - CAPS.growth_same) +
 					Math.max(0, (g.unclear ?? []).length - CAPS.growth) +
+					Math.max(0, (g.unsure ?? []).length - CAPS.growth) +
 					Math.max(0, g.failed.length - CAPS.failed)
 				: 0) + Math.max(0, (d.search?.length ?? 0) - CAPS.search);
 		parts.push(cut > 0 ? `${growth}\n${cut} more growth entries are in result.json.\n` : growth);
 	}
 	return parts.join('\n');
+}
+
+/**
+ * Complexity contracts: a PR's changes to them and every one that does not hold on its side
+ * (nothing when none changed and all hold); a full run, every contract.
+ */
+function contract_lines(r: Result, full: boolean): string[] {
+	const c = r.contracts;
+	if (!c) return [];
+	if (c.error) return ['', `**Complexity contracts failed**: ${code(one_line(c.error))}`];
+	if (full) return c.head ? ['', renderContracts(c.head).trimEnd()] : [];
+	const md = c.diff ? renderContractsDiff(c.diff) : '';
+	return md ? ['', md.trimEnd()] : [];
 }
 
 /** Growth from recorded calls: Heisenbench's findings, or one line on why there are none. */
@@ -452,6 +535,7 @@ export function render_pr_section(r: Result): string {
 			`No bench file reaches the files this PR changes (${plural(sel.all.length, 'bench file')} checked, ${against}).${run_link(meta)}`
 		);
 		lines.push(...recorded_lines(r));
+		lines.push(...contract_lines(r, false));
 		return lines.join('\n').trimEnd() + '\n';
 	}
 	const why =
@@ -482,6 +566,9 @@ export function render_pr_section(r: Result): string {
 		lines.push(step_body(r.diff));
 		if (r.blame?.error) lines.push('', `**Blame failed**: ${code(one_line(r.blame.error))}`);
 		else if (r.blame?.result) lines.push('', renderBlame(r.blame.result).trimEnd());
+		if (r.upgrade?.error)
+			lines.push('', `**Dependency upgrade diff failed**: ${code(one_line(r.upgrade.error))}`);
+		else if (r.upgrade?.result) lines.push('', renderUpgrade(r.upgrade.result).trimEnd());
 		const extra = capped_sections(r.diff);
 		if (extra) lines.push('', extra);
 	}
@@ -493,6 +580,7 @@ export function render_pr_section(r: Result): string {
 		lines.push('', r.time.markdown);
 	}
 	lines.push(...recorded_lines(r));
+	lines.push(...contract_lines(r, false));
 	return lines.join('\n').trimEnd() + '\n';
 }
 
@@ -534,8 +622,10 @@ export function render_full_summary(r: Result): string {
 	}
 	// The price audit: a part only when some price is suspect.
 	if (r.head?.audit) lines.push(renderAudit(r.head.audit, { quiet: true }));
+	if (r.trend) lines.push(...trend_lines(r.trend));
 	if (r.full_search) lines.push(...full_search_lines(r.full_search));
 	lines.push(...recorded_lines(r));
+	lines.push(...contract_lines(r, true));
 	lines.push(...mutation_lines(r));
 	return lines.join('\n').trimEnd() + '\n';
 }

@@ -7,6 +7,7 @@ import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import remapping from '@jridgewell/remapping';
 import { instrument } from './instrument.ts';
 import type { InstrumentResult } from './instrument.ts';
+import { elide_unused_imports } from './elide.ts';
 import { load_prices } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import type { ModuleMeta } from '../meta.ts';
@@ -32,6 +33,8 @@ export interface TransformOptions {
 	prices?: { prices: Prices; hash: string };
 	/** Specifier the virtual module uses to import the runtime (default: RUNTIME_URL). */
 	runtime?: string;
+	/** A CommonJS module (instrument.ts `commonjs`): its counters come without a counter module. */
+	commonjs?: boolean;
 }
 
 export interface TransformResult extends InstrumentResult {
@@ -107,7 +110,8 @@ export function transform(code: string, opts: TransformOptions): TransformResult
 		prices: p.prices,
 		prices_hash: p.hash,
 		module_specifier: specifier,
-		expose: opts.expose
+		expose: opts.expose,
+		commonjs: opts.commonjs
 	});
 	return { ...r, specifier, virtual: virtual_module_source(r.meta, opts.runtime ?? RUNTIME_URL) };
 }
@@ -136,16 +140,20 @@ function typescript_for(filename: string): TypeScriptCompiler {
  * TS to JS. Type stripping first (positions stay the same, no map). TypeScript that stripping
  * cannot handle (`enum`, `namespace`, parameter properties, legacy decorators...) is compiled with
  * the TypeScript compiler instead, and the map it returns points every line back at the source.
+ * Either way, a named import nothing reads is blanked out (elide.ts): a type imported without
+ * `type` must not stop the module from linking. `elided` counts those.
  */
 export function ts_to_js(
 	source: string,
 	filename: string
-): { code: string; map: SourceMapInput | null } {
+): { code: string; map: SourceMapInput | null; elided: number } {
+	let stripped: string | null = null;
 	try {
-		return { code: strip_types(source), map: null };
+		stripped = strip_types(source);
 	} catch (e) {
 		if ((e as { code?: unknown }).code !== 'ERR_UNSUPPORTED_TYPESCRIPT_SYNTAX') throw e;
 	}
+	if (stripped !== null) return { ...elide_unused_imports(stripped, filename), map: null };
 	const ts = typescript_for(filename);
 	const out = ts.transpileModule(source, {
 		fileName: filename,
@@ -162,7 +170,7 @@ export function ts_to_js(
 	});
 	const code = out.outputText.replace(/\n\/\/# sourceMappingURL=.*\s*$/, '\n');
 	const map = out.sourceMapText ? (JSON.parse(out.sourceMapText) as SourceMapInput) : null;
-	return { code, map };
+	return { ...elide_unused_imports(code, filename), map };
 }
 
 export function is_ts(filename: string): boolean {
