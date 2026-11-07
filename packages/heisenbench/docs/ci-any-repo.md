@@ -115,7 +115,15 @@ workflows.
   touched), and what only the PR has (the bench files, a `bench/data.ts` helper) from disk. The
   first comment then compares the two versions of the code instead of saying there is nothing to
   compare. It counts only (no `--measure`), and a file the PR deleted or renamed is not found:
-  that is what the own-checkout branch above is for, once the base has bench files.
+  that is what the own-checkout branch above is for, once the base has bench files. A file git
+  does not track comes from disk on both sides: generated inputs (fixtures a script writes) and
+  build output (a bundle whose HTML a client bench hydrates) are the PR's, made from the PR's
+  code. That is right for inputs, and for a build only while the PR changes none of what goes into
+  it, as the PR that adds Heisenbench usually does; from the next PR on, the base's own checkout
+  builds its own.
+- **Steps before counting.** Bench inputs that a script writes, or a build a bench reads, go
+  after the install and before the counts, in each checkout:
+  `pnpm install --frozen-lockfile && pnpm fixtures && pnpm build && npx heisenbench run ...`.
 - **A file that does not load on one side.** The diff lists it under "Did not run" with its error
   and how many of its cases were not compared; those cases are not "new" or "removed".
 - **Nothing changed.** Most PRs change no counted function. The section then shows the PR's own
