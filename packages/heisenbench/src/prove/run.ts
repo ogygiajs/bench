@@ -257,10 +257,13 @@ export async function run_prove(job: ProveJob): Promise<ProveChildResult> {
 			this_value: s.this_value
 		});
 	}
-	let largest: { report: CaseReport; cand: CaseReport | null; size: number } | null = null;
+	// held in an object: a `let` assigned only inside the closure narrows to `null` where it is read
+	const kept: { largest: { report: CaseReport; cand: CaseReport | null; size: number } | null } = {
+		largest: null
+	};
 	const keep_largest = (size: number, o: Ran, c: Ran | null): void => {
-		if (o.report && (!largest || size >= largest.size))
-			largest = { report: o.report, cand: c?.report ?? null, size };
+		if (o.report && (!kept.largest || size >= kept.largest.size))
+			kept.largest = { report: o.report, cand: c?.report ?? null, size };
 	};
 	const differing: Array<{ input: Input; size: number; difference: string }> = [];
 	const pair = async (input: Input): Promise<void> => {
@@ -365,7 +368,7 @@ export async function run_prove(job: ProveJob): Promise<ProveChildResult> {
 			};
 		}
 	}
-	const at: { report: CaseReport; cand: CaseReport | null; size: number } | null = largest;
+	const at = kept.largest;
 	if (at) {
 		result.blame = {
 			original: top_lines(at.report),
