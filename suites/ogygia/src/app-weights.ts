@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * The real-app weights a main run stores, from the counted app scenarios (suites/apps/abax):
+ * The real-app weights a main run stores, from the counted app scenarios (suites/apps/heisenbench):
  *
- *   node suites/apps/abax/run.ts --sha <sha> --out app-report.json
+ *   node suites/apps/heisenbench/run.ts --sha <sha> --out app-report.json
  *   node suites/ogygia/src/app-weights.ts --sha <sha> --out app-weights.json app-report.json
  *
- * The same file `abax weights` writes, labelled with the commit and stamped with the Node and V8
+ * The same file `heisenbench weights` writes, labelled with the commit and stamped with the Node and V8
  * that counted it, so a PR run can tell whether the weights compare with its own counts.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import type { AppReport } from '@bench/abax/app';
+import type { AppReport } from '@bench/heisenbench/app';
 import { main_weights } from './weights.ts';
 
 const { values, positionals } = parseArgs({

@@ -1,19 +1,24 @@
 #!/usr/bin/env node
 // Check a measure job's artifact before the publish job stores or posts it (see artifact.ts).
 //
-//   node packages/compare/src/validate-artifact.ts abax --dir <artifact> --out <dir> \
+//   node packages/compare/src/validate-artifact.ts heisenbench --dir <artifact> --out <dir> \
 //     --kind <pr|main|manual> --sha <sha> [--base-sha <sha>] [--pr <n>]
 //   node packages/compare/src/validate-artifact.ts apps    ...same flags
 //   node packages/compare/src/validate-artifact.ts weights --dir <artifact> --out <dir> --sha <sha>
 //
-// The checked files are written to --out under fixed names (abax: result.json, section.md; apps:
+// The checked files are written to --out under fixed names (heisenbench: result.json, section.md; apps:
 // run.json, comment.md; weights: app-weights.json); later steps read only those. `apps` prints
 // `name=<file name on the results branch>` for $GITHUB_OUTPUT. Exit 1, with the reason, when the
 // artifact does not pass.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { ArtifactError, validate_abax, validate_apps, validate_weights } from './artifact.ts';
+import {
+	ArtifactError,
+	validate_heisenbench,
+	validate_apps,
+	validate_weights
+} from './artifact.ts';
 
 const { values, positionals } = parseArgs({
 	allowPositionals: true,
@@ -28,9 +33,9 @@ const { values, positionals } = parseArgs({
 });
 
 const usage =
-	'usage: node validate-artifact.ts <abax|apps|weights> --dir <artifact> --out <dir> --kind <k> --sha <sha> [--base-sha <sha>] [--pr <n>]';
+	'usage: node validate-artifact.ts <heisenbench|apps|weights> --dir <artifact> --out <dir> --kind <k> --sha <sha> [--base-sha <sha>] [--pr <n>]';
 const [what] = positionals;
-if (!values.dir || !values.out || !['abax', 'apps', 'weights'].includes(what)) {
+if (!values.dir || !values.out || !['heisenbench', 'apps', 'weights'].includes(what)) {
 	console.error(usage);
 	process.exit(2);
 }
@@ -39,8 +44,8 @@ const out = values.out;
 
 try {
 	mkdirSync(out, { recursive: true });
-	if (what === 'abax') {
-		const a = validate_abax(values.dir, plan);
+	if (what === 'heisenbench') {
+		const a = validate_heisenbench(values.dir, plan);
 		writeFileSync(join(out, 'result.json'), a.result);
 		writeFileSync(join(out, 'section.md'), a.section);
 	} else if (what === 'apps') {

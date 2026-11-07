@@ -1,7 +1,7 @@
 /**
- * The worst-case search on a PR (`abax search`): for the cases whose functions the PR changed and
+ * The worst-case search on a PR (`heisenbench search`): for the cases whose functions the PR changed and
  * that declare an input (`setup`), which input of the same size costs the most steps, on the PR
- * and on the base. A case is flagged by Abax's own rule (diff_search): its worst input costs at
+ * and on the base. A case is flagged by Heisenbench's own rule (diff_search): its worst input costs at
  * least 4 times its typical one, and at least twice the base's ratio.
  *
  * A strict budget bounds the whole layer: each search gets an even share of what is left, and
@@ -10,14 +10,14 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseSync } from 'oxc-parser';
-import type { DiffResult, Report, SearchCase, SearchReport } from '@bench/abax';
+import type { DiffResult, Report, SearchCase, SearchReport } from '@bench/heisenbench';
 import type { Tree } from './checkout.ts';
-import { ABAX_CLI, COUNTED_DEPS, node_options } from './run.ts';
+import { HEISENBENCH_CLI, COUNTED_DEPS, node_options } from './run.ts';
 import { spawn_group } from './spawn.ts';
 
 /** The whole layer on a PR, both sides together. */
 export const SEARCH_BUDGET_MS = 4 * 60_000;
-/** One search never takes longer than this (Abax's own default). */
+/** One search never takes longer than this (Heisenbench's own default). */
 const MAX_PER_SEARCH_MS = 30_000;
 /** Below this, a search is not worth starting. */
 const MIN_PER_SEARCH_MS = 3_000;
@@ -25,7 +25,7 @@ const MIN_PER_SEARCH_MS = 3_000;
 const GRACE_MS = 60_000;
 /** At most this many cases are searched. */
 const MAX_CASES = 8;
-/** Abax's flag (search/index.ts diff_search). */
+/** Heisenbench's flag (search/index.ts diff_search). */
 export const FLAG_RATIO = 4;
 
 interface Node {
@@ -154,7 +154,7 @@ export interface SearchRun {
 	skipped: number;
 }
 
-/** Abax's rule: worst at least FLAG_RATIO times typical, and at least twice the base's ratio. */
+/** Heisenbench's rule: worst at least FLAG_RATIO times typical, and at least twice the base's ratio. */
 export function flagged(r: SearchResult): boolean {
 	const h = r.head;
 	if (!h || h.error) return false;
@@ -195,12 +195,12 @@ export async function run_searches(
 		const out = join(out_dir, `${side}-${i}.json`);
 		rmSync(out, { force: true });
 		log(
-			`${tree.sha.slice(0, 12)} abax search ${p.file} (${p.name}, ${Math.round(share / 1000)} s)`
+			`${tree.sha.slice(0, 12)} heisenbench search ${p.file} (${p.name}, ${Math.round(share / 1000)} s)`
 		);
 		const r = await spawn_group(
 			process.execPath,
 			[
-				ABAX_CLI,
+				HEISENBENCH_CLI,
 				'search',
 				p.file,
 				'--root',
@@ -222,7 +222,7 @@ export async function run_searches(
 		const found = read_case(out, p.name);
 		const died = r.timed_out || r.signal !== null || (r.status !== 0 && r.status !== 1);
 		const error = died
-			? `abax search ${r.timed_out ? 'did not finish in time' : `exited with ${r.signal ?? r.status}`}`
+			? `heisenbench search ${r.timed_out ? 'did not finish in time' : `exited with ${r.signal ?? r.status}`}`
 			: null;
 		return { found: died ? null : found, error, ran: true };
 	};
@@ -240,7 +240,10 @@ export async function run_searches(
 			head: h.found,
 			base: b?.found ?? null,
 			error:
-				h.error ?? (h.found ? null : 'abax search wrote no result for the case') ?? b?.error ?? null
+				h.error ??
+				(h.found ? null : 'heisenbench search wrote no result for the case') ??
+				b?.error ??
+				null
 		});
 	}
 	run.spent_ms = Date.now() - started;

@@ -88,16 +88,21 @@ const base = { repo: 'o/r', issue: 7, token: 't', api: 'https://api.test', settl
 
 test('no comment yet: one is created with the section', async () => {
 	const gh = fake_github([by(1, 'unrelated', 'someone')]);
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'fast' });
+	const r = await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'heisenbench',
+		content: 'fast'
+	});
 	assert.equal(r.created, true);
 	assert.equal(gh.comments.length, 2);
-	assert.deepEqual(parseComment(gh.comments[1].body), [{ name: 'abax', content: 'fast' }]);
+	assert.deepEqual(parseComment(gh.comments[1].body), [{ name: 'heisenbench', content: 'fast' }]);
 });
 
 test('the existing comment is edited in place and keeps the other section', async () => {
 	const gh = fake_github([
 		by(1, 'unrelated', 'someone'),
-		by(2, upsertSection(null, 'abax', 'abax numbers'))
+		by(2, upsertSection(null, 'heisenbench', 'heisenbench numbers'))
 	]);
 	const r = await upsertComment({
 		...base,
@@ -107,16 +112,21 @@ test('the existing comment is edited in place and keeps the other section', asyn
 	});
 	assert.deepEqual(r, { id: 2, created: false, writes: 1, login: BOT });
 	assert.equal(gh.comments.length, 2);
-	assert.equal(sectionOf(gh.comments[1].body, 'abax'), 'abax numbers');
+	assert.equal(sectionOf(gh.comments[1].body, 'heisenbench'), 'heisenbench numbers');
 	assert.equal(sectionOf(gh.comments[1].body, 'apps'), 'app numbers');
 });
 
 test('an old single-body comment is migrated: its body becomes the apps section', async () => {
 	const legacy = `${MARKER}\n${HEADING}\n\nold app numbers\n`;
 	const gh = fake_github([by(5, legacy)]);
-	await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'abax numbers' });
+	await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'heisenbench',
+		content: 'heisenbench numbers'
+	});
 	assert.deepEqual(parseComment(gh.comments[0].body), [
-		{ name: 'abax', content: 'abax numbers' },
+		{ name: 'heisenbench', content: 'heisenbench numbers' },
 		{ name: 'apps', content: 'old app numbers' }
 	]);
 });
@@ -124,7 +134,7 @@ test('an old single-body comment is migrated: its body becomes the apps section'
 test('the marker comment is found past the first page', async () => {
 	const filler = Array.from({ length: 150 }, (_, i) => by(i + 1, `c${i}`, 'someone'));
 	const gh = fake_github([...filler, by(500, upsertSection(null, 'apps', 'x'))]);
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'y' });
+	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'y' });
 	assert.equal(r.id, 500);
 	assert.ok(gh.calls.some((c) => c.includes('page=2')));
 });
@@ -150,11 +160,11 @@ test('a writer that saved its stale copy over ours is repaired by writing again'
 	const r = await upsertComment({
 		...base,
 		fetch: gh.fetch,
-		section: 'abax',
-		content: 'abax numbers'
+		section: 'heisenbench',
+		content: 'heisenbench numbers'
 	});
 	assert.equal(r.writes, 2);
-	assert.equal(sectionOf(gh.comments[0].body, 'abax'), 'abax numbers');
+	assert.equal(sectionOf(gh.comments[0].body, 'heisenbench'), 'heisenbench numbers');
 	assert.equal(sectionOf(gh.comments[0].body, 'apps'), 'newer app numbers');
 });
 
@@ -181,25 +191,30 @@ test('a failed request is an error', async () => {
 });
 
 test('a marker planted by someone else is neither edited nor adopted', async () => {
-	const planted = upsertSection(null, 'abax', 'fake numbers');
+	const planted = upsertSection(null, 'heisenbench', 'fake numbers');
 	const gh = fake_github([by(1, planted, 'mallory'), by(2, `${MARKER}\nme too`, 'mallory')]);
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'real' });
+	const r = await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'heisenbench',
+		content: 'real'
+	});
 	assert.equal(r.created, true);
 	assert.equal(gh.comments.length, 3);
 	assert.equal(gh.comments[0].body, planted);
-	assert.equal(sectionOf(gh.comments[2].body, 'abax'), 'real');
+	assert.equal(sectionOf(gh.comments[2].body, 'heisenbench'), 'real');
 	assert.equal(gh.calls.filter((c) => c.startsWith('PATCH')).length, 0);
 	// and the next run edits its own comment, not the planted one
-	await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'newer' });
+	await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'newer' });
 	assert.equal(gh.comments.length, 3);
-	assert.equal(sectionOf(gh.comments[2].body, 'abax'), 'newer');
+	assert.equal(sectionOf(gh.comments[2].body, 'heisenbench'), 'newer');
 });
 
 test('logins compare without case', async () => {
 	const gh = fake_github([by(4, upsertSection(null, 'apps', 'x'), 'Bench-Bot')], {
 		me: 'bench-bot'
 	});
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'y' });
+	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'y' });
 	assert.equal(r.id, 4);
 });
 
@@ -211,7 +226,7 @@ test('a token GET /user refuses (GITHUB_TOKEN, an App) comments as github-action
 		],
 		{ me: ACTIONS_BOT, user_status: 403 }
 	);
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'abax', content: 'b' });
+	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'b' });
 	assert.deepEqual(r, { id: 2, created: false, writes: 1, login: ACTIONS_BOT });
 });
 
@@ -223,7 +238,7 @@ test('an explicit bot login wins, and GET /user is not asked', async () => {
 	const r = await upsertComment({
 		...base,
 		fetch: gh.fetch,
-		section: 'abax',
+		section: 'heisenbench',
 		content: 'b',
 		botLogin: 'bench-app[bot]'
 	});
@@ -236,7 +251,7 @@ test('an App token without --bot-login: the created comment tells the real autho
 	const r = await upsertComment({
 		...base,
 		fetch: gh.fetch,
-		section: 'abax',
+		section: 'heisenbench',
 		content: 'b',
 		tries: 2
 	});
@@ -251,7 +266,7 @@ test('a section too long for GitHub is cut with a note, and the other section is
 	const gh = fake_github([by(1, upsertSection(null, 'apps', apps))]);
 	const rows = Array.from({ length: 5000 }, (_, i) => `| row ${i} | ${'x'.repeat(20)} |`);
 	const huge = [
-		'#### Abax',
+		'#### Heisenbench',
 		'',
 		'<details><summary>All</summary>',
 		'',
@@ -262,19 +277,22 @@ test('a section too long for GitHub is cut with a note, and the other section is
 	await upsertComment({
 		...base,
 		fetch: gh.fetch,
-		section: 'abax',
+		section: 'heisenbench',
 		content: huge,
 		runUrl: 'https://example.test/run/9'
 	});
 	const body = gh.comments[0].body;
 	assert.ok(body.length <= COMMENT_LIMIT, `body is ${body.length}`);
 	assert.equal(sectionOf(body, 'apps'), apps);
-	const abax = sectionOf(body, 'abax')!;
-	assert.ok(abax.startsWith('#### Abax'));
+	const heisenbench = sectionOf(body, 'heisenbench')!;
+	assert.ok(heisenbench.startsWith('#### Heisenbench'));
 	assert.match(
-		abax,
+		heisenbench,
 		/Cut here: .* \[The run\]\(https:\/\/example\.test\/run\/9\) has the full text\.$/
 	);
 	// the <details> the cut left open is closed before the note
-	assert.equal((abax.match(/<details>/g) ?? []).length, (abax.match(/<\/details>/g) ?? []).length);
+	assert.equal(
+		(heisenbench.match(/<details>/g) ?? []).length,
+		(heisenbench.match(/<\/details>/g) ?? []).length
+	);
 });

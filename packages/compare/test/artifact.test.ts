@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import {
 	ArtifactError,
 	read_file,
-	validate_abax,
+	validate_heisenbench,
 	validate_apps,
 	validate_weights
 } from '../src/artifact.ts';
@@ -20,33 +20,36 @@ function dir_with(files: Record<string, string>): string {
 	return dir;
 }
 
-const abax_result = (meta: Record<string, unknown>) =>
-	JSON.stringify({ schema: 'ogygia-abax/1', meta, selection: {} });
+const heisenbench_result = (meta: Record<string, unknown>) =>
+	JSON.stringify({ schema: 'ogygia-heisenbench/1', meta, selection: {} });
 
 const pr_plan = { kind: 'pr', sha: SHA, base_sha: BASE, pr: '12' };
 const pr_meta = { kind: 'pr', sha: SHA, base: BASE, pr: 12 };
 
-test('an Abax artifact that matches the plan passes, as uploaded', () => {
-	const result = abax_result(pr_meta);
-	const dir = dir_with({ 'result.json': result, 'section.md': '#### Abax\n\nok' });
-	assert.deepEqual(validate_abax(dir, pr_plan), { result, section: '#### Abax\n\nok' });
+test('a Heisenbench artifact that matches the plan passes, as uploaded', () => {
+	const result = heisenbench_result(pr_meta);
+	const dir = dir_with({ 'result.json': result, 'section.md': '#### Heisenbench\n\nok' });
+	assert.deepEqual(validate_heisenbench(dir, pr_plan), {
+		result,
+		section: '#### Heisenbench\n\nok'
+	});
 });
 
-test('an Abax artifact for another commit, PR, base or kind is rejected', () => {
+test('a Heisenbench artifact for another commit, PR, base or kind is rejected', () => {
 	for (const meta of [
 		{ ...pr_meta, sha: 'c'.repeat(40) },
 		{ ...pr_meta, pr: 13 },
 		{ ...pr_meta, base: null },
 		{ ...pr_meta, kind: 'main' }
 	]) {
-		const dir = dir_with({ 'result.json': abax_result(meta), 'section.md': 'x' });
-		assert.throws(() => validate_abax(dir, pr_plan), ArtifactError);
+		const dir = dir_with({ 'result.json': heisenbench_result(meta), 'section.md': 'x' });
+		assert.throws(() => validate_heisenbench(dir, pr_plan), ArtifactError);
 	}
 	const main = dir_with({
-		'result.json': abax_result({ kind: 'main', sha: SHA, base: null, pr: null }),
+		'result.json': heisenbench_result({ kind: 'main', sha: SHA, base: null, pr: null }),
 		'section.md': 'x'
 	});
-	assert.doesNotThrow(() => validate_abax(main, { kind: 'main', sha: SHA }));
+	assert.doesNotThrow(() => validate_heisenbench(main, { kind: 'main', sha: SHA }));
 });
 
 test('bad JSON, a wrong schema, a missing file or section markers are rejected', () => {
@@ -57,14 +60,17 @@ test('bad JSON, a wrong schema, a missing file or section markers are rejected',
 			{ 'result.json': JSON.stringify({ schema: 'other', meta: pr_meta }), 'section.md': 'x' },
 			/schema/
 		],
-		[{ 'result.json': abax_result(pr_meta) }, /section\.md is missing/],
+		[{ 'result.json': heisenbench_result(pr_meta) }, /section\.md is missing/],
 		[
-			{ 'result.json': abax_result(pr_meta), 'section.md': 'a <!-- /section:abax --> b' },
+			{
+				'result.json': heisenbench_result(pr_meta),
+				'section.md': 'a <!-- /section:heisenbench --> b'
+			},
 			/section markers/
 		]
 	];
 	for (const [files, why] of cases) {
-		assert.throws(() => validate_abax(dir_with(files), pr_plan), why);
+		assert.throws(() => validate_heisenbench(dir_with(files), pr_plan), why);
 	}
 });
 
@@ -106,7 +112,12 @@ test('an app run is kept under its sha, or the weekly run under its validated ve
 
 test('weights must be app weights counted on the plan’s commit', () => {
 	const w = (sha: string) =>
-		JSON.stringify({ schema: 'abax-app-weights/1', source: { sha }, units: {}, functions: {} });
+		JSON.stringify({
+			schema: 'heisenbench-app-weights/1',
+			source: { sha },
+			units: {},
+			functions: {}
+		});
 	assert.ok(validate_weights(dir_with({ 'app-weights.json': w(SHA) }), { kind: 'main', sha: SHA }));
 	assert.throws(
 		() => validate_weights(dir_with({ 'app-weights.json': w(BASE) }), { kind: 'main', sha: SHA }),

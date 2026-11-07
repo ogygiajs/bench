@@ -2,7 +2,7 @@
  * ogygia checkouts: one clone of the repository, and a tree per measured commit beside it.
  *
  *   <work>/repo            the clone (no checkout): every commit, the diffs come from here
- *   <work>/trees/<sha12>   a commit's files, installed, with Abax linked in
+ *   <work>/trees/<sha12>   a commit's files, installed, with Heisenbench linked in
  *
  * A tree that is already checked out and installed at its commit is reused (local reruns).
  */
@@ -13,7 +13,7 @@ import { join } from 'node:path';
 export interface Tree {
 	dir: string;
 	sha: string;
-	/** `internal/abax/src/preload.ts` of the tree, when it has one. */
+	/** `internal/heisenbench/src/preload.ts` of the tree, when it has one. */
 	preload: string | null;
 	/** Bench files, relative to the tree (`packages/<pkg>/bench/<name>.bench.ts`). */
 	benches: string[];
@@ -92,14 +92,14 @@ export function remove_tree(work: string, sha: string): void {
 }
 
 /**
- * The tree of commit `sha`: checked out, installed, and with Abax linked in by the tree's own
- * `internal/abax/src/types.ts` (which also writes the bench files' types).
+ * The tree of commit `sha`: checked out, installed, and with Heisenbench linked in by the tree's own
+ * `internal/heisenbench/src/types.ts` (which also writes the bench files' types).
  */
 export function prepare_tree(
 	repo: string,
 	work: string,
 	sha: string,
-	abax_dir: string,
+	heisenbench_dir: string,
 	log: (line: string) => void
 ): Tree {
 	const dir = tree_dir(work, sha);
@@ -119,15 +119,15 @@ export function prepare_tree(
 		);
 	}
 	const benches = bench_files(dir);
-	const types = join(dir, 'internal', 'abax', 'src', 'types.ts');
+	const types = join(dir, 'internal', 'heisenbench', 'src', 'types.ts');
 	if (benches.length > 0 && existsSync(types)) {
 		log(`types ${sha.slice(0, 12)}`);
 		execFileSync(process.execPath, [types], {
 			cwd: dir,
 			stdio: ['ignore', 'inherit', 'inherit'],
-			env: { ...process.env, ABAX_DIR: abax_dir }
+			env: { ...process.env, HEISENBENCH_DIR: heisenbench_dir }
 		});
 	}
-	const preload = join(dir, 'internal', 'abax', 'src', 'preload.ts');
+	const preload = join(dir, 'internal', 'heisenbench', 'src', 'preload.ts');
 	return { dir, sha, preload: existsSync(preload) ? preload : null, benches };
 }

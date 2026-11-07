@@ -23,7 +23,7 @@ name: bench
 #
 # The app benchmark lives in suites/apps; its run output lands in suites/apps/results/scratch. The
 # comment is upserted by packages/compare/src/upsert-comment.ts, which rewrites only the `apps`
-# section and keeps every other section (Abax's) as it is.
+# section and keeps every other section (Heisenbench's) as it is.
 #
 # Three jobs, because measuring installs and runs the ogygia build under test (a PR's, from
 # pkg.pr.new) and every framework's dependencies:
@@ -357,10 +357,10 @@ jobs:
             '- `pr/<number>.json`: the newest run for that ogygia PR' \
             '- `commit/<sha>.json`: the newest run of that ogygia commit (full sha), from a PR run or a main run alike;' \
             '  `meta.sha` is the commit, `meta.pr` the PR of a PR run, `meta.base` the base commit measured beside it' \
-            '- `abax/`: Abax step counts of ogygia'"'"'s bench files, from the `abax` workflow, in the same layout:' \
-            '  `abax/pr/<number>.json`, `abax/commit/<sha>.json`, `abax/main/<sha>.json`, `abax/main/latest.json`;' \
-            '  real-app weights from the counted app scenarios in `abax/main/app-weights.json` (the newest) and' \
-            '  `abax/main/app-weights/<sha>.json`' \
+            '- `heisenbench/`: Heisenbench step counts of ogygia'"'"'s bench files, from the `heisenbench` workflow, in the same layout:' \
+            '  `heisenbench/pr/<number>.json`, `heisenbench/commit/<sha>.json`, `heisenbench/main/<sha>.json`, `heisenbench/main/latest.json`;' \
+            '  real-app weights from the counted app scenarios in `heisenbench/main/app-weights.json` (the newest) and' \
+            '  `heisenbench/main/app-weights/<sha>.json`' \
             > "$RUNNER_TEMP/results/README.md"
           git -C "$RUNNER_TEMP/results" config user.name 'github-actions[bot]'
           git -C "$RUNNER_TEMP/results" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -407,7 +407,7 @@ jobs:
           echo "::error::could not push to the results branch"
           exit 1
 
-      # The `apps` section of the PR's one benchmark comment; the other sections (Abax's) are kept.
+      # The `apps` section of the PR's one benchmark comment; the other sections (Heisenbench's) are kept.
       # Only a comment by the token's own login is edited (BENCH_BOT_LOGIN names it when BENCH_TOKEN
       # is a GitHub App's, `<app>[bot]`); a body past GitHub's size limit is cut, linking the run.
       - name: Comment on the ogygia PR

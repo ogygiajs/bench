@@ -9,7 +9,7 @@ const MiB = 1 << 20;
 
 /** The largest file of each kind the publish job takes. */
 export const LIMITS = {
-	/** An Abax result.json: two merged reports and the diff. */
+	/** A Heisenbench result.json: two merged reports and the diff. */
 	result: 50 * MiB,
 	/** The app benchmark's run.json. */
 	run: 20 * MiB,
@@ -97,18 +97,18 @@ function plan_pr(plan: Plan): number | null {
 	return Number(plan.pr);
 }
 
-export interface AbaxArtifact {
+export interface HeisenbenchArtifact {
 	/** result.json, as uploaded (it parsed and matched the plan). */
 	result: string;
 	section: string;
 }
 
-/** suites/ogygia's output: result.json (schema ogygia-abax/1) and section.md. */
-export function validate_abax(dir: string, plan: Plan): AbaxArtifact {
+/** suites/ogygia's output: result.json (schema ogygia-heisenbench/1) and section.md. */
+export function validate_heisenbench(dir: string, plan: Plan): HeisenbenchArtifact {
 	if (!SHA.test(plan.sha)) fail(`bad sha in the plan: ${plan.sha}`);
 	const result = read_file(dir, 'result.json', LIMITS.result)!;
 	const r = parse(result, 'result.json');
-	expect_equal(r.schema, 'ogygia-abax/1', 'result.json schema');
+	expect_equal(r.schema, 'ogygia-heisenbench/1', 'result.json schema');
 	const meta = object_at(r, 'meta', 'result.json');
 	expect_equal(meta.kind, plan.kind, 'meta.kind');
 	expect_equal(meta.sha, plan.sha, 'meta.sha');
@@ -147,12 +147,12 @@ export function validate_apps(dir: string, plan: Plan): AppsArtifact {
 	return { run, comment: text === null ? null : section_text(text, 'comment.md'), name };
 }
 
-/** Real-app weights (abax-app-weights/1), counted on the plan's commit. */
+/** Real-app weights (heisenbench-app-weights/1), counted on the plan's commit. */
 export function validate_weights(dir: string, plan: Plan): string {
 	if (!SHA.test(plan.sha)) fail(`bad sha in the plan: ${plan.sha}`);
 	const text = read_file(dir, 'app-weights.json', LIMITS.weights)!;
 	const w = parse(text, 'app-weights.json');
-	expect_equal(w.schema, 'abax-app-weights/1', 'app-weights.json schema');
+	expect_equal(w.schema, 'heisenbench-app-weights/1', 'app-weights.json schema');
 	expect_equal(object_at(w, 'source', 'app-weights.json').sha, plan.sha, 'source.sha');
 	object_at(w, 'units', 'app-weights.json');
 	object_at(w, 'functions', 'app-weights.json');

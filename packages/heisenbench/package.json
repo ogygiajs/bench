@@ -1,0 +1,165 @@
+{
+	"name": "heisenbench",
+	"version": "0.0.0",
+	"description": "A benchmark engine that counts the work each function does, line by line, the same on every run.",
+	"keywords": [
+		"benchmark",
+		"deterministic",
+		"instrumentation",
+		"performance",
+		"profiling",
+		"regression",
+		"typescript",
+		"v8"
+	],
+	"homepage": "https://github.com/ogygiajs/bench/tree/main/packages/heisenbench#readme",
+	"bugs": "https://github.com/ogygiajs/bench/issues",
+	"license": "MIT",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ogygiajs/bench.git",
+		"directory": "packages/heisenbench"
+	},
+	"bin": {
+		"heisenbench": "./src/cli.ts"
+	},
+	"files": [
+		"dist",
+		"prices.json",
+		"weights.json",
+		"README.md",
+		"LICENSE"
+	],
+	"type": "module",
+	"exports": {
+		".": "./src/index.ts",
+		"./bench": "./src/bench.ts",
+		"./runtime": "./src/runtime/index.ts",
+		"./transform": "./src/transform/index.ts",
+		"./plugin": "./src/plugin.ts",
+		"./register": "./src/loader/register.ts",
+		"./hooks": "./src/loader/hooks.ts",
+		"./report": "./src/report.ts",
+		"./diff": "./src/diff/index.ts",
+		"./dts": "./src/dts.ts",
+		"./prices.json": "./prices.json",
+		"./weights.json": "./weights.json",
+		"./app": "./src/app/index.ts",
+		"./weight": "./src/weight/index.ts",
+		"./coverage": "./src/coverage/index.ts",
+		"./recorder": "./src/coverage/recorder.ts",
+		"./package.json": "./package.json"
+	},
+	"publishConfig": {
+		"bin": {
+			"heisenbench": "./dist/cli.js"
+		},
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"default": "./dist/index.js"
+			},
+			"./bench": {
+				"types": "./dist/bench.d.ts",
+				"default": "./dist/bench.js"
+			},
+			"./runtime": {
+				"types": "./dist/runtime/index.d.ts",
+				"default": "./dist/runtime/index.js"
+			},
+			"./transform": {
+				"types": "./dist/transform/index.d.ts",
+				"default": "./dist/transform/index.js"
+			},
+			"./plugin": {
+				"types": "./dist/plugin.d.ts",
+				"default": "./dist/plugin.js"
+			},
+			"./register": {
+				"types": "./dist/loader/register.d.ts",
+				"default": "./dist/loader/register.js"
+			},
+			"./hooks": {
+				"types": "./dist/loader/hooks.d.ts",
+				"default": "./dist/loader/hooks.js"
+			},
+			"./report": {
+				"types": "./dist/report.d.ts",
+				"default": "./dist/report.js"
+			},
+			"./diff": {
+				"types": "./dist/diff/index.d.ts",
+				"default": "./dist/diff/index.js"
+			},
+			"./dts": {
+				"types": "./dist/dts.d.ts",
+				"default": "./dist/dts.js"
+			},
+			"./prices.json": "./prices.json",
+			"./weights.json": "./weights.json",
+			"./app": {
+				"types": "./dist/app/index.d.ts",
+				"default": "./dist/app/index.js"
+			},
+			"./weight": {
+				"types": "./dist/weight/index.d.ts",
+				"default": "./dist/weight/index.js"
+			},
+			"./coverage": {
+				"types": "./dist/coverage/index.d.ts",
+				"default": "./dist/coverage/index.js"
+			},
+			"./recorder": {
+				"types": "./dist/coverage/recorder.d.ts",
+				"default": "./dist/coverage/recorder.js"
+			},
+			"./package.json": "./package.json"
+		},
+		"access": "public"
+	},
+	"scripts": {
+		"build": "tsdown",
+		"prepack": "tsdown",
+		"prepublishOnly": "node scripts/publish-guard.ts",
+		"test": "node --test --test-concurrency=1 \"test/*.test.ts\"",
+		"slowdown": "node scripts/slowdown.ts",
+		"calibrate": "node scripts/calibrate.ts",
+		"fuzz": "node fuzz/cli.ts"
+	},
+	"dependencies": {
+		"@jridgewell/remapping": "2.3.5",
+		"@jridgewell/trace-mapping": "0.3.31",
+		"magic-string": "1.4.5",
+		"oxc-parser": "catalog:",
+		"tinybench": "catalog:measure"
+	},
+	"devDependencies": {
+		"@bench/compare": "workspace:*",
+		"@types/node": "26.1.2",
+		"devalue": "5.9.4",
+		"playwright": "catalog:measure",
+		"rolldown": "catalog:",
+		"svelte": "5.57.3",
+		"tsdown": "catalog:",
+		"typescript": "6.0.3"
+	},
+	"peerDependencies": {
+		"playwright": ">=1.40.0",
+		"svelte": ">=5.0.0",
+		"typescript": ">=5.0.0 <7"
+	},
+	"peerDependenciesMeta": {
+		"playwright": {
+			"optional": true
+		},
+		"svelte": {
+			"optional": true
+		},
+		"typescript": {
+			"optional": true
+		}
+	},
+	"engines": {
+		"node": ">=26.4"
+	}
+}

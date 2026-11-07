@@ -1,5 +1,5 @@
 // Types are re-exported on their own (`export type`), so a declaration bundler that builds this
-// package into another (Abax's npm build) keeps them.
+// package into another (Heisenbench's npm build) keeps them.
 export { MIN_REPEATS, floorOf, judge, median, spreadOf } from './noise.ts';
 export type { Rule, Verdict } from './noise.ts';
 export { markOf, range, signed } from './format.ts';

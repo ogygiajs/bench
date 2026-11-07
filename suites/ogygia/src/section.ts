@@ -1,5 +1,5 @@
 /**
- * The `abax` section of the PR's benchmark comment, and the JSON result kept on the results branch.
+ * The `heisenbench` section of the PR's benchmark comment, and the JSON result kept on the results branch.
  *
  * Every part is capped (the bench files run, the files that did not run, engine and growth
  * findings, the full run's table), so a PR that touches everything still gets a section that
@@ -12,16 +12,16 @@ import {
 	markdownCode,
 	renderMarkdown,
 	renderSections
-} from '@bench/abax';
-import type { DiffResult, Report, TimeComparison } from '@bench/abax';
+} from '@bench/heisenbench';
+import type { DiffResult, Report, TimeComparison } from '@bench/heisenbench';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { SearchRun } from './search.ts';
 import type { Selection } from './select.ts';
 import type { WeightRun } from './weights.ts';
 
-export const RESULT_SCHEMA = 'ogygia-abax/1';
-export const HEADING = '#### Abax: steps per function';
+export const RESULT_SCHEMA = 'ogygia-heisenbench/1';
+export const HEADING = '#### Heisenbench: steps per function';
 
 type SectionsDiff = Parameters<typeof renderSections>[0];
 
@@ -48,11 +48,11 @@ export interface Meta {
 	base: string | null;
 	/** What the PR is measured against: the merge base of the PR and its base. */
 	merge_base: string | null;
-	/** The bench repository commit (the Abax that counted). */
-	abax: string | null;
+	/** The bench repository commit (the Heisenbench that counted). */
+	heisenbench: string | null;
 	node: string;
 	run_url: string | null;
-	/** The plain-build layers each `abax run` added (`time,bytes,leaks`), or null. */
+	/** The plain-build layers each `heisenbench run` added (`time,bytes,leaks`), or null. */
 	measure: string | null;
 }
 
@@ -192,7 +192,7 @@ function plural(n: number, word: string): string {
 }
 
 function run_link(meta: Meta): string {
-	return meta.run_url ? ` [Abax run](${meta.run_url})` : '';
+	return meta.run_url ? ` [Heisenbench run](${meta.run_url})` : '';
 }
 
 /** `n more` line for a list cut at `cap`, or nothing. */
@@ -200,15 +200,15 @@ function more(total: number, cap: number, what: string): string[] {
 	return total > cap ? [`- and ${total - cap} more ${what} (in result.json)`] : [];
 }
 
-/** Abax's own warning that the two reports differ in environment; the section says it first. */
-const ABAX_ENV_NOTE = '> ⚠️ The two reports come from different environments';
+/** Heisenbench's own warning that the two reports differ in environment; the section says it first. */
+const HEISENBENCH_ENV_NOTE = '> ⚠️ The two reports come from different environments';
 
-/** Abax's own step table, without its marker, its heading and its environment note. */
+/** Heisenbench's own step table, without its marker, its heading and its environment note. */
 function step_body(diff: DiffResult): string {
 	const lines = renderMarkdown(diff).split('\n');
 	if (lines[0] === SECTION_MARKER) lines.shift();
 	if (lines[0]?.startsWith('#')) lines.shift();
-	const env = lines.findIndex((l) => l.startsWith(ABAX_ENV_NOTE));
+	const env = lines.findIndex((l) => l.startsWith(HEISENBENCH_ENV_NOTE));
 	if (env !== -1) lines.splice(env, lines[env + 1] === '' ? 2 : 1);
 	while (lines[0] === '') lines.shift();
 	return lines.join('\n');
@@ -271,7 +271,7 @@ function selection_lines(sel: Selection): string[] {
 	return lines;
 }
 
-/** Abax's engine and growth parts, each list cut to its cap with a count of the rest. */
+/** Heisenbench's engine and growth parts, each list cut to its cap with a count of the rest. */
 function capped_sections(d: SectionsDiff): string {
 	const parts: string[] = [];
 	const e = d.engine;
@@ -317,7 +317,7 @@ function capped_sections(d: SectionsDiff): string {
 	return parts.join('\n');
 }
 
-/** The PR comment's `abax` section. */
+/** The PR comment's `heisenbench` section. */
 export function render_pr_section(r: Result): string {
 	const { meta, selection: sel } = r;
 	const lines: string[] = [HEADING, ''];
