@@ -191,7 +191,9 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	const builtins = new Builtins(rt);
 	const det = new Determinism({ root });
 	if (opts.cache && source_from)
-		throw new Error('heisenbench: --cache keys the files on disk; it does not go with --source-from');
+		throw new Error(
+			'heisenbench: --cache keys the files on disk; it does not go with --source-from'
+		);
 	// Before any bench file loads: the cache watches every module that does.
 	const cache = opts.cache
 		? new CaseCache(
