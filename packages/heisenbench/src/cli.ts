@@ -36,6 +36,7 @@ import { contracts_command } from './contracts/cli.ts';
 import { upgrade_command } from './upgrade/cli.ts';
 import { upstream_command } from './upstream/cli.ts';
 import { feel_command } from './models/cli.ts';
+import type { CacheSummary } from './cache/index.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -46,6 +47,8 @@ Counting (the counting build)
       [--state fresh|shared] [--measure time,bytes,leaks|all] [--time-ms 300]
       [--source-from sha]   these bench files on that commit's code: a repo's first PR, whose
                             base has no bench files yet (files the commit lacks come from disk)
+      [--cache dir]   reuse the counts of every case whose code and inputs did not change
+      [--cache-verify n]   count n reused cases again; a difference fails the case (a cache bug)
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
       [--time time.json] [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]
@@ -80,6 +83,7 @@ Layers (each writes its section into --out, default heisenbench-report.json)
                                  odds of each shape (one more size when the top two are close)
       [--sizes 1,10,100] [--scaled on|off] [--cap 1e10] [--deps all|none|a,b] [--root dir]
       [--filter text] [--out file] [--superlinear-odds 0.9] [--growth-prior prior.json]
+      [--cache dir] [--cache-verify n]
   heisenbench growth --recorded <dir>   growth from a test run's recorded calls (no bench files):
                                  every recorded function's steps over its input sizes; a finding
                                  needs --superlinear-odds (default 0.9) of quadratic or worse
@@ -288,7 +292,7 @@ const MANY = Number.POSITIVE_INFINITY;
 
 const SPECS: Record<string, Spec> = {
 	run: {
-		values: [...BENCH, 'state', 'measure', 'time-ms', 'source-from'],
+		values: [...BENCH, 'state', 'measure', 'time-ms', 'source-from', 'cache', 'cache-verify'],
 		args: [1, MANY],
 		files: true
 	},
@@ -361,7 +365,9 @@ const SPECS: Record<string, Spec> = {
 			'budget-steps',
 			'md',
 			'superlinear-odds',
-			'growth-prior'
+			'growth-prior',
+			'cache',
+			'cache-verify'
 		],
 		args: [0, MANY],
 		files: true
@@ -637,6 +643,28 @@ function parse(cmd: string, argv: string[]): Parsed {
 	return { positional, flags };
 }
 
+/** `--cache dir [--cache-verify n]` (run, growth): incremental counting (cache/). */
+function cache_option(flags: Map<string, string>): { dir: string; verify: number } | undefined {
+	const dir = flags.get('cache');
+	const verify = flags.has('cache-verify') ? Number(flags.get('cache-verify')) : 0;
+	if (!(Number.isInteger(verify) && verify >= 0))
+		throw new UsageError('--cache-verify takes a whole number of cases');
+	if (flags.has('cache-verify') && dir === undefined)
+		throw new UsageError('--cache-verify needs --cache <dir>');
+	return dir === undefined ? undefined : { dir: resolve(dir), verify };
+}
+
+/** What the cache did, and every cache bug, loudly. */
+function print_cache(c: CacheSummary, cmd: string): void {
+	const checked =
+		c.verified > 0
+			? `, ${c.verified} reused case(s) counted again: ${c.mismatches.length === 0 ? 'the same' : `${c.mismatches.length} differ`}`
+			: '';
+	console.log(`cache    ${c.reused} reused, ${c.counted} counted${checked}`);
+	for (const m of c.mismatches)
+		console.error(`heisenbench ${cmd}: CACHE BUG: a reused case differs from its recount: ${m}`);
+}
+
 /** An heisenbench report from a file, or a clear error. */
 function read_report(path: string): Report {
 	let r: unknown;
@@ -686,8 +714,10 @@ async function main(argv: string[]): Promise<number> {
 			fresh: flags.get('state') !== 'shared',
 			log: (l) => console.log(l),
 			debug: flags.has('debug') || process.env.HEISENBENCH_DEBUG === '1',
-			source_from
+			source_from,
+			cache: cache_option(flags)
 		});
+		if (report.cache) print_cache(report.cache, 'run');
 		await measure_run(report, positional, flags);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
 			console.error(
@@ -814,8 +844,10 @@ async function main(argv: string[]): Promise<number> {
 				sizes,
 				cap: num('cap'),
 				scaled: flags.get('scaled') === 'on',
-				odds: odds_options(flags)
+				odds: odds_options(flags),
+				cache: cache_option(flags)
 			});
+			if (r.cache) print_cache(r.cache, 'growth');
 			write_section(out, 'growth', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;
 		}

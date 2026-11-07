@@ -344,6 +344,7 @@ writes JSON; `diff` and a few others also write markdown.
 | Command                                                                                | What it does                                                                                                       |
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
+| `heisenbench run <bench files> --cache <dir>`                                          | Count only the cases whose code or inputs changed; reuse the rest. `--cache-verify n` counts n reused ones again.  |
 | `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
 | `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.     |
@@ -368,6 +369,31 @@ writes JSON; `diff` and a few others also write markdown.
 
 `health`, `growth`, `search`, `audit` and `contracts` write their section into the report given by `--out`, so
 one JSON file per commit holds everything `diff` needs.
+
+### Counting only what changed
+
+Counts are the same on every run, so a case whose code and inputs did not change need not be
+counted again. With `--cache <dir>`, `run` and `growth` key each case by a hash of what it ran and
+read: the functions it entered in every module (comments and the bodies of functions it never
+entered left out), the files it read, the prices, Heisenbench itself and Node. A case whose key is
+in the cache is reused, its lines moved to where the code is now; the rest are counted and added.
+
+The quick start's two cases, after a second loop is added to `rank` (which `score`'s case does
+not run):
+
+```
+counting rank: twenty rows: src/rank.ts changed
+ok       rank: twenty rows  1081 steps
+reused   score: one row with three tags  31 steps
+cache    1 reused, 1 counted
+```
+
+On ogygia's 62 cases (M4 Max, the 12 bench files one after another): 15.0 s to count them all,
+2.9 s with a warm cache (Node starting 12 times; no file loads), 4.0 s after a change to the
+router's `match_one` (the 2 cases that run it counted again). A comment-only change counts
+nothing. `--cache-verify n` counts n reused cases again and fails the case, as a cache bug, if
+the recount differs. [How counting works](docs/how-counting-works.md#counting-only-what-changed)
+has the key, part by part, and what it assumes.
 
 `calibrate`, `verify` and `feel` run only in a clone of this repository. The npm package does not
 ship the calibration corpus, the training dataset or the planted cases, and from npm these

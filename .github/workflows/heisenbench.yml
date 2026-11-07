@@ -206,6 +206,17 @@ jobs:
           git clone --quiet --filter=blob:none --no-checkout --depth 1 --branch results \
             "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git" "$RUNNER_TEMP/history"
 
+      # Incremental counting (docs/ci.md#incremental-counting): a case whose code and inputs did
+      # not change is not counted again; its counts come from this cache, keyed by content. Every
+      # run restores the newest cache a main or nightly run saved; only those runs save one, so
+      # nothing a PR's code wrote is ever read by another run.
+      - name: Restore the count cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/heisenbench-cache
+          key: heisenbench-counts-main-${{ github.run_id }}
+          restore-keys: heisenbench-counts-main-
+
       # Clones ogygia, checks out and installs each commit, writes the bench files' types, selects
       # the bench files and counts them; section.md and result.json land in suites/ogygia/out. A
       # PR-style run also ranks by the weights and runs the worst-case search (4 minutes in all)
@@ -233,8 +244,19 @@ jobs:
             ${BASE_SHA:+--real-weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/real-weights.json"} \
             ${SEARCH:+--search "$SEARCH"} --search-budget "$SEARCH_BUDGET" \
             ${MUTATE:+--mutate "$MUTATE"} \
-            --kind "$KIND" --work "$RUNNER_TEMP/heisenbench" --out suites/ogygia/out --run-url "$RUN_URL"
+            --kind "$KIND" --work "$RUNNER_TEMP/heisenbench" --out suites/ogygia/out --run-url "$RUN_URL" \
+            --cache "$RUNNER_TEMP/heisenbench-cache"
           cat suites/ogygia/out/section.md >> "$GITHUB_STEP_SUMMARY"
+
+      # A main or nightly run (main's own code only) saves what it counted on top of what it
+      # restored; the suite prunes what no run used for two weeks. Saved when the run failed too:
+      # what it counted is right.
+      - name: Save the count cache
+        if: always() && needs.plan.outputs.kind == 'main'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/heisenbench-cache
+          key: heisenbench-counts-main-${{ github.run_id }}
 
       - uses: actions/upload-artifact@v7
         if: always()

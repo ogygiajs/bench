@@ -118,3 +118,5 @@ export {
 	calibrate_weights as calibrateWeights
 } from './calibrate/index.ts';
 export type { Weights } from './calibrate/weights.ts';
+export { prune_cache as pruneCache, CACHE_SCHEMA } from './cache/index.ts';
+export type { CacheSummary, PruneResult } from './cache/index.ts';

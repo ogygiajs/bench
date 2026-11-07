@@ -69,6 +69,9 @@ In this repository:
    side, on a 4-core runner a PR with 11 bench files spent per tree about 2 minutes on engine
    health, 2.4 on growth and 25 seconds on counting, then 5.4 minutes on timing.
 
+   Counting and growth are incremental ([below](#incremental-counting)): a case whose code and
+   inputs are the same as in a run the cache holds is reused, not counted, on either tree.
+
    Counting, growth and the worst-case search count every dependency, Heisenbench's default, and
    blame each under its name and version (`acorn@8.18.0/dist/acorn.mjs > Parser`). Until
    `COUNTED_DEPS` was dropped, only devalue, Svelte and magic-string were counted, and Svelte's
@@ -160,7 +163,9 @@ In this repository:
 
 Steps 3 to 14 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
 that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
-token is left in `.git/config` for that code to find.
+token is left in `.git/config` for that code to find. The one thing it saves besides the artifact
+is the count cache, and only on a main or nightly run, which runs main's code
+([Incremental counting](#incremental-counting)).
 
 The `publish` job holds the write token and `BENCH_TOKEN`. It checks out only this repository's
 `packages/compare` (no install) and runs nothing from the measure job or from ogygia. It reads the
@@ -171,6 +176,33 @@ from the plan, never from the artifact. When the measure job failed, or the arti
 pass, the publish job still rewrites the PR's section with a line saying so.
 
 The app benchmark's `bench.yml` has the same three jobs.
+
+### Incremental counting
+
+`heisenbench run` and `heisenbench growth` run with `--cache "$RUNNER_TEMP/heisenbench-cache"`
+([how it works](how-counting-works.md#counting-only-what-changed)). A case is counted only when
+something its counts are a function of changed: a function it runs, a file it reads, the prices,
+Heisenbench, Node. The rest come from the cache, marked reused.
+
+- **Where the cache lives.** An Actions cache, restored at the start of the measure job from the
+  newest `heisenbench-counts-main-*` and, on a main or nightly run, saved after it under
+  `heisenbench-counts-main-<run id>`. The directory is content-addressed, so what a run counts is
+  added to what it restored; the suite drops entries no run used for 14 days (`CACHE_DAYS`).
+- **Who writes it.** Only main and nightly runs save, and they run main's own code. A PR run
+  restores and adds to its copy, but never saves: nothing a PR's code wrote is read by another run.
+  A PR still reuses main's counts of its merge base (its base tree) and of every head case whose
+  code the PR did not touch.
+- **The check.** On each tree, one bench file picked at random (`--cache-verify`, `CACHE_VERIFY`)
+  counts one reused case again, and grows one again: two of each a PR run. A difference fails
+  that case with "a cache bug" and the first difference, in the comment like any failed case.
+- **The comment** says per side how many cases were reused and counted, and, collapsed, why each
+  of the PR's counted cases was not reused (`packages/router/src/match.ts changed`).
+- **When everything is counted again.** The key holds Heisenbench's own source, so a push to this
+  repository that changes `packages/heisenbench/src` makes the next run count every case once.
+  So does a new Node on the runner, a new price file, or a change to ogygia's preload.
+- **What stays as it was.** Engine health and the time layer are measurements of V8 and of the
+  clock, not counts: they run on every selected bench file, as before. On a full run, so do real
+  bytes, leaks and the price audit's timing.
 
 A case that only the PR has is listed under "New cases", one only the base has under "Removed
 cases". A bench file that does not load on one side is listed under "Did not run" with the error.
@@ -425,7 +457,8 @@ cat suites/ogygia/out/section.md
 ```
 
 Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones and trees, default
-`.work`, reused across runs), `--measure time,bytes,leaks|all|none`, `--time off`,
+`.work`, reused across runs), `--cache <dir>` (incremental counting; `--cache-verify <n>` bench
+files per tree count one reused case again, default 1), `--measure time,bytes,leaks|all|none`, `--time off`,
 `--weights app-weights.json` (rank a PR by those weights), `--real-weights real-weights.json` (and by
 real cost on that traffic), `--requests-per-day <n>`, `--search changed|all|off` (default
 `changed` for a PR, `off` for a full run; the nightly run passes `all`), `--search-budget

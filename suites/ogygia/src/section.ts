@@ -18,7 +18,13 @@ import {
 	renderSections,
 	renderUpgrade
 } from '@bench/heisenbench';
-import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
+import type {
+	CacheSummary,
+	DiffResult,
+	RecordedGrowth,
+	Report,
+	TimeComparison
+} from '@bench/heisenbench';
 import { calls_text, cost_text } from '@bench/heisenbench/weight';
 import type { BlameRun } from './blame.ts';
 import type { ContractsRun } from './contracts.ts';
@@ -525,6 +531,52 @@ function recorded_lines(r: Result): string[] {
 	return ['', rec.markdown.trimEnd()];
 }
 
+/**
+ * What incremental counting reused, counted and checked on each side, and why the PR's counted
+ * cases were not reused. Nothing when no side ran with a cache.
+ */
+export function cache_lines(sides: Array<[string, Report | null]>, why = true): string[] {
+	const with_cache = sides.filter(
+		(s): s is [string, Report & { cache: NonNullable<Report['cache']> }] => !!s[1]?.cache
+	);
+	if (with_cache.length === 0) return [];
+	// a reused case counted again as a check was reusable: it is said with the reused ones
+	const reused = (c: CacheSummary): number => c.reused + c.verified;
+	const counted = (c: CacheSummary): number => c.counted - c.verified;
+	const parts = with_cache.map(([label, rep]) => {
+		const g = rep.growth?.cache;
+		const grown = g ? ` (growth: ${reused(g)} reused, ${counted(g)} grown)` : '';
+		return `${with_cache.length > 1 ? `${label}: ` : ''}${plural(reused(rep.cache), 'case')} reused, ${counted(rep.cache)} counted${grown}`;
+	});
+	const all = with_cache.flatMap(([, rep]) => [
+		rep.cache,
+		...(rep.growth?.cache ? [rep.growth.cache] : [])
+	]);
+	const verified = all.reduce((n, c) => n + c.verified, 0);
+	const bugs = all.flatMap((c) => c.mismatches);
+	let line = `Incremental counting: ${parts.join('; ')}. A case is reused only when the code it runs and the files it reads are what they were when it was counted.`;
+	if (verified > 0)
+		line += ` ${plural(verified, 'reused case')} counted again as a check: ${bugs.length === 0 ? 'the same' : `${bugs.length} differ`}.`;
+	const lines = [line, ''];
+	for (const b of bugs.slice(0, CAPS.failed))
+		lines.push(
+			`**Cache bug**: a reused case differs from its recount: ${code(one_line(b, 200))}`,
+			''
+		);
+	const [, first] = with_cache[0];
+	const changed = why ? (first.cache.why ?? []).filter((w) => w.why[0] !== 'not in the cache') : [];
+	if (changed.length > 0) {
+		lines.push(
+			`<details><summary>Why ${plural(changed.length, 'case')} counted again</summary>`,
+			''
+		);
+		for (const w of changed.slice(0, CAPS.failed))
+			lines.push(`- ${code(w.name)}: ${markdownCell(w.why.join('; '))}`);
+		lines.push(...more(changed.length, CAPS.failed, 'cases'), '', '</details>', '');
+	}
+	return lines;
+}
+
 /** The PR comment's `heisenbench` section. */
 export function render_pr_section(r: Result): string {
 	const { meta, selection: sel } = r;
@@ -549,6 +601,12 @@ export function render_pr_section(r: Result): string {
 	const env = env_note(r.diff);
 	if (env) lines.push(env, '');
 	lines.push(...selection_lines(sel));
+	lines.push(
+		...cache_lines([
+			['PR', r.head],
+			['base', r.base]
+		])
+	);
 	lines.push(
 		...did_not_run(r, [
 			['PR', 'head'],
@@ -597,6 +655,7 @@ export function render_full_summary(r: Result): string {
 		''
 	);
 	lines.push(...did_not_run(r, [['head', 'head']]));
+	lines.push(...cache_lines([['head', r.head]], false));
 	if (cases.length > 0) {
 		lines.push(
 			'| Case | Steps | Allocations | Bytes (est.) | Bytes (real) | p50 | Leak | Note |',
