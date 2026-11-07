@@ -8,8 +8,8 @@
  *
  * The nightly run mutates every function a case runs (`--mutate all`); a main push and a PR do not
  * (docs/ci.md has the cost). The functions no case runs miss every mutant without a recount, so
- * the cost is in the ones a case runs: on ogygia main, 632 of them took 18 minutes on an M4 Max with
-4 copies side by side (2,434 recounts, 90 CPU-minutes).
+ * the cost is in the ones a case runs: on ogygia main, 631 of them took 20 minutes on an M4 Max with
+ * 4 copies side by side (2,428 recounts, 105 CPU-minutes).
  *
  * It reads the tree's merged head report (which case runs which function), the recorded calls of
  * the same run when there are any (`growth --recorded`'s samples: a quadratic mutant that growth

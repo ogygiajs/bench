@@ -257,11 +257,12 @@ package and operator and the top missed functions, each with a case that would c
 artifact has `mutation/mutation.json` with every function. It has its own budget of 75 minutes
 (`--mutate-budget`, seconds), so the nightly measure job's limit is 240 minutes.
 
-On ogygia main `b46798f` it mutated all 632 functions a case runs in 18 minutes on an M4 Max
-(2,434 recounts, 90 CPU-minutes; [layers.md](layers.md#mutation-score) has the scores). The suite
+On ogygia main `b46798f` it mutated all 631 functions a case runs in 20 minutes on an M4 Max
+(2,428 recounts, 105 CPU-minutes; [layers.md](layers.md#mutation-score) has the scores). The suite
 gives it every core (it is the run's last layer), so on a 4-core runner, about 2.5 times slower
-per core, that is about 55 minutes, inside its budget. A run whose budget ends first reports the
-functions it did not reach as skipped, and says so.
+per core, that is about 65 minutes, close to its budget. A run whose budget ends first reports the
+functions it did not reach as skipped, and says so (a wall-time budget, so which ones depends on
+the runner's speed; the next night reuses nothing, since each run has fresh scratch copies).
 
 It does not run on PRs or main pushes. The score is about the benchmarks, not about a change: a
 PR's changed function is caught or missed whatever the PR did, and a new function no case runs is

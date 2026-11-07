@@ -1132,20 +1132,20 @@ same report from fresh scratch copies, and a second run with the same `--work` c
 again.
 
 **On ogygia** main `b46798f` (`--sample all`, with the nightly flow's recorded calls and main's
-app weights, M4 Max, 4 copies side by side): 8,178 functions in 519 source files, 632 of them run
-by a case (65 more are in compiled Svelte modules and take no mutant).
+app weights, M4 Max, 4 copies side by side): 8,178 functions in 519 source files, 631 of them run
+by a case and take a mutant (65 more are in compiled Svelte modules and take none).
 
 ```
 Benchmarks catch 8% of 2x slowdowns, 2% of linear-to-quadratic slowdowns, 7% of extra allocations
-and 13% of defeated caches; in the functions a case runs, 100% of 2x slowdowns, 18% of
-linear-to-quadratic slowdowns, 95% of extra allocations and 91% of defeated caches.
+and 12% of defeated caches; in the functions a case runs, 100% of 2x slowdowns, 18% of
+linear-to-quadratic slowdowns, 95% of extra allocations and 90% of defeated caches.
 ```
 
 | Package              | Functions | Run by a case |  2x | quadratic | alloc | cache |
 | -------------------- | --------: | ------------: | --: | --------: | ----: | ----: |
-| `@ogygia/core`       |     3,594 |           326 |  9% |  2% · 16% |    9% |   13% |
+| `@ogygia/core`       |     3,594 |           325 |  9% |  2% · 15% |    8% |   12% |
 | `@ogygia/devtools`   |     2,972 |           180 |  6% |  1% · 16% |    6% |   10% |
-| `@ogygia/content`    |       704 |            52 |  9% |  5% · 33% |    7% |   13% |
+| `@ogygia/content`    |       704 |            52 |  9% |  6% · 39% |    7% |   13% |
 | `@ogygia/postrender` |       166 |            16 | 10% | 12% · 33% |   10% |    0% |
 | `@ogygia/router`     |       109 |            24 | 24% |   0% · 0% |   21% |    0% |
 | `@ogygia/federation` |       103 |            20 | 24% |   0% · 0% |   20% |       |
@@ -1155,23 +1155,23 @@ linear-to-quadratic slowdowns, 95% of extra allocations and 91% of defeated cach
 (After `·`, of the functions a case runs, where it is not 100% or close.) What it says, most
 important first:
 
-1. **Most of the code is never run by a case.** 7,546 of 8,178 functions miss every mutant. By the
+1. **Most of the code is never run by a case.** 7,547 of 8,178 functions miss every mutant. By the
    app weights, the heaviest of them are the server request path, `OgygiaHandle >
    inject_client_seeds` and the `transformPageChunk` it runs (7.3 million steps per dashboard
    server request), and the client's hydration path, `hydrate_island`, `OgygiaRegion > #hydrate`
    and `drain_background` (0.8 million steps per dashboard interaction). A 2x slowdown of any of
    them reaches no bench case, so no PR comment would show it.
-2. **Quadratic slowdowns pass even where a case runs the code.** 26 of 147 judged (18%). Of the 121
-   missed: in 59 a case with `scale` runs the function but its scale grows something else (the
+2. **Quadratic slowdowns pass even where a case runs the code.** 26 of 146 judged (18%). Of the 120
+   missed: in 58 a case with `scale` runs the function but its scale grows something else (the
    heaviest is `DocumentTail > render`, 2.2 million steps per dashboard request, whose loop walks
    `this.#props`; then `seed-refs.ts > measure`); 26 have no case with `scale` at all (the
    morph's `reconcile_children`, 0.34 million steps per docs interaction); 19 sit in a loop the
    cases' inputs never enter; and 17 run only under a case that is already quadratic
    (`transformHost` grows quadratically through acorn's parser, so a new quadratic loop in the
    compiler does not change its class: a class change is the only growth finding).
-3. **A 2x slowdown always shows, but half of them quietly.** All 625 show in the step table; only
-   318 make a case grow by 1% and 1,000 steps, the threshold at which the comment says which change
-   made it slower. The other 307 are functions under 1% of every case that runs them.
+3. **A 2x slowdown always shows, but almost half of them quietly.** All 624 show in the step table;
+   only 342 make a case grow by 1% and 1,000 steps, the threshold at which the comment says which
+   change made it slower. The other 282 are functions under 1% of every case that runs them.
 4. Allocations: 29 missed, each an allocation in a loop the cases never enter. Caches: 2 missed
    (the morph's `reconcile_children` fills its maps and never asks twice), 2 discarded (`ref.ts >
    registry` and `define.ts > memo_of` look like memos, `x ??= new Map()`, but are shared state
@@ -1180,15 +1180,14 @@ important first:
 The two mutants of `wire.ts > sign_headers` that the twin flagged were not discarded: counted
 again, the original signs differently too (its setup draws a fresh key pair).
 
-The whole run took 18 minutes (90 CPU-minutes): 2,434 recounts, of which 2,063 counts (1 s each
-on average), 208 growths (8 s each on average; the costliest, a quadratic mutant of
-`reversible.ts`, runs into growth's 5 minute limit) and 162 growths from recorded calls (3 s
-each); 229 trees were reached twice and counted once. Run again with the same `--work`, it counted
-nothing and took 16 s. Two runs of a sample of 40 functions (seed 1) from fresh scratch copies
-gave the same 8.9 MB report but for the cost (92 and 96 s), and the full run from fresh scratch
-copies gave the same verdict for every mutant as one stopped halfway and finished from its
-`--work`. A sample that small is a rough estimate of the rarer operators: it put the quadratic
-score of the functions a case runs at 0% (the full run: 18%).
+The whole run, counting its own base, took 20 minutes (105 CPU-minutes): 2,428 recounts, of which
+2,059 counts (1.2 s each on average), 206 growths (9 s each on average; the costliest, a quadratic
+mutant of `reversible.ts`, runs into growth's 5 minute limit) and 162 growths from recorded calls
+(4 s each); 229 trees were reached twice and counted once. Run again with the same `--work`, it
+counted nothing, took 10 s and wrote the same report. Two runs of a sample of 40 functions (seed 1)
+from fresh scratch copies gave the same 11.6 MB report but for the cost (104 and 129 s). A sample
+that small is a rough estimate of the rarer operators: it put the quadratic score of the functions
+a case runs at 0% (the full run: 18%).
 
 ## Dependency upgrades
 
