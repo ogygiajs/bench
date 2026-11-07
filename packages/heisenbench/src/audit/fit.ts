@@ -80,7 +80,7 @@ export interface AuditInput {
 	sizes: number[];
 	/** Units of the case at each size (growth layer). */
 	units: Units[];
-	/** Mean ns per call: one row per round, one column per size. */
+	/** ns of the median call (audit/time.ts): one row per round, one column per size. */
 	rounds: number[][];
 }
 
@@ -362,6 +362,18 @@ function explanations(v: RoundVerdict): string[] {
 	return out.sort((a, b) => v.candidates.get(a)!.change - v.candidates.get(b)!.change);
 }
 
+/**
+ * A round no model explains: the steps miss its time, and so do every candidate, a cost per call
+ * and a slower engine. That is a round a burst of other work bent (one size timed slow on a shared
+ * machine), not a price: it neither blames nor clears, and the other rounds decide.
+ */
+function unexplained(v: RoundVerdict): boolean {
+	if (v.misfit < MISFIT) return false;
+	if (v.rss_constant <= EXPLAINED * v.rss0 || v.rss_engine <= EXPLAINED * v.rss0) return false;
+	for (const k of v.candidates.values()) if (k.rss <= EXPLAINED * v.rss0) return false;
+	return true;
+}
+
 /** What a round blames: the least-change explanation, when even it is far off (FACTOR). */
 function blamed(v: RoundVerdict): string | null {
 	const best = explanations(v)[0];
@@ -411,9 +423,17 @@ export function audit_case(input: AuditInput, prices: Prices): AuditCase {
 	const verdicts = rounds.map((ns) => judge_round(steps, candidates, ns));
 	const time_exponents = rounds.map((ns) => top_exponent(sizes, ns));
 	const ns = sizes.map((_, i) => median(rounds.map((r) => r[i])));
-	const blames = verdicts.map(blamed);
+	// Every round that has a say must blame the same kind, and they must be most of the rounds (at
+	// least two): a bent round (unexplained) abstains, a round that blames another kind or nothing
+	// still clears the case.
+	const voting = verdicts.filter((v) => !unexplained(v));
+	const blames = voting.map(blamed);
 	const first = blames[0] ?? null;
-	const agreed = rounds.length > 0 && first !== null && blames.every((b) => b === first);
+	const agreed =
+		voting.length >= 2 &&
+		voting.length * 2 > verdicts.length &&
+		first !== null &&
+		blames.every((b) => b === first);
 	let suspect: AuditSuspect | null = null;
 	const c = agreed ? candidates.find((x) => x.id === first) : undefined;
 	// A finding names one price: when another kind explains a round about as well (it changes the
@@ -433,7 +453,7 @@ export function audit_case(input: AuditInput, prices: Prices): AuditCase {
 				.map((x) => x.id)
 		: [];
 	if (c && rivals.length === 0) {
-		const factors = verdicts.map((v) => v.candidates.get(c.id)!.factor);
+		const factors = voting.map((v) => v.candidates.get(c.id)!.factor);
 		const grows = c.units ?? c.own;
 		suspect = {
 			kind: c.kind,

@@ -462,11 +462,13 @@ quadratic while V8 ran them in linear time with cons strings. A person found it 
 For every case with a scaler it takes the steps the growth layer counted at 1x, 10x and 100x,
 split by kind (an op kind such as `call`, a dynamic cost such as `dyn.string_char`, a built-in
 such as `bi.Array.prototype.sort`), and times the plain build at the same sizes: 5 rounds, each
-in a fresh process. Then, per case and per round, it fits time over the sizes with competing
+in a fresh process, each size the median call of its median slice of three taken in turns (so a
+busy CI runner's waits do not bend one size). Then, per case and per round, it fits time over the sizes with competing
 models: the steps as they are; the steps plus a cost per call; the steps with an engine that gets
 a little slower per step as the input grows; and, for each kind that grows apart from the rest of
 the case, the steps with that one kind's price free (and, for a built-in, with a size term its
-price model leaves out). A kind is a **price suspect** when, in every round:
+price model leaves out). A kind is a **price suspect** when, in every round that has a say (a
+round no model explains abstains; most rounds, at least two, must be left):
 
 1. the steps miss the time by 15% or more (RMS over the sizes),
 2. freeing that kind's price removes 90% of the miss, and at least half of what a per-call cost or
