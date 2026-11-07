@@ -140,9 +140,18 @@ test('search answer key: slow inputs are found, linear code has none', async () 
 	assert.ok(of(p, 'count').input.includes('aaaa'), of(p, 'count').input);
 	// linear: the worst input costs what the typical one does
 	assert.ok(of(p, 'total').ratio <= 1.05, JSON.stringify(of(p, 'total')));
-	// the base has no slow input: split on more separators makes more parts (a few % more), far
-	// below a slow input's 3x
-	for (const c of b.cases) assert.ok(c.ratio <= 1.25, `base ${c.name}: ${c.ratio}`);
+	// the base has no slow input: order and total cost what the typical input does
+	for (const c of b.cases.filter((x) => x.name !== 'count'))
+		assert.ok(c.ratio <= 1.25, `base ${c.name}: ${c.ratio}`);
+	// Its count splits on the pattern: a text full of it cuts more parts, and a split costs per
+	// part (prices v3), so its worst text costs more, but one part per pattern's length at most:
+	// not a slow input, and far below what the naive loop's worst text costs.
+	const base_count = of(b, 'count').ratio;
+	assert.ok(base_count < 4, `base count: ${base_count}`);
+	assert.ok(
+		of(p, 'count').ratio >= 2 * base_count,
+		`count: base ${base_count}x, pr ${of(p, 'count').ratio}x`
+	);
 
 	const found = diff_search(b, p).map((f) => f.case);
 	assert.deepEqual(found.sort(), ['count', 'order']);

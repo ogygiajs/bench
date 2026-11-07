@@ -32,6 +32,8 @@ export interface TransformOptions {
 	prices?: { prices: Prices; hash: string };
 	/** Specifier the virtual module uses to import the runtime (default: RUNTIME_URL). */
 	runtime?: string;
+	/** A CommonJS module (instrument.ts `commonjs`): its counters come without a counter module. */
+	commonjs?: boolean;
 }
 
 export interface TransformResult extends InstrumentResult {
@@ -107,7 +109,8 @@ export function transform(code: string, opts: TransformOptions): TransformResult
 		prices: p.prices,
 		prices_hash: p.hash,
 		module_specifier: specifier,
-		expose: opts.expose
+		expose: opts.expose,
+		commonjs: opts.commonjs
 	});
 	return { ...r, specifier, virtual: virtual_module_source(r.meta, opts.runtime ?? RUNTIME_URL) };
 }

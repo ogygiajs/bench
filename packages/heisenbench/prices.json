@@ -1,5 +1,5 @@
 {
-	"version": 2,
+	"version": 3,
 	"note": "Op prices are the seed prices (a step is one simple op). Built-in prices are calibrated: each built-in's time over sizes, in steps of `calibration.step_ns` (two consecutive calibrations agreed; see calibration/results.md). Changing any number changes steps on both sides of a comparison, so PR and base are always counted with the same file.",
 	"calibration": {
 		"date": "2026-11-06",
@@ -61,16 +61,31 @@
 		"Array.prototype.indexOf": { "model": "n", "base": 40, "k": 1.40625 },
 		"Array.prototype.lastIndexOf": { "model": "n_log_n", "base": 102, "k": 1.484375 },
 		"Array.prototype.includes": { "model": "n", "base": 42.25, "k": 1.4375 },
-		"Array.prototype.join": { "model": "n", "base": 0, "k": 33 },
+		"Array.prototype.join": {
+			"model": "n",
+			"base": 59.25,
+			"k": 2.03125,
+			"terms": { "items": 223 }
+		},
 		"Array.prototype.concat": { "model": "n", "base": 433, "k": 1.765625 },
 		"Array.prototype.reverse": { "model": "n_log_n", "base": 2.71875, "k": 0.375 },
 		"Array.prototype.fill": { "model": "n", "base": 285, "k": 4.1875 },
-		"Array.from": { "model": "n", "base": 98, "k": 1.09375 },
-		"String.prototype.split": { "model": "n", "base": 366, "k": 18.5 },
+		"Array.from": { "model": "n", "base": 107, "k": 1.203125, "terms": { "callbacks": 137 } },
+		"String.prototype.split": { "model": "const", "base": 154, "k": 0, "terms": { "parts": 125 } },
 		"String.prototype.slice": { "model": "n", "base": 17.75, "k": 0 },
 		"String.prototype.substring": { "model": "n", "base": 18.5, "k": 0 },
-		"String.prototype.replace": { "model": "n", "base": 294, "k": 12.5 },
-		"String.prototype.replaceAll": { "model": "n", "base": 246, "k": 15 },
+		"String.prototype.replace": {
+			"model": "const",
+			"base": 242,
+			"k": 0,
+			"terms": { "matches": 115, "callbacks": 206 }
+		},
+		"String.prototype.replaceAll": {
+			"model": "const",
+			"base": 121,
+			"k": 0,
+			"terms": { "matches": 135 }
+		},
 		"String.prototype.indexOf": { "model": "n", "base": 41.75, "k": 0.1875 },
 		"String.prototype.includes": { "model": "n", "base": 49.25, "k": 0.171875 },
 		"String.prototype.startsWith": { "model": "n", "base": 25.25, "k": 3.828125 },
@@ -81,7 +96,12 @@
 		"String.prototype.repeat": { "model": "n", "base": 184, "k": 0.03125 },
 		"String.prototype.padStart": { "model": "n", "base": 268, "k": 0.0625 },
 		"String.prototype.padEnd": { "model": "n", "base": 271, "k": 0.078125 },
-		"String.prototype.match": { "model": "n", "base": 363, "k": 0.515625 },
+		"String.prototype.match": {
+			"model": "n",
+			"base": 162,
+			"k": 0.359375,
+			"terms": { "matches": 7.375 }
+		},
 		"String.prototype.matchAll": { "model": "const", "base": 374, "k": 0 },
 		"RegExp.prototype.exec": { "model": "n", "base": 109, "k": 0.1875 },
 		"RegExp.prototype.test": { "model": "n", "base": 117, "k": 0.1875 },

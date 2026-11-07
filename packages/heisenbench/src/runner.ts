@@ -13,7 +13,7 @@ import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
 import { REPORT_SCHEMA, build_case_report, environment, one_line } from './report.ts';
 import type { LoadError } from './report.ts';
-import { load_prices } from './prices.ts';
+import { SIZE_TERMS, load_prices } from './prices.ts';
 import { apply_estimates } from './calibrate/estimate.ts';
 import { fresh_copy, next_generation, positions } from './fresh.ts';
 import { GENERATION } from './loader/core.ts';
@@ -227,7 +227,8 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			sha: opts.sha ?? git(root, ['rev-parse', 'HEAD']),
 			prefix: toplevel ? relative(toplevel, root).split(sep).join('/') : ''
 		},
-		cases: results
+		cases: results,
+		unit_terms: [...SIZE_TERMS]
 	};
 	if (load_errors.length > 0) report.load_errors = load_errors;
 	apply_estimates(report);

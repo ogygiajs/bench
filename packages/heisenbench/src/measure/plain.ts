@@ -11,7 +11,7 @@ import {
 	ts_to_js
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
-import { GENERATION } from '../loader/core.ts';
+import { GENERATION, guess_format } from '../loader/core.ts';
 import { OWN_DIR } from '../own.ts';
 
 /*
@@ -27,7 +27,17 @@ import { OWN_DIR } from '../own.ts';
  */
 
 const HEISENBENCH_DIR = OWN_DIR;
-const EXTENSIONS = ['.js', '.mjs', '.ts', '.mts', '.svelte'];
+const EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.svelte'];
+
+/**
+ * Whether the counting build reads a file as CommonJS (loader/core.ts guess_format): a `.cjs`
+ * file, or a `.js` file of a package that is not `"type": "module"`. Script positions V8 reports
+ * for it are mapped through the same transform the counting build ran.
+ */
+export function is_commonjs_source(filename: string): boolean {
+	if (is_ts(filename) || is_svelte_module(filename)) return false;
+	return guess_format(filename) === 'commonjs';
+}
 
 export interface PlainConfig {
 	/** Directories whose modules get the `__heisenbench` export (each checkout of a PR vs base run). */

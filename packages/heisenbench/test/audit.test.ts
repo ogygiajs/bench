@@ -123,6 +123,34 @@ test('audit: a planted mispriced kind is found, with how far off it is', () => {
 	assert.match(render_audit(a, { quiet: true }), /price suspect: `dyn\.string_char`/);
 });
 
+/** `i` with one round's size timed `by` times slow, as a burst of other work on a shared runner does. */
+function bent(i: AuditInput, round: number, size: number, by: number): AuditInput {
+	return {
+		...i,
+		rounds: i.rounds.map((r, j) => (j === round ? r.map((v, s) => (s === size ? v * by : v)) : r))
+	};
+}
+
+test('audit: a round a burst of other work bent abstains, the others still decide', () => {
+	// What failed on a busy 2-vCPU CI runner: one round's 10x timed 1.9x slow. No model explains
+	// that round, and it used to veto the finding every other round agreed on.
+	const i = bent(input('page: built with +=', old_joins, 1, 0.03, 3), 0, 1, 1.9);
+	const c = audit_case(i, prices.prices);
+	assert.equal(c.suspect?.kind, 'dyn.string_char');
+	// Two rounds out of three bent so far that no model explains them leave one vote: not enough
+	// for a finding.
+	const two = bent(bent(input('page: built with +=', old_joins, 1, 0.03, 3), 0, 1, 3), 1, 1, 3);
+	assert.equal(audit_case(two, prices.prices).suspect, null);
+});
+
+test('audit: a bent round cannot make a finding the others do not', () => {
+	// Fair prices, three rounds, every one of them bent at a different size: nothing to find.
+	const fair_case: Plant = { units: (k) => ops(k, OPS), ns: (u) => fair(u) };
+	let i = input('fair: three bent rounds', fair_case, 3, 0.03, 3);
+	for (let r = 0; r < 3; r++) i = bent(i, r, r, 1.9);
+	assert.equal(audit_case(i, prices.prices).suspect, null);
+});
+
 test('audit: a planted underpriced built-in is found', () => {
 	// splice is priced as a constant; here each call moves n elements, and n grows with the input
 	const plant: Plant = {

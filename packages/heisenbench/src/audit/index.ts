@@ -73,7 +73,8 @@ export async function run_audit(o: AuditOptions): Promise<AuditReport> {
 				continue;
 			}
 			if (!c.result) continue;
-			rounds.set(key, [...(rounds.get(key) ?? []), c.result.mean_ns]);
+			// The median call, not the mean: robust to the waits of a busy machine (time.ts SizeTimes).
+			rounds.set(key, [...(rounds.get(key) ?? []), c.result.p50_ns]);
 		}
 		log(`audit   timing round ${r + 1} of ${repeats}`);
 	}

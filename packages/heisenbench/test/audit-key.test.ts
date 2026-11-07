@@ -69,9 +69,12 @@ test("audit key: today's join prices are quiet", async () => {
 		a.findings.map((f) => f.text),
 		[]
 	);
+	// The decision, not the time class: on a busy runner time at 100x can read a little faster
+	// than linear ('n log n'), which is the engine, and no price is blamed for it.
 	const page = a.cases.find((c) => c.name.startsWith('render_page'))!;
 	assert.equal(page.steps_class, 'linear');
-	assert.equal(page.time_class, 'linear');
+	assert.equal(page.suspect, null);
+	assert.equal(a.cases.find((c) => c.name.startsWith('total_length'))!.suspect, null);
 });
 
 test('audit key: joins charged for their whole result are found on the page, not the control', async () => {
@@ -84,7 +87,12 @@ test('audit key: joins charged for their whole result are found on the page, not
 	const page = a.cases.find((c) => c.name.startsWith('render_page'))!;
 	const control = a.cases.find((c) => c.name.startsWith('total_length'))!;
 	assert.equal(page.steps_class, 'quadratic');
-	assert.equal(page.time_class, 'linear');
+	// Time grows about one power of the size slower than the steps (linear against quadratic): a
+	// gap no busy machine closes, where an exact time class can flip.
+	assert.ok(
+		page.steps_exponent - page.time_exponent > 0.5,
+		`steps ${page.steps_exponent}, time ${page.time_exponent}`
+	);
 	assert.equal(page.suspect?.kind, 'dyn.string_char');
 	assert.equal(control.suspect, null);
 	assert.equal(a.findings.length, 1);

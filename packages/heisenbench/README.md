@@ -271,9 +271,11 @@ public callers.
   dropped 1.9 times, because Svelte's template parser, which calls acorn once per expression
   with the whole file, was not counted. Counted, the case grown to 100 times its input is 78%
   acorn (see [growth](docs/layers.md#growth)). `--deps none` counts
-  your code alone, `--deps devalue,svelte` only those packages. CommonJS dependencies run as
-  they are (the transform is for ES modules), and Node's built-in modules are never counted:
-  the built-ins they reach are priced where counted code calls them.
+  your code alone, `--deps devalue,svelte` only those packages. CommonJS dependencies are
+  counted the same way (`typescript@6.0.3/lib/typescript.js > <anonymous>~2726fa > createScanner
+  > scan`, inside the bundle's wrapper function), and Node's
+  > built-in modules are never counted: the built-ins they reach are priced where counted code
+  > calls them.
 
 ## CLI
 

@@ -29,6 +29,15 @@ Each built-in's times are fitted as `ns = base + k × f(n)` for `f` in const, n,
 with `base, k ≥ 0`, by relative least squares so small sizes count as much as large ones. The
 simplest model within 0.02 R² of the best wins. Then ns become steps through the step time.
 
+A built-in with size terms ([how-counting-works.md](how-counting-works.md#built-ins)) is timed
+at several shapes per size: `split` on the same characters with a separator every 2, 8, 32 and
+256 of them, and with a line break regex every 8 and 64; `replace` with a few matches or many,
+replaced by a string and by a callback; `join` on numbers and on strings of 8 and 64 characters.
+Each size term the shapes vary is one more column, `ns = base + k × f(n) + Σ kₜ × t`, fitted the
+same way; a term the fit puts at 0 stays out of the price. R² is taken on the log scale, as the
+fit is relative: on the raw scale the largest calls are all of R², and a `join` priced by its
+numbers alone, 30x too low on a join of long strings, scored 0.998.
+
 | Built-in                 | Seed (v1)      | Calibrated (v2) |
 | ------------------------ | -------------- | --------------- |
 | `Map.prototype.get`      | 6              | 24.5            |
@@ -135,9 +144,22 @@ every main and nightly run: does each kind of step grow with the input the way t
 
 **The points.** Each case that declares `scale`, at 1x, 10x and 100x. At each size: its units
 (what ran, before pricing), from the growth layer, grouped into kinds (each op kind, each dynamic
-price, each built-in with its size terms) and priced with the current `prices.json`; and its mean
-ns per call on the plain build. Timing runs in 5 rounds, each round in a fresh process that times
-every case at every size, so the sizes of one round share the process's luck.
+price, each built-in with its size terms) and priced with the current `prices.json`; and the time
+of its median call on the plain build. Timing runs in 5 rounds, each round in a fresh process that
+times every case at every size, so the sizes of one round share the process's luck. Within a
+round each size is timed in three slices taken in turns (1x, 10x, 100x, 1x, ...) and keeps its
+median slice.
+
+**Why the median call, in slices.** The audit runs on shared CI runners. A process on a busy
+machine waits for a core for whole scheduler slices, and the mean of a slice of calls takes those
+waits in: on 16 cores running 48 other processes, one round read 1x at 782 ns and 2,945 ns in two
+slices. One call rarely spans such a wait, so the median call does not see it, and a burst that
+still bends one slice of one size is outvoted by the other two. With the mean of one slice per
+size, the CLI answer key (`test/audit-key.test.ts`) missed the planted join price in 1 of 20 runs
+beside 16 busy processes (`yes > /dev/null`, on the 16-core M4 Max). With median slices of median
+calls both audit test files passed 20 runs of 20 beside 16 (load average 25 to 38) and 20 of 20
+beside 48 (load average up to 96), where median slices of the mean still missed the price in 15
+of 20. The median call leaves out GC pauses rarer than every other call, at every size alike.
 
 **The fit.** The same fit calibration uses for weights (`fit_relative` on `nnls`, rows scaled by
 1/ns so each size weighs the same), per case and per round, with competing models of time:
@@ -163,6 +185,14 @@ that changes the case's steps the least (a price of 0 on a kind with 90% of the 
 of them; a 1000x factor on a kind with 0.1% changes them 100 times over), and factors that make
 everything else free are not explanations at all. It is a finding only when every round blames
 the same kind, the time layer's no-overlap idea: one noisy round cannot make it.
+
+One kind of round has no say: a round no model explains (the steps miss its time, and so do every
+kind, the per-call constant and the engine), which is what one size timed slow by a burst of other
+work looks like. It abstains instead of clearing the case; the rounds left must still be most of
+them, at least two, and all blame the same kind. A round that blames another kind, or that a
+constant or the engine explains, still clears it (`test/audit.test.ts`: a planted price is found
+with one round bent 1.9x at 10x; two bent rounds out of three, or three fair rounds each bent at
+a different size, find nothing).
 
 A second kind that explains any round nearly as well (its change within 1.5x of the best's)
 makes the case **ambiguous**: no finding, and the candidates are listed in the JSON. A finding

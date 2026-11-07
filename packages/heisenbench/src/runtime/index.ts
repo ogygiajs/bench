@@ -1,5 +1,5 @@
 import type { ModuleMeta } from '../meta.ts';
-import { load_prices, builtin_names, n_log_n } from '../prices.ts';
+import { load_prices, builtin_names, n_log_n, SIZE_TERMS } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import { array_bytes, CONS_MIN, CONS_STRING, object_bytes, string_bytes } from '../layout.ts';
 import { DisposeScope } from './dispose.ts';
@@ -26,6 +26,7 @@ const own_symbols = Object.getOwnPropertySymbols;
 const is_enumerable = Object.prototype.propertyIsEnumerable;
 const reflect_apply = Reflect.apply;
 const is_array = Array.isArray;
+const json_parse = JSON.parse;
 
 /** A run counted more steps than its cap (Runtime.cap): it would not have ended on its own. */
 export class StepCapError extends Error {
@@ -106,17 +107,23 @@ const NO_RECEIVER: unique symbol = Symbol('heisenbench.no_receiver');
 const RECEIVER_LIMIT = 1 << 16;
 
 /**
- * Built-in size units: `site * BUILTIN_UNIT_SHIFT + key id` -> 4 slots at `key * 4`:
- * calls, sum n, sum n log2 n (n when n <= 1, like builtin_cost), sum n^2.
+ * Built-in size units: `site * BUILTIN_UNIT_SHIFT + key id` -> BUILTIN_SLOTS slots at
+ * `key * BUILTIN_SLOTS`: calls, sum n, sum n log2 n (n when n <= 1, like builtin_cost), sum n^2,
+ * then the sum of each size term (prices.ts SIZE_TERMS), kept only when not 0.
  */
 export const BUILTIN_UNIT_SHIFT = 512;
+export const BUILTIN_SLOTS = 4 + SIZE_TERMS.length;
 
-function add_units(t: Table, key: number, n: number): void {
-	const k = key * 4;
+function add_units(t: Table, key: number, n: number, sizes: ArrayLike<number> | null): void {
+	const k = key * BUILTIN_SLOTS;
 	t[k] = (t[k] ?? 0) + 1;
 	t[k + 1] = (t[k + 1] ?? 0) + n;
 	t[k + 2] = (t[k + 2] ?? 0) + n_log_n(n);
 	t[k + 3] = (t[k + 3] ?? 0) + n * n;
+	if (sizes === null) return;
+	for (let i = 0; i < sizes.length; i++) {
+		if (sizes[i] !== 0) t[k + 4 + i] = (t[k + 4 + i] ?? 0) + sizes[i];
+	}
 }
 
 function grow_f64(a: Float64Array, n: number): Float64Array {
@@ -211,6 +218,32 @@ export class Runtime {
 	}
 
 	// ------------------------------------------------------------ registration
+
+	/** CommonJS modules' counters by specifier (a null-prototype dictionary, not a Map). */
+	#by_specifier: Record<string, { m: ReturnType<Runtime['module']>; fns: number }> =
+		Object.create(null);
+
+	/**
+	 * The counters of a CommonJS module (transform `commonjs`), which cannot import a counter
+	 * module: registered once per file however often the file is evaluated again (a fresh module
+	 * graph per run evaluates it once per run), as the counter module of an ES module is.
+	 */
+	counters(specifier: string, meta_json: string): ReturnType<Runtime['module']> {
+		let hit = this.#by_specifier[specifier];
+		if (!hit) {
+			const meta = json_parse(meta_json) as ModuleMeta;
+			hit = this.#by_specifier[specifier] = { m: this.module(meta), fns: meta.functions.length };
+		}
+		return hit.m;
+	}
+
+	/** Whether a function of a CommonJS module (by specifier) was called since the last reset. */
+	called(specifier: string): boolean {
+		const hit = this.#by_specifier[specifier];
+		if (!hit) return false;
+		for (let i = hit.m.f; i < hit.m.f + hit.fns; i++) if (this.calls[i] > 0) return true;
+		return false;
+	}
 
 	module(meta: ModuleMeta): {
 		c: Float64Array;
@@ -566,9 +599,17 @@ export class Runtime {
 	 * check that counted code made the call at that site). `key_id` is the built-in's index in
 	 * `bkeys` and `n` its size: the size terms are kept per site so a report can be recounted with
 	 * other prices (units.ts). `bytes`: the estimated size of what the call allocated for its
-	 * result (builtins.ts, result_bytes), 0 for none.
+	 * result (builtins.ts, result_bytes), 0 for none. `sizes`: the call's size terms, aligned with
+	 * SIZE_TERMS (null: the built-in has none).
 	 */
-	charge(site: number, cost: number, key_id = -1, n = 0, bytes = 0): void {
+	charge(
+		site: number,
+		cost: number,
+		key_id = -1,
+		n = 0,
+		bytes = 0,
+		sizes: ArrayLike<number> | null = null
+	): void {
 		this.s[0] += cost;
 		this.bsite_steps[site] += cost;
 		this.bsite_calls[site]++;
@@ -576,7 +617,7 @@ export class Runtime {
 			this.bsite_bytes[site] += bytes;
 			this.bsite_allocs[site]++;
 		}
-		if (key_id >= 0) add_units(this.bunits, site * BUILTIN_UNIT_SHIFT + key_id, n);
+		if (key_id >= 0) add_units(this.bunits, site * BUILTIN_UNIT_SHIFT + key_id, n, sizes);
 	}
 
 	// ------------------------------------------------------------ measuring

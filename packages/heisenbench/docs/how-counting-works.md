@@ -8,10 +8,32 @@ keeps the count the same from run to run, and how the count is mapped back to so
 
 `heisenbench run` registers a module loader (`module.registerHooks`) and imports the bench file. Every
 module loaded after that goes through the transform: oxc-parser reads it, magic-string edits it,
-and the edits keep a source map. That includes the ES modules of dependencies in `node_modules`
-(`--deps none` or `--deps a,b` narrows it); it never includes Heisenbench's own modules, Node's
-built-in modules, or CommonJS files, which run as they are. The same transform is also a Vite, Rolldown and Rollup plugin
+and the edits keep a source map. That includes the dependencies in `node_modules`, ES modules and
+CommonJS alike (`--deps none` or `--deps a,b` narrows it); it never includes Heisenbench's own
+modules, Node's built-in modules, or what Heisenbench itself `require`s (the Svelte or TypeScript
+compiler it compiles with) and everything that loads. The same transform is also a Vite, Rolldown and Rollup plugin
 (`heisenbench/plugin`), used for the counted app builds.
+
+### CommonJS
+
+`module.registerHooks` runs for `require` as well as `import`, so a CommonJS file goes through the
+same load hook. A file Node names no format for (a `require`d `.js`) is CommonJS when it is `.cjs`
+or its nearest package.json is not `"type": "module"`. It is parsed as CommonJS (sloppy mode, a
+`return` at the top) and instrumented the same way, with three differences: it takes its counters
+from the runtime (`Runtime.counters(specifier, meta)`, registered once per file) instead of
+importing a counter module, it names itself by `__filename` where an ES module says
+`import.meta.url` (the call sites that check their caller, V8 reports a CommonJS frame by path),
+and it gets no `__heisenbench` export. Node finds the named exports of a CommonJS module that an ES
+module imports by reading its source; the counters go inside function bodies, so the getters
+TypeScript writes for a re-export (`Object.defineProperty(exports, "x", { get: function () {...} })`)
+still read as exports. A file that does not parse as CommonJS (an ES module in a `.js` with no
+package type, which Node detects by its syntax) is left to Node.
+
+Node caches a CommonJS file by its path, whatever query the module that imports it carries, so a
+fresh module graph per run (below) would share it. Each new graph first drops the CommonJS files
+the bench graph loaded from `require.cache`, and they are evaluated again with module state of
+their own (`test/deps.test.ts`: a package's module-level call counter keeps two identical runs
+equal; with `--state shared` they differ).
 
 This module:
 
@@ -113,21 +135,37 @@ built-ins it called.
 
 `sort`, `split`, `JSON.parse` and the like do work that the code does not spell out. While the
 measuring window is open, each priced built-in is replaced by a wrapper that calls the original
-and charges `base + k × f(n)`, where `n` is the size that drives the work (the array's length,
-the string's length) and `f` is one of `1`, `n`, `n log n` or `n²`. 57 built-ins have a price
-today. A few:
+and charges `base + k × f(n) + Σ kₜ × t`, where `n` is the size that drives the work (the
+array's length, the string's length), `f` is one of `1`, `n`, `n log n` or `n²`, and each `t` is
+a size term: another size the work follows, measured on the call.
 
-| Built-in                 | Price          |
-| ------------------------ | -------------- |
-| `Map.prototype.get`      | 24.5           |
-| `Set.prototype.add`      | 147            |
-| `Array.prototype.sort`   | 66 n log n     |
-| `Array.prototype.map`    | 150 + 53 n     |
-| `String.prototype.split` | 366 + 18.5 n   |
-| `String.prototype.slice` | 17.75          |
-| `JSON.parse`             | 400 + 11 n     |
-| `RegExp.prototype.exec`  | 109 + 0.1875 n |
-| `structuredClone`        | 3120 + 105 n   |
+| Size term   | What it counts                                                         | Kept for                                 |
+| ----------- | ---------------------------------------------------------------------- | ---------------------------------------- |
+| `parts`     | strings a `split` cuts                                                 | `split`                                  |
+| `matches`   | matches it replaces or returns                                         | `replace`, `replaceAll`, `match` with /g |
+| `callbacks` | calls it makes into the code                                           | `replace`, `replaceAll`, `Array.from`    |
+| `values`    | values it builds or visits                                             | `JSON.parse`, `JSON.stringify`           |
+| `items`     | elements it turns into text (a number in a `join`; a string is copied) | `join`                                   |
+
+`split` is the reason: cutting 16,384 characters into 5 parts takes 0.4 µs, into 8,193 parts
+83 µs, so a price per character was 25x too high on long lines and 2.6x too low on short ones.
+Every call keeps its size terms in its units, priced or not, so a price can start using one and
+still recount exactly, and the price audit can test one a price leaves out. 57 built-ins have a
+price today. A few:
+
+| Built-in                   | Price                             |
+| -------------------------- | --------------------------------- |
+| `Map.prototype.get`        | 24.5                              |
+| `Set.prototype.add`        | 147                               |
+| `Array.prototype.sort`     | 66 n log n                        |
+| `Array.prototype.map`      | 150 + 53 n                        |
+| `String.prototype.split`   | 154 + 125 parts                   |
+| `String.prototype.slice`   | 17.75                             |
+| `String.prototype.replace` | 242 + 115 matches + 206 callbacks |
+| `Array.prototype.join`     | 59.25 + 2.03 n + 223 items        |
+| `JSON.parse`               | 400 + 11 n                        |
+| `RegExp.prototype.exec`    | 109 + 0.1875 n                    |
+| `structuredClone`          | 3120 + 105 n                      |
 
 The transform marks each call site that may reach a built-in by name (`x.slice(a)`,
 `structuredClone(v)`, `Array.prototype.map.call(xs, f)`). It wraps the receiver the call runs on
@@ -168,8 +206,8 @@ measuring window:
 - **Finalizers.** `FinalizationRegistry` callbacks only run between runs. A `WeakRef` made in the
   window keeps its target, so `deref()` never changes during a run.
 - **Module state.** Each run imports a fresh copy of the bench file and everything it imports
-  (`?heisenbench_gen=N`), so a cache or counter in module scope starts empty every time. `--state shared`
-  turns this off.
+  (`?heisenbench_gen=N`; CommonJS files are dropped from `require.cache`), so a cache or counter
+  in module scope starts empty every time. `--state shared` turns this off.
 
 Each case runs three times: a warm-up that records IO, then two measured runs. If the two
 measured counts differ in any function, the case is reported **unstable**. That is a finding: the

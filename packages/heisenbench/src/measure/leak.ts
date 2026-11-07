@@ -1,11 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { Session } from 'node:inspector/promises';
-import { fileURLToPath } from 'node:url';
+import { isAbsolute, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { getHeapSnapshot, getHeapStatistics } from 'node:v8';
 import { parseSync } from 'oxc-parser';
 import type { BenchCase } from '../bench.ts';
 import { Attributor } from './attribute.ts';
-import { executed_code } from './plain.ts';
+import { executed_code, is_commonjs_source } from './plain.ts';
 import { Snapshot } from './snapshot.ts';
 import type { RawSnapshot, Step } from './snapshot.ts';
 
@@ -51,7 +52,15 @@ export interface LeakOptions {
 }
 
 export interface LeakSource {
+	/** `lib.ts`, or `name@version/path` for a dependency's module. */
 	module: string;
+	/** The dependency that holds it (`name@version`), null for the project's own code. */
+	package: string | null;
+	/**
+	 * How the variable holds the retained objects: the edges from it to a typical one (`cache`,
+	 * `table`, `[12]`), as the heap snapshot's shortest retainer chain has them.
+	 */
+	path: string[];
 	/** Function whose closure keeps the variable alive (`<top>` for a module variable). */
 	function: string;
 	variable: string;
@@ -223,7 +232,7 @@ export async function find_leaks(
 	await session.post('Debugger.disable');
 	session.disconnect();
 
-	const owners = new Owners(b, scripts, new Attributor(root));
+	const owners = new Owners(b, scripts, new Attributor(root, { deps: true }));
 	const tree = b.retainer_tree();
 	// The owner of each node: the source module's context variable nearest to it on its chain.
 	const owner = new Int32Array(b.node_count).fill(-1);
@@ -260,11 +269,43 @@ export async function find_leaks(
 	};
 	result.source = owners.source(top.owner);
 	result.chain = b.path(tree, top.nodes[Math.floor((count - 1) / 2)])?.steps ?? null;
+	if (result.source && result.chain) result.source.path = held_path(result.chain, result.source);
 	result.leaked = result.source !== null && count * 4 >= confirm_calls;
 	return result;
 }
 
-/** The context variables of source modules that hold objects, and where each is declared. */
+/**
+ * The edges from the owning variable to the object, read off its retainer chain: from the last
+ * context edge named after the variable on.
+ */
+function held_path(chain: Step[], source: LeakSource): string[] {
+	let at = -1;
+	for (let i = 0; i < chain.length; i++)
+		if (chain[i].edge_type === 'context' && chain[i].edge === source.variable) at = i;
+	if (at === -1) return [source.variable];
+	return chain
+		.slice(at)
+		.filter((s) => s.edge !== '')
+		.map((s) => (s.edge_type === 'element' || /^\d+$/.test(s.edge) ? `[${s.edge}]` : s.edge));
+}
+
+/** `name@version` of a dependency's module id (`acorn@8.18.0/dist/acorn.mjs`), null for own code. */
+function package_of(module: string, path: string): string | null {
+	if (!path.includes(`${sep}node_modules${sep}`)) return null;
+	const parts = module.split('/');
+	return module.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
+}
+
+/** A script URL V8 reports: a file URL for an ES module, a path for a CommonJS module. */
+function script_url(url: string | undefined): string | undefined {
+	return url !== undefined && isAbsolute(url) ? pathToFileURL(url).href : url;
+}
+
+/**
+ * The context variables of source modules, and of dependencies, that hold objects, and where
+ * each is declared. A dependency's module-level cache that grows with every call is the code's
+ * leak as much as its own: the code calls it.
+ */
 class Owners {
 	#snap: Snapshot;
 	#scripts: Map<number, string>;
@@ -283,11 +324,11 @@ class Owners {
 
 	#url(fn: number): string | null {
 		const loc = this.#snap.location(fn);
-		const url = loc ? this.#scripts.get(loc.script) : undefined;
+		const url = loc ? script_url(this.#scripts.get(loc.script)) : undefined;
 		return url && this.#attributor.wants(url) ? url : null;
 	}
 
-	/** Whether a function of a source module (not a dependency, the bench file or Node) holds it. */
+	/** Whether a function of a source module or a dependency (not the bench file or Node) holds it. */
 	is_source_context(ctx: number): boolean {
 		let yes = this.#source_ctx.get(ctx);
 		if (yes === undefined) {
@@ -327,6 +368,8 @@ class Owners {
 			if (!ref) continue;
 			return {
 				module: ref.module,
+				package: package_of(ref.module, fileURLToPath(url)),
+				path: [variable],
 				function: user === null ? '<top>' : ref.path,
 				variable,
 				line: src.declaration_line(variable, at) ?? ref.line
@@ -379,10 +422,8 @@ class SourceFile {
 				const filename = fileURLToPath(key);
 				const code = executed_code(filename, readFileSync(filename, 'utf8')).code;
 				const lang = filename.endsWith('.ts') ? 'ts' : 'js';
-				sf = new SourceFile(
-					code,
-					parseSync(filename, code, { sourceType: 'module', lang }).program
-				);
+				const sourceType = is_commonjs_source(filename) ? 'commonjs' : 'module';
+				sf = new SourceFile(code, parseSync(filename, code, { sourceType, lang }).program);
 			} catch {
 				sf = null;
 			}
