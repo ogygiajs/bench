@@ -43,6 +43,13 @@ export function is_plain_source(path: string, roots: readonly string[]): boolean
 	return roots.some((r) => path.startsWith(r.endsWith(sep) ? r : r + sep));
 }
 
+/** A module of a dependency the counting build counts (an ES module of a package, not Heisenbench's). */
+export function is_dependency_source(path: string): boolean {
+	if (path.startsWith(HEISENBENCH_DIR) || path.endsWith('.d.ts')) return false;
+	if (!path.includes(`${sep}node_modules${sep}`)) return false;
+	return EXTENSIONS.some((e) => path.endsWith(e));
+}
+
 /** `export const __heisenbench = {...}` for a module's source (TS or JS), or '' when there is nothing to add. */
 export function expose_suffix(
 	code: string,

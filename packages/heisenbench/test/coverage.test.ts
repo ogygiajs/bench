@@ -62,9 +62,9 @@ test('the inventory is the union of every scenario app: a package one app instal
 	]);
 	const inv = package_inventory([a, b], installed_packages([a, b], ['@x/*']));
 	assert.deepEqual(Object.keys(inv).sort(), [
-		'@x/content/index.js',
-		'@x/core/dist/build-time.js',
-		'@x/core/dist/used.js'
+		'@x/content@1.0.0/index.js',
+		'@x/core@1.0.0/dist/build-time.js',
+		'@x/core@1.0.0/dist/used.js'
 	]);
 	// No report reached @x/content: it is listed, not loaded
 	const cov = build_coverage([], ['@x/*'], inv);
@@ -73,20 +73,23 @@ test('the inventory is the union of every scenario app: a package one app instal
 
 test('the inventory lists every function of a package, nested ones too, and nothing else', () => {
 	const inv = package_inventory(app_dir(), ['@x/core']);
-	assert.deepEqual(Object.keys(inv).sort(), ['@x/core/dist/build-time.js', '@x/core/dist/used.js']);
+	assert.deepEqual(Object.keys(inv).sort(), [
+		'@x/core@1.0.0/dist/build-time.js',
+		'@x/core@1.0.0/dist/used.js'
+	]);
 	assert.deepEqual(
-		inv['@x/core/dist/used.js'].filter((f) => f.kind !== 'top').map((f) => f.path),
+		inv['@x/core@1.0.0/dist/used.js'].filter((f) => f.kind !== 'top').map((f) => f.path),
 		['hot', 'helper', 'helper > twice', 'idle', 'Box > open']
 	);
 	assert.deepEqual(
-		inv['@x/core/dist/build-time.js'].filter((f) => f.kind !== 'top').map((f) => f.path),
+		inv['@x/core@1.0.0/dist/build-time.js'].filter((f) => f.kind !== 'top').map((f) => f.path),
 		['plugin', 'plugin > transform']
 	);
 });
 
 test('coverage: reached with calls per unit, loaded but not run, not loaded', () => {
 	const dir = app_dir();
-	const used = '@x/core/dist/used.js';
+	const used = '@x/core@1.0.0/dist/used.js';
 	const report: AppReport = {
 		schema: 'heisenbench-report/1',
 		prices: { version: 1, hash: 'h' },
@@ -132,13 +135,13 @@ test('coverage: reached with calls per unit, loaded but not run, not loaded', ()
 	const cov = build_coverage([report], ['@x/*'], package_inventory(dir, ['@x/core']));
 	const status = Object.fromEntries(cov.functions.map((f) => [f.id, f.status]));
 	assert.deepEqual(status, {
-		'@x/core/dist/build-time.js > plugin': 'not loaded',
-		'@x/core/dist/build-time.js > plugin > transform': 'not loaded',
-		'@x/core/dist/used.js > hot': 'reached',
-		'@x/core/dist/used.js > helper': 'reached',
-		'@x/core/dist/used.js > helper > twice': 'reached',
-		'@x/core/dist/used.js > idle': 'loaded',
-		'@x/core/dist/used.js > Box > open': 'loaded'
+		'@x/core@1.0.0/dist/build-time.js > plugin': 'not loaded',
+		'@x/core@1.0.0/dist/build-time.js > plugin > transform': 'not loaded',
+		'@x/core@1.0.0/dist/used.js > hot': 'reached',
+		'@x/core@1.0.0/dist/used.js > helper': 'reached',
+		'@x/core@1.0.0/dist/used.js > helper > twice': 'reached',
+		'@x/core@1.0.0/dist/used.js > idle': 'loaded',
+		'@x/core@1.0.0/dist/used.js > Box > open': 'loaded'
 	});
 	assert.deepEqual(cov.functions.find((f) => f.path === 'hot')?.calls, {
 		'shop server request': 2
@@ -153,8 +156,8 @@ test('coverage: reached with calls per unit, loaded but not run, not loaded', ()
 	});
 	const md = render_coverage(cov);
 	assert.match(md, /\| `@x\/core` \| 7 \| 3 \| \*\*42\.9%\*\* \| 60% \| 2 \| 2 \|/);
-	assert.match(md, /`@x\/core\/dist\/used\.js:3 > idle`/);
-	assert.match(md, /`@x\/core\/dist\/build-time\.js`: 2 functions/);
+	assert.match(md, /`@x\/core@1\.0\.0\/dist\/used\.js:3 > idle`/);
+	assert.match(md, /`@x\/core@1\.0\.0\/dist\/build-time\.js`: 2 functions/);
 	// a package outside the list is not counted
 	assert.equal(build_coverage([report], ['other']).functions.length, 0);
 });

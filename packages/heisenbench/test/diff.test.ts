@@ -267,3 +267,13 @@ test('a renamed function brings its edited callbacks along by place', () => {
 	);
 	assert.equal(d.findings.filter((f) => f.kind === 'new function').length, 0);
 });
+
+test('an upgraded dependency pairs across versions', () => {
+	const base = report([fn('acorn@8.14.0/dist/acorn.mjs', 'Parser', 5, 1)]);
+	const pr = report([fn('acorn@8.15.0/dist/acorn.mjs', 'Parser', 9, 1)]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(
+		d.changes.map((c) => [c.base?.id, c.pr?.id, c.delta.self_steps]),
+		[['acorn@8.14.0/dist/acorn.mjs > Parser', 'acorn@8.15.0/dist/acorn.mjs > Parser', 4]]
+	);
+});

@@ -43,6 +43,7 @@ function diff_of(changes: Array<[string, string, number]>): DiffResult {
 		failed: [],
 		missing: { base: [], pr: [] },
 		cases: [],
+		packages: [],
 		prices_match: true
 	};
 }

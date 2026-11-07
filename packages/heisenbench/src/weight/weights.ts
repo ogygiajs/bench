@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import type { AppReport } from '../app/types.ts';
 import { is_app_case, unit_key } from '../app/types.ts';
-import { context_path } from '../identity.ts';
+import { context_path, unversioned_module } from '../identity.ts';
 
 /*
  * Real-app weights (spec 11): how often each function runs per unit of real work, from counted
@@ -50,7 +50,7 @@ const EXTENSIONS = ['.svelte.ts', '.svelte.js', '.ts', '.mts', '.js', '.mjs'];
  * built `.svelte.js` both become `.svelte`).
  */
 export function canonical_module(id: string): string {
-	const parts = id.split('/');
+	const parts = unversioned_module(id).split('/');
 	let pkg: string;
 	let rest: string[];
 	if (parts[0] === 'packages' && parts.length > 2) {

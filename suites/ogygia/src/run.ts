@@ -35,15 +35,6 @@ export const HEISENBENCH_DIR = fileURLToPath(
 );
 export const HEISENBENCH_CLI = join(HEISENBENCH_DIR, 'src', 'cli.ts');
 
-/**
- * ogygia's dependencies that do real work on the measured paths, counted like ogygia's own code
- * and blamed under their package names: devalue (the page seed), Svelte (server rendering and the
- * compiler ogygia's transforms call) and magic-string (every source rewrite). The fuzzer checks
- * all three instrumented against plain. Counting and growth count them; engine health stays on
- * ogygia's own functions.
- */
-export const COUNTED_DEPS = ['devalue', 'svelte', 'magic-string'];
-
 /** A bench file whose step never landed in its report (failed to load, or Heisenbench crashed). */
 export interface LoadError {
 	file: string;
@@ -148,12 +139,15 @@ async function heisenbench(
 	measure: string | null,
 	check: boolean
 ): Promise<string | null> {
-	const deps = ['--deps', COUNTED_DEPS.join(',')];
+	// Counting, growth and the search count every dependency (Heisenbench's default), blamed as
+	// name@version; engine health stays on ogygia's own functions (its default too).
 	const extra =
 		command === 'growth'
-			? ['--scaled', 'on', ...deps]
+			? ['--scaled', 'on']
 			: command === 'run'
-				? [...deps, ...(measure ? ['--measure', measure] : [])]
+				? measure
+					? ['--measure', measure]
+					: []
 				: command === 'health' && !check
 					? ['--check', 'off']
 					: [];

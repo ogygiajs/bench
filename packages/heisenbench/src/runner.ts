@@ -18,6 +18,7 @@ import { apply_estimates } from './calibrate/estimate.ts';
 import { fresh_copy, next_generation, positions } from './fresh.ts';
 import { GENERATION } from './loader/core.ts';
 import type { CaseReport, Report } from './report.ts';
+import { package_shares } from './identity.ts';
 
 export interface RunOptions {
 	files: string[];
@@ -180,17 +181,19 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			const fresh =
 				opts.fresh === false ? undefined : () => fresh_copy(c, root, position.get(c) ?? 0);
 			const { a, stable } = await run_case(c, det, builtins, fresh);
-			results.push(
-				build_case_report(rt, a.snap, {
-					name: c.name,
-					file: c.file,
-					stable,
-					timers: a.timers,
-					runaway: a.runaway,
-					error: null
-				})
+			const r = build_case_report(rt, a.snap, {
+				name: c.name,
+				file: c.file,
+				stable,
+				timers: a.timers,
+				runaway: a.runaway,
+				error: null
+			});
+			results.push(r);
+			const shares = package_shares(r.functions);
+			log(
+				`${stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${Math.round(a.snap.steps)} steps${shares ? ` (${shares})` : ''}`
 			);
-			log(`${stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${Math.round(a.snap.steps)} steps`);
 		} catch (e) {
 			const msg = one_line(e);
 			results.push({

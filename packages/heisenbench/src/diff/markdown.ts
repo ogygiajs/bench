@@ -52,6 +52,36 @@ function change_row(c: FunctionChange, ns?: number): string {
 	return `| ${cell(c.case)} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${est} | ${signed(c.delta.allocations)} | ${bytes_cell(c.delta.bytes, elided)} | ${signed(c.delta.inclusive_steps)} |`;
 }
 
+/**
+ * Self steps by package for the changed cases that count a dependency: which package the case's
+ * work is in, and which package the change is in. Packages that did not change are left out.
+ */
+function package_table(d: DiffResult, cases: ReadonlySet<string>): string[] {
+	const rows = d.packages.filter(
+		(p) => cases.has(p.case) && Math.abs(p.pr_steps - p.base_steps) >= 1e-6
+	);
+	if (rows.length === 0) return [];
+	const out = [
+		'Self steps by package (`own code` is the project):',
+		'',
+		'| Case | Package | Self steps | Δ | Share of the case |',
+		'| --- | --- | ---: | ---: | ---: |'
+	];
+	const sorted = [...rows].sort(
+		(a, b) => Math.abs(b.pr_steps - b.base_steps) - Math.abs(a.pr_steps - a.base_steps)
+	);
+	for (const p of sorted.slice(0, MAX_ROWS)) {
+		const delta = p.pr_steps - p.base_steps;
+		out.push(
+			`| ${cell(p.case)} | ${code(p.package)} | ${fmt(p.base_steps)} → ${fmt(p.pr_steps)} | ${signed(delta)}${pct(p.base_steps, delta)} | ${Math.round(p.pr_share * 100)}% |`
+		);
+	}
+	if (sorted.length > MAX_ROWS)
+		out.push('', `${sorted.length - MAX_ROWS} more package rows are in the JSON result.`);
+	out.push('');
+	return out;
+}
+
 /** The Heisenbench section of the PR comment. */
 export function render_markdown(d: DiffResult): string {
 	const lines: string[] = [SECTION_MARKER, '### Heisenbench: steps per function', ''];
@@ -110,6 +140,7 @@ export function render_markdown(d: DiffResult): string {
 		if (where.length > MAX_ROWS)
 			lines.push('', `${where.length - MAX_ROWS} more lines are in the JSON result.`);
 		lines.push('', '</details>', '');
+		lines.push(...package_table(d, new Set(flagged.map((c) => c.case))));
 	}
 	lines.push(...render_measure(d));
 	if (d.unstable.length > 0) {
