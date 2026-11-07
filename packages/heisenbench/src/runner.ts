@@ -21,6 +21,7 @@ import type { CaseReport, Report } from './report.ts';
 import { package_shares } from './identity.ts';
 import { CaseCache, RUN_LAYER, run_incremental } from './cache/index.ts';
 import type { CaseWatch } from './cache/index.ts';
+import { svelte_output } from './loader/svelte.ts';
 
 export interface RunOptions {
 	files: string[];
@@ -201,7 +202,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 				{
 					root,
 					deps: opts.deps ?? true,
-					svelte: opts.svelte ?? 'server',
+					svelte: svelte_output(opts.svelte),
 					fresh: opts.fresh !== false
 				},
 				rt,

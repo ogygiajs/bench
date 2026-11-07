@@ -30,6 +30,8 @@ import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
 import { needs_bench_repo, own_file } from './own.ts';
 import { CONDITIONS_ENV, parse_conditions, register_conditions } from './loader/conditions.ts';
+import { SVELTE_ENV } from './loader/svelte.ts';
+import type { SvelteOutput } from './loader/svelte.ts';
 import { blame_command } from './blame/cli.ts';
 import { mutate_command } from './mutation/cli.ts';
 import { prove_command } from './prove/cli.ts';
@@ -51,6 +53,10 @@ Counting (the counting build)
       [--source-from sha]   these bench files on that commit's code: a repo's first PR, whose
                             base has no bench files yet (files the commit lacks come from disk)
       [--cache dir]   reuse the counts of every case whose code and inputs did not change
+      [--svelte client]   .svelte compiled as client output (mount, hydrate, updates on a DOM
+                          a preload brings), with the browser export condition
+      [--append]   add these cases to the report already in --out (same commit): a server
+                   run and a client run as one report
       [--cache-verify n]   count n reused cases again; a difference fails the case (a cache bug)
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
@@ -176,7 +182,8 @@ Every command that loads bench files (run, health, growth, search, audit, time, 
 prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
 process it starts (resolve hooks for path aliases, Vite-only modules, globals the code expects),
 and --conditions <name>[,name]: export conditions the code under test resolves packages with, as
-its bundler does (svelte for a Svelte project; Heisenbench's own imports keep Node's). Relative
+its bundler does (svelte for a Svelte project; Heisenbench's own imports keep Node's), and
+--svelte client|server: the output .svelte files compile to (default server). Relative
 imports of TypeScript sources (./x.js for x.ts, ./x for x.ts or x/index.ts), and imports with no
 extension inside a package (./helpers for helpers.js), resolve without one.
 
@@ -314,14 +321,15 @@ interface Spec {
 	switches?: readonly string[];
 }
 
-const BENCH = ['root', 'filter', 'out', 'deps', 'sha', 'import', 'conditions'];
+const BENCH = ['root', 'filter', 'out', 'deps', 'sha', 'import', 'conditions', 'svelte'];
 const MANY = Number.POSITIVE_INFINITY;
 
 const SPECS: Record<string, Spec> = {
 	run: {
 		values: [...BENCH, 'state', 'measure', 'time-ms', 'source-from', 'cache', 'cache-verify'],
 		args: [1, MANY],
-		files: true
+		files: true,
+		switches: ['append']
 	},
 	diff: {
 		values: [
@@ -357,7 +365,8 @@ const SPECS: Record<string, Spec> = {
 			'out',
 			'md',
 			'import',
-			'conditions'
+			'conditions',
+			'svelte'
 		],
 		args: [2, 2],
 		files: true
@@ -434,7 +443,18 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	time: {
-		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md', 'import', 'conditions'],
+		values: [
+			'base',
+			'pr',
+			'repeats',
+			'time-ms',
+			'filter',
+			'out',
+			'md',
+			'import',
+			'conditions',
+			'svelte'
+		],
 		args: [1, MANY]
 	},
 	// app reports, or `import` and production profiles
@@ -447,7 +467,7 @@ const SPECS: Record<string, Spec> = {
 	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
 	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
 	record: {
-		values: ['targets', 'root', 'out', 'import', 'conditions'],
+		values: ['targets', 'root', 'out', 'import', 'conditions', 'svelte'],
 		args: [1, MANY],
 		files: true
 	},
@@ -539,7 +559,8 @@ const SPECS: Record<string, Spec> = {
 			'proposals',
 			'model',
 			'import',
-			'conditions'
+			'conditions',
+			'svelte'
 		],
 		args: [2, 2],
 		switches: ['propose', 'send-inputs']
@@ -745,7 +766,8 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	check_dirs(cmd, flags);
-	conditions(flags.get('conditions'));
+	const svelte = svelte_flag(flags.get('svelte'));
+	conditions(flags.get('conditions'), svelte);
 	await preload(flags.get('import'));
 	if (cmd === 'run') {
 		const deps = deps_of(flags.get('deps'), true);
@@ -753,11 +775,15 @@ async function main(argv: string[]): Promise<number> {
 		// the plain-build layers load the working tree's files, not the commit's
 		if (source_from !== undefined && flags.has('measure'))
 			throw new UsageError('--source-from counts only: it takes no --measure');
+		const out = flags.get('out') ?? 'heisenbench-report.json';
+		// read before the run writes it: the cases of an earlier run this one adds to
+		const before = flags.has('append') && existing_report_text(out) !== null ? read_report(out) : null;
 		const report = await run_benches({
 			files: positional,
 			root: flags.get('root'),
-			out: flags.get('out') ?? 'heisenbench-report.json',
+			out,
 			deps,
+			svelte,
 			filter: flags.get('filter'),
 			sha: flags.get('sha') ?? null,
 			fresh: flags.get('state') !== 'shared',
@@ -768,6 +794,7 @@ async function main(argv: string[]): Promise<number> {
 		});
 		if (report.cache) print_cache(report.cache, 'run');
 		await measure_run(report, positional, flags);
+		if (before) append_report(out, before);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
 			console.error(
 				'heisenbench run: no bench cases (no file calls bench(), or --filter matched none)'
@@ -845,6 +872,7 @@ async function main(argv: string[]): Promise<number> {
 			// engine health stays on the project's own code: what V8 does with a dependency is not
 			// the project's to fix
 			deps: deps_of(flags.get('deps'), cmd !== 'health'),
+			svelte,
 			log: (l: string) => console.log(l)
 		};
 		const num = (k: string): number | undefined =>
@@ -959,14 +987,58 @@ async function preload(list: string | undefined): Promise<void> {
 }
 
 /**
+ * `run --append`: the cases of the report already in `out` (`before`, the same commit and prices)
+ * kept next to the ones this run wrote there, so a server run and a client run of one commit are
+ * one report for `diff`. A case of the same name is this run's; its other sections stay.
+ */
+function append_report(out: string, before: Report): void {
+	const now = read_report(out);
+	if (before.git.sha !== now.git.sha || before.prices.hash !== now.prices.hash)
+		throw new UsageError(
+			`--append: ${out} was counted at another commit or with other prices; count both runs at one commit`
+		);
+	const names = new Set(now.cases.map((c) => c.name));
+	const files = new Set([
+		...now.cases.map((c) => c.file),
+		...(now.load_errors ?? []).map((e) => e.file)
+	]);
+	const load_errors = [
+		...(before.load_errors ?? []).filter((e) => !files.has(e.file)),
+		...(now.load_errors ?? [])
+	];
+	const merged: Report = {
+		...before,
+		...now,
+		cases: [...before.cases.filter((c) => !names.has(c.name)), ...now.cases]
+	};
+	if (load_errors.length > 0) merged.load_errors = load_errors;
+	else delete merged.load_errors;
+	writeFileSync(out, JSON.stringify(merged, null, '\t') + '\n');
+	console.log(`appended to ${out}: ${merged.cases.length} cases in all`);
+}
+
+/** `--svelte client|server`: the output `.svelte` files compile to, for this command (loader/svelte.ts). */
+function svelte_flag(value: string | undefined): SvelteOutput | undefined {
+	if (value === undefined) return undefined;
+	if (value !== 'client' && value !== 'server')
+		throw new UsageError(`--svelte takes client or server, not ${JSON.stringify(value)}`);
+	process.env[SVELTE_ENV] = value;
+	return value;
+}
+
+/**
  * `--conditions svelte,browser`: the export conditions the code under test resolves packages with
  * (loader/conditions.ts), in this process and, through NODE_OPTIONS, in every process it starts.
- * Before `--import`, so a preload's own imports get them too.
+ * Before `--import`, so a preload's own imports get them too. Client output adds `browser`, as a
+ * browser bundle resolves: `svelte` is then Svelte's client runtime, where `mount` and `hydrate` work.
  */
-function conditions(list: string | undefined): void {
-	if (list === undefined) return;
-	const names = parse_conditions(list);
-	if (names.length === 0) throw new UsageError('--conditions takes names, like svelte,browser');
+function conditions(list: string | undefined, svelte: SvelteOutput | undefined): void {
+	if (list !== undefined && parse_conditions(list).length === 0)
+		throw new UsageError('--conditions takes names, like svelte,browser');
+	const names = parse_conditions(
+		[list ?? '', svelte === 'client' ? 'browser' : ''].filter(Boolean).join(',')
+	);
+	if (names.length === 0) return;
 	process.env[CONDITIONS_ENV] = names.join(',');
 	register_conditions(names);
 	const file = own_file('loader/conditions');

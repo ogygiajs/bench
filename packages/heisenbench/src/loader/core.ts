@@ -18,6 +18,7 @@ import {
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { load_prices } from '../prices.ts';
 import { OWN_DIR } from '../own.ts';
+import { svelte_output } from './svelte.ts';
 
 export interface LoaderConfig {
 	/** Report paths are relative to this directory. */
@@ -339,7 +340,7 @@ export class LoaderCore {
 		let input_map: SourceMapInput | null = null;
 		let commonjs = false;
 		if (is_svelte_module(filename)) {
-			const out = compile_svelte(source, filename, this.config.svelte ?? 'server');
+			const out = compile_svelte(source, filename, svelte_output(this.config.svelte));
 			code = out.code;
 			input_map = out.map;
 		} else if (format === 'module-typescript' || (format == null && is_ts(filename))) {
