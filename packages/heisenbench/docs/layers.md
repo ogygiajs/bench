@@ -342,6 +342,52 @@ steps is not: the step table already shows that. A side that `shrinks` or is `ir
 under "Steps that fell as the input grew", never a finding. CI grows only the cases that declare
 `scale` (`--scaled on`).
 
+### Growth odds
+
+The class is one name. The odds say how sure it is: `odds quadratic 93%, n log n 7%`. Counts are
+exact, but three sizes leave room: the doubt is about which curve made the points, not about noise
+in them. `src/growth/odds.ts` scores every shape as a model of the points and turns the scores into
+odds; it is a fixed sum on fixed grids, so the same points give the same odds, byte for byte.
+
+- **Models.** Each shape is `steps = scale × (a fixed part + its own term)`, its own term at least
+  1% of the steps at the largest size. When no single term fits, n log n and the shapes past it
+  also get a version with a linear part beside their own term (a quadratic loop inside a linear
+  pass). On three sizes that version fits any rising points exactly, so odds that rest on it count
+  as a close call (below).
+- **Misfit.** Relative, on log steps: 1.5% (the terms are simple functions of the scale factor;
+  real code's are close, not equal), plus one step of rounding for tiny counts.
+- **Evidence.** The likelihood averaged over each model's shares (and over the power of
+  `polynomial`, the rate of `exponential`), the overall scale integrated out exactly. A model with
+  more parts spreads its prior over more outcomes, so it wins only by fitting better. No BIC
+  penalty is added on top.
+- **Prior.** How often each shape shows up (`src/growth/priors.ts`): until a labeled dataset
+  exists, the classes of the 1,116 functions growth from recorded calls decided on ogygia's main
+  (mostly constant, log and linear; about 1 in 70 superlinear), each given half a count more.
+  `--growth-prior file.json` (shape → weight) replaces it.
+- **Late start.** A curve exactly flat up to a measured size and rising from there (a branch that
+  starts once the input is long enough) is its own model, with a prior of 20%. Seen on one rising
+  step, the shape after it is mostly the prior's.
+- **Another path.** When a function that ran at one size does not run at the next, the scaled
+  input took another path from there (it stopped being valid and the code returns early): the
+  odds are read from that size up (`odds_from`), with three sizes or more there (else none, and
+  active sizing counts one more).
+- **Noisy points** (recorded calls of different inputs) get odds from the power: log steps over
+  log size fitted with Student-t errors (a call far off the line weighs little), each shape a band
+  of powers with its prior spread over the band. The smallest calls pull the line most: when they
+  cost under a quarter of what the other calls' line says (a trivial input that returns at once),
+  they are left out.
+
+**Active sizing.** When the likeliest shape has under 90%, one more size between the two largest
+is counted (30x between 10x and 100x, 8x between 4x and 16x), under the same cap, and the odds are
+read again: `odds quadratic >99% (with 30x)`. The probe is kept apart (`probe`): the class stays
+fitted on the sizes asked, so it never moves the class a PR is compared on.
+
+**Gate.** A change to quadratic or worse is a finding only with at least 90% odds of superlinear
+growth on the PR side (`--superlinear-odds`); below, it is listed under "Class changes the odds do
+not back". A report from before the odds keeps the class rule alone. The planted cases are in
+`test/growth-odds.test.ts`, with bench #24's findings and false alarms on ogygia as a key
+(`test/growth-odds-key`).
+
 ## Growth from recorded calls
 
 A function nobody wrote a growth case for still has a size curve: the calls its tests make.
@@ -377,9 +423,11 @@ with the cap and the ladder above, and fitted exactly.
 
 A function **grows** (a finding) when its own steps are superlinear, or when a function its calls
 spend 5% or more of their steps in at the largest size is: the part that grows fastest is the part
-that takes over at sizes no test reached. Superlinear on recorded points means a power of 1.5 or
-more, r² of 0.8 or more and a rising work per unit, all with any one call left out (one trivial
-call at the smallest size does not make a line steep); on scaled points, quadratic or worse.
+that takes over at sizes no test reached. Superlinear means at least 90% odds of quadratic or worse
+(`--superlinear-odds`; [growth odds](#growth-odds)), with 1,000 steps or more at the largest size.
+On recorded points the power is fitted with Student-t errors, so one trivial call at the smallest
+size does not make a line steep, and the spread of sizes must hold with any one call left out and
+the most work sit at the largest size. On scaled points a close call counts 8x as well.
 
 ogygia at `57882cc`, with the `scale` of `transformHost: a route page as its island count grows`
 removed: its tests and bench cases called `transformHost` 280 times, on sources of 157 to 7,956

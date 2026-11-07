@@ -6,17 +6,21 @@ import { revive } from '../coverage/portable.ts';
 import { code } from '../md.ts';
 import { build_case_report } from '../report.ts';
 import type { CaseReport } from '../report.ts';
-import {
-	MIN_R2,
-	SUPERLINEAR_POWER,
-	fit_growth,
-	fit_noisy,
-	growth_label,
-	is_superlinear
-} from './fit.ts';
+import { MIN_R2, fit_growth, fit_noisy, growth_label, is_superlinear } from './fit.ts';
 import type { GrowthClass } from './fit.ts';
-import { TOP_FUNCTIONS, count_ladder, round3, where_steps } from './index.ts';
+import {
+	TOP_FUNCTIONS,
+	count_ladder,
+	count_probe,
+	points_odds,
+	ran_in,
+	round3,
+	where_steps,
+	with_probe
+} from './index.ts';
 import type { GrowthPoint } from './index.ts';
+import { close_call, odds_superlinear, odds_words, path_from } from './odds.ts';
+import type { GrowthOdds, OddsOptions } from './odds.ts';
 import { Measurer, load_cases } from './measure.ts';
 import type { LoadOptions } from './measure.ts';
 import { arg_sizes, scale_input, size_kind } from './scale.ts';
@@ -39,9 +43,14 @@ import { arg_sizes, scale_input, size_kind } from './scale.ts';
  *
  * A function GROWS (a finding) when its own inclusive steps are superlinear, or when a function
  * its calls spend at least MIN_SHARE of their steps in at the largest size is: the part that grows
- * fastest is the part that takes over at sizes the tests never reached. Superlinear on noisy
- * points means fit_noisy's rule (power >= 1.5, the power law explains the points, and the work
- * per input unit rises with size); on scaled points, quadratic or worse.
+ * fastest is the part that takes over at sizes the tests never reached. Superlinear means the odds
+ * of quadratic or worse (odds.ts) are at least SUPERLINEAR_ODDS (`--superlinear-odds`), with
+ * enough work at the largest size to matter (MIN_STEPS) and, on noisy points, the spread kept with
+ * any one call left out and the most work at the largest size.
+ *
+ * Scaled points get active sizing: when the odds of the curve, or of a part that could make it a
+ * finding, are a close call, one more factor between the two largest (8x) is counted and the odds
+ * are read again with it (`probe`; the class and `factors` stay those of 1x / 4x / 16x).
  */
 
 export const RECORDED_GROWTH_SCHEMA = 'heisenbench-recorded-growth/1';
@@ -78,6 +87,13 @@ export interface RecordedPart {
 	/** Its share of the steps at the largest point. */
 	share: number;
 	superlinear: boolean;
+	/**
+	 * Odds of each shape. Scaled: read only for a part that could make a finding (MIN_STEPS and
+	 * MIN_SHARE at the largest point); absent on the others, which are never superlinear.
+	 */
+	odds?: GrowthOdds | null;
+	/** Its self steps at the probe size, when one was counted. */
+	probe_steps?: number;
 	/** Its lines with the most steps at the largest point (`module:line`). */
 	lines?: string[];
 }
@@ -115,6 +131,12 @@ export interface RecordedGrowth {
 	r2?: number;
 	/** The curve decides a class. */
 	confident: boolean;
+	/** Odds of each shape (null: too few points, or steps that fall). */
+	odds?: GrowthOdds | null;
+	/** Scaled: the one more factor active sizing counted for the odds (not in `factors`). */
+	probe?: { factor: number; size: number; steps: number };
+	/** Scaled: the factor the odds were read from, when the code took another path below it. */
+	odds_from?: number;
 	/** Its own steps grow quadratically or worse (see the rule above). */
 	superlinear: boolean;
 	/** A finding: it, or a large part of its work, grows superlinearly. */
@@ -154,6 +176,8 @@ export interface RecordedGrowthOptions extends Omit<LoadOptions, 'files' | 'filt
 	cap?: number;
 	/** Counted steps all replays may spend together; past it no input is scaled (default none). */
 	budget_steps?: number;
+	/** Prior and bar of the growth odds. */
+	odds?: OddsOptions;
 	log?: (line: string) => void;
 }
 
@@ -282,15 +306,37 @@ function steep(xs: number[], ys: number[], fit: ReturnType<typeof fit_noisy>): b
 }
 
 /**
- * Exact points of one input scaled: quadratic or worse, and steep where it was seen (a curve that
- * is flat, then rises at the last size, fits `a + b * k^3` with a large `a`; its last step says
- * linear), with enough work at the largest size to matter.
+ * Exact points of one input scaled: the odds say quadratic or worse (a curve flat up to a size and
+ * rising from there, or one whose code took another path at a size, reads its odds from there:
+ * odds.ts), with enough work at the largest size to matter.
  */
-function steep_exact(ks: number[], ys: number[], cls: GrowthClass): boolean {
-	const n = ys.length;
-	if (!is_superlinear(cls) || n < 2 || !(ys[n - 2] > 0) || ys[n - 1] < MIN_STEPS) return false;
-	const top = Math.log(ys[n - 1] / ys[n - 2]) / Math.log(ks[n - 1] / ks[n - 2]);
-	return cls === 'exponential' || top >= SUPERLINEAR_POWER;
+function steep_exact(
+	ys: number[],
+	odds: GrowthOdds | null | undefined,
+	opts: OddsOptions
+): boolean {
+	return ys[ys.length - 1] >= MIN_STEPS && odds_superlinear(odds, opts);
+}
+
+/** A row over `points` with the probe's value put in size order. */
+function with_steps(
+	points: readonly GrowthPoint[],
+	row: readonly number[],
+	probe: GrowthPoint,
+	value: number
+): number[] {
+	let at = 0;
+	while (at < points.length && points[at].k < probe.k) at++;
+	const out = [...row];
+	out.splice(at, 0, value);
+	return out;
+}
+
+/** The steps of function `id` in a report (0 when it did not run). */
+function self_steps(report: CaseReport, id: string): number {
+	let s = 0;
+	for (const f of report.functions) if (f.id === id) s += f.self_steps;
+	return s;
 }
 
 function grows(g: RecordedGrowth): boolean {
@@ -304,7 +350,8 @@ async function grow_recorded(
 	r: FunctionRecord,
 	fn: Function,
 	cap: number,
-	budget: { left: number; spent: number }
+	budget: { left: number; spent: number },
+	odds: OddsOptions
 ): Promise<RecordedGrowth> {
 	const base: Base = { id: r.id, calls: r.calls, call_sizes: r.sizes ?? null };
 	const samples = r.samples.filter((s) => !s.threw);
@@ -344,7 +391,8 @@ async function grow_recorded(
 		if (reason === null) {
 			fit = fit_noisy(
 				xs,
-				points.map((p) => p.steps)
+				points.map((p) => p.steps),
+				odds
 			);
 			// a flat curve explains nothing and needs not to: its power says it
 			if (fit.r2 < MIN_R2 && Math.abs(fit.power) >= 0.5) reason = 'noisy';
@@ -381,6 +429,7 @@ async function grow_recorded(
 			power: fit.power,
 			r2: fit.r2,
 			confident: true,
+			odds: fit.odds,
 			superlinear: steep(
 				xs,
 				pick.points.map((p) => p.steps),
@@ -392,13 +441,15 @@ async function grow_recorded(
 				const ran = steps.map((s, i) => [xs[i], s] as const).filter(([, s]) => s > 0);
 				const f = fit_noisy(
 					ran.map(([x]) => x),
-					ran.map(([, s]) => s)
+					ran.map(([, s]) => s),
+					odds
 				);
 				return {
 					id,
 					steps,
 					class: f.class,
 					power: f.power,
+					odds: f.odds,
 					share: total > 0 ? round3(steps[steps.length - 1] / total) : 0,
 					superlinear:
 						steep(
@@ -425,7 +476,7 @@ async function grow_recorded(
 			budget.left <= budget.spent ? `${why}; the replay budget is spent` : why
 		);
 	}
-	return grow_scaled(m, base, largest.s, fn, cap, budget, why);
+	return grow_scaled(m, base, largest.s, fn, cap, budget, why, odds);
 }
 
 function undecided(base: Base, source: RecordedGrowth['source'], reason: string): RecordedGrowth {
@@ -452,7 +503,8 @@ async function grow_scaled(
 	fn: Function,
 	cap: number,
 	budget: { left: number; spent: number },
-	why: string
+	why: string,
+	odds: OddsOptions
 ): Promise<RecordedGrowth> {
 	const sizes = s.sizes ?? arg_sizes(s.args).sizes;
 	const tried: RecordedGrowth[] = [];
@@ -491,6 +543,42 @@ async function grow_scaled(
 		const valid = fit.class !== 'shrinks' && fit.class !== 'irregular';
 		const reports = points.map((p) => p.report);
 		const total = total_at_last(reports);
+		const top = where_steps(points).top ?? [];
+		const shares = top.map((f) => (total > 0 ? round3(f.steps[f.steps.length - 1] / total) : 0));
+		// the odds of the curve and of each part that could make it a finding, over `pts`
+		const read = (pts: readonly GrowthPoint[], probe: GrowthPoint | null) => {
+			const from = path_from(pts.map((p) => ran_in(p.report)));
+			const at = (row: number[], id: string) =>
+				probe ? with_steps(points, row, probe, self_steps(probe.report, id)) : row;
+			return {
+				from,
+				own: points_odds(
+					pts,
+					pts.map((p) => p.steps),
+					from,
+					odds
+				),
+				parts: top.map((f, j) =>
+					f.steps[f.steps.length - 1] >= MIN_STEPS && shares[j] >= MIN_SHARE
+						? points_odds(pts, at(f.steps, f.id), from, odds)
+						: undefined
+				)
+			};
+		};
+		let probe: GrowthPoint | null = null;
+		let read_at = read(points, null);
+		// a close call, or too few sizes left after another path
+		const open = (o: GrowthOdds | null | undefined) =>
+			close_call(o) || (o === null && read_at.from > 0);
+		if (valid && budget.left > budget.spent && (open(read_at.own) || read_at.parts.some(open))) {
+			try {
+				probe = await count_probe(points, count);
+			} catch {
+				probe = null; // the probe size is not valid input for it
+			}
+			if (probe) read_at = read(with_probe(points, probe), probe);
+		}
+		const all = with_probe(points, probe);
 		const g: RecordedGrowth = {
 			...base,
 			source: 'scaled',
@@ -501,36 +589,38 @@ async function grow_scaled(
 			class: fit.class,
 			power: fit.power,
 			confident: valid,
+			odds: read_at.own,
 			superlinear:
 				valid &&
 				steep_exact(
-					points.map((p) => p.k),
 					points.map((p) => p.steps),
-					fit.class
+					read_at.own,
+					odds
 				),
 			grows: false,
-			parts: (where_steps(points).top ?? []).map((f) => ({
-				id: f.id,
-				steps: f.steps,
-				class: f.class,
-				power:
-					f.power ??
-					fit_growth(
-						points.map((p) => p.k),
-						f.steps
-					).power,
-				share: total > 0 ? round3(f.steps[f.steps.length - 1] / total) : 0,
-				superlinear:
-					valid &&
-					steep_exact(
-						points.map((p) => p.k),
-						f.steps,
-						f.class
-					),
-				lines: part_lines(reports[reports.length - 1], f.id)
-			})),
+			parts: top.map((f, j) => {
+				const part: RecordedPart = {
+					id: f.id,
+					steps: f.steps,
+					class: f.class,
+					power:
+						f.power ??
+						fit_growth(
+							points.map((p) => p.k),
+							f.steps
+						).power,
+					share: shares[j],
+					superlinear: valid && steep_exact(f.steps, read_at.parts[j], odds),
+					lines: part_lines(reports[reports.length - 1], f.id)
+				};
+				if (read_at.parts[j] !== undefined) part.odds = read_at.parts[j];
+				if (probe) part.probe_steps = self_steps(probe.report, f.id);
+				return part;
+			}),
 			lines: top_lines(reports[reports.length - 1])
 		};
+		if (probe) g.probe = { factor: probe.k, size: probe.input_size, steps: probe.steps };
+		if (read_at.from > 0) g.odds_from = all[read_at.from].k;
 		if (!valid) g.reason = `${why}; ${growth_label(fit.class)}`;
 		if (capped_at !== null) g.capped_at = capped_at;
 		g.grows = grows(g);
@@ -593,7 +683,7 @@ export async function run_recorded_growth(o: RecordedGrowthOptions): Promise<Rec
 			skip(mod ? 'not replayable' : 'module does not load');
 			continue;
 		}
-		const g = await grow_recorded(m, r, fn, cap, budget);
+		const g = await grow_recorded(m, r, fn, cap, budget, o.odds ?? {});
 		report.functions.push(g);
 		log(recorded_line(g));
 	}
@@ -625,7 +715,18 @@ function seen_words(g: RecordedGrowth): string {
 	const sizes = g.points.map((p) => p.size);
 	if (g.source === 'recorded')
 		return `${seen}; ${g.points.length} replayed, sizes ${n(sizes[0])}..${n(sizes[sizes.length - 1])}`;
-	return `${seen}; the largest scaled ${g.factors!.map((k) => `${k}x`).join(' / ')} (sizes ${n(sizes[0])}..${n(sizes[sizes.length - 1])})${g.capped_at !== undefined ? `, exceeded the cap at ${g.capped_at}x` : ''}`;
+	const probe = g.probe ? `, and ${g.probe.factor}x for the odds` : '';
+	const from =
+		g.odds_from !== undefined
+			? `, odds from ${g.odds_from}x (the code took another path below)`
+			: '';
+	return `${seen}; the largest scaled ${g.factors!.map((k) => `${k}x`).join(' / ')} (sizes ${n(sizes[0])}..${n(sizes[sizes.length - 1])})${g.capped_at !== undefined ? `, exceeded the cap at ${g.capped_at}x` : ''}${probe}${from}`;
+}
+
+/** `, odds quadratic 97%, n log n 3%`, or '' without odds. */
+function odds_tail(o: GrowthOdds | null | undefined): string {
+	const w = odds_words(o);
+	return w ? `, odds ${w}` : '';
 }
 
 /** The superlinear parts that make `g` a finding (itself first when it is superlinear). */
@@ -636,14 +737,14 @@ export function causes(g: RecordedGrowth): RecordedPart[] {
 /** One result in words. */
 export function recorded_text(g: RecordedGrowth, md = false): string {
 	const c = md ? code : (s: string) => s;
-	const own = `${c(g.id)} grows ${shape(g.class, g.power)} in ${argument_words(g)}`;
+	const own = `${c(g.id)} grows ${shape(g.class, g.power)} in ${argument_words(g)}${odds_tail(g.odds)}`;
 	const parts = causes(g).filter((p) => p.id !== g.id);
 	const inside =
 		parts.length > 0
 			? `; its steps in ${parts
 					.map(
 						(p) =>
-							`${c(p.id)} grow ${shape(p.class, p.power)} (${Math.round(p.share * 100)}% at the largest size)`
+							`${c(p.id)} grow ${shape(p.class, p.power)} (${Math.round(p.share * 100)}% at the largest size${odds_tail(p.odds)})`
 					)
 					.join(', ')}`
 			: '';
@@ -656,7 +757,7 @@ export function recorded_line(g: RecordedGrowth): string {
 	if (g.grows) {
 		for (const p of g.parts ?? [])
 			lines.push(
-				`           ${p.id}  ${shape(p.class, p.power)}, ${Math.round(p.share * 100)}% at the largest (${p.steps.map((s) => Math.round(s)).join(' / ')} self steps)`
+				`           ${p.id}  ${shape(p.class, p.power)}, ${Math.round(p.share * 100)}% at the largest (${p.steps.map((s) => Math.round(s)).join(' / ')} self steps${odds_tail(p.odds)})`
 			);
 		for (const l of g.lines ?? [])
 			lines.push(`           ${l.at}  ${Math.round(l.share * 100)}% (${n(l.steps)} steps)`);
@@ -669,6 +770,8 @@ export interface RecordedCause {
 	cause: string;
 	class: GrowthClass | null;
 	power: number;
+	/** Its odds, from the finding with the steepest power. */
+	odds?: GrowthOdds | null;
 	/** The recorded functions it makes grow. */
 	findings: RecordedGrowth[];
 }
@@ -680,20 +783,27 @@ export interface RecordedCause {
  */
 export function recorded_findings(r: RecordedGrowthReport): RecordedCause[] {
 	const groups = new Map<string, RecordedCause>();
-	const add = (id: string, cls: GrowthClass | null, power: number, g: RecordedGrowth) => {
+	const add = (
+		id: string,
+		cls: GrowthClass | null,
+		power: number,
+		odds: GrowthOdds | null | undefined,
+		g: RecordedGrowth
+	) => {
 		let grp = groups.get(id);
-		if (!grp) groups.set(id, (grp = { cause: id, class: cls, power, findings: [] }));
+		if (!grp) groups.set(id, (grp = { cause: id, class: cls, power, odds, findings: [] }));
 		if (power > grp.power) {
 			grp.class = cls;
 			grp.power = power;
+			grp.odds = odds;
 		}
 		grp.findings.push(g);
 	};
 	for (const g of r.functions) {
 		if (!g.grows) continue;
 		const parts = causes(g);
-		if (parts.length === 0) add(g.id, g.class, g.power, g);
-		for (const p of parts) add(p.id, p.class, p.power, g);
+		if (parts.length === 0) add(g.id, g.class, g.power, g.odds, g);
+		for (const p of parts) add(p.id, p.class, p.power, p.odds, g);
 	}
 	return [...groups.values()].sort(
 		(a, b) => b.findings.length - a.findings.length || (a.cause < b.cause ? -1 : 1)
@@ -717,7 +827,7 @@ export function render_recorded_growth(r: RecordedGrowthReport, max = 15): strin
 	);
 	for (const grp of groups.slice(0, max)) {
 		lines.push(
-			`- ${code(grp.cause)} grows ${shape(grp.class, grp.power)}, under ${grp.findings.length === 1 ? 'one recorded function' : `${grp.findings.length} recorded functions`}:`
+			`- ${code(grp.cause)} grows ${shape(grp.class, grp.power)}${odds_tail(grp.odds)}, under ${grp.findings.length === 1 ? 'one recorded function' : `${grp.findings.length} recorded functions`}:`
 		);
 		for (const g of grp.findings.slice(0, 3)) {
 			const share = g.parts?.find((p) => p.id === grp.cause)?.share;

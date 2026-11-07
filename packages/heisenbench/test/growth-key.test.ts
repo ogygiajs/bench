@@ -68,6 +68,10 @@ test('growth: the base is linear, counted exactly at 1x / 10x / 100x', async () 
 	assert.equal(sum.scaler, 'case');
 	assert.equal(sum.class, 'linear');
 	assert.ok(sum.steps[2] > 90 * sum.steps[0] * 0.9);
+	for (const c of [rank, sum]) {
+		assert.equal(c.odds?.odds[0].shape, 'linear', JSON.stringify(c.odds));
+		assert.ok(c.odds!.odds[0].p >= 0.95, JSON.stringify(c.odds));
+	}
 });
 
 for (const name of readdirSync(GROWTH).filter((d) => d !== 'base')) {
@@ -81,6 +85,12 @@ for (const name of readdirSync(GROWTH).filter((d) => d !== 'base')) {
 		const [b, p] = await Promise.all([growth_base(), cli(dir, ['growth']).then((r) => r.growth!)]);
 		const d = diff_growth(b, p);
 		const shown = JSON.stringify(d.findings);
+		// every planted case keeps its class in the odds, with at least 95% on it
+		for (const c of p.cases) {
+			assert.equal(c.odds?.odds[0].shape, c.class, `${c.name}: ${JSON.stringify(c.odds)}`);
+			assert.ok(c.odds!.odds[0].p >= 0.95, `${c.name}: ${JSON.stringify(c.odds)}`);
+		}
+		assert.deepEqual(d.unsure, [], 'a planted change is backed by its odds');
 		assert.deepEqual(
 			d.findings.map((f) => ({ case: f.case, base: f.base, pr: f.pr })),
 			expect.flags,

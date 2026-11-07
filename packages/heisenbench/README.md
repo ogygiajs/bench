@@ -287,7 +287,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
 | `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
-| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
+| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input, the fitted curve class and the odds of each shape.                               |
 | `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
 | `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
 | `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.              |

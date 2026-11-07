@@ -1,8 +1,19 @@
 import type { BenchCase } from '../bench.ts';
 import { pair_cases } from '../cases.ts';
 import { code } from '../md.ts';
-import { GROWTH_RANK, fit_growth, growth_label } from './fit.ts';
+import { GROWTH_RANK, fit_growth, growth_label, is_superlinear } from './fit.ts';
 import type { GrowthClass } from './fit.ts';
+import {
+	SUPERLINEAR_ODDS,
+	close_call,
+	exact_odds,
+	odds_superlinear,
+	odds_words,
+	path_from,
+	pct,
+	probe_size
+} from './odds.ts';
+import type { GrowthOdds, OddsOptions } from './odds.ts';
 import { Measurer, load_cases } from './measure.ts';
 import type { LoadOptions } from './measure.ts';
 import { input_size, scale_input } from './scale.ts';
@@ -19,6 +30,12 @@ import type { Units } from '../units.ts';
  * quadratic) is a finding; the same class with more steps is not (that is the step diff's job).
  * A size whose run goes past the step cap (GROWTH_CAP) is not counted: the case "exceeded the cap
  * at" that size and is fitted on a doubling ladder of smaller sizes (count_ladder).
+ *
+ * Each case also has the odds of each shape (odds.ts). When the likeliest has under CLOSE_CALL, one
+ * more size between the two largest is counted (`probe`: 30x between 10x and 100x), under the same
+ * cap, and the odds are read again with it. The class stays fitted on the sizes asked, so a probe
+ * never moves the class a PR is compared on. A change to quadratic or worse is a finding only with
+ * at least SUPERLINEAR_ODDS of superlinear growth on the PR side (`unsure` below that).
  */
 
 export const GROWTH_SCHEMA = 'heisenbench-growth/1';
@@ -54,6 +71,12 @@ export interface GrowthCase {
 	top?: GrowthFunction[];
 	/** Self steps per package at each size (`own code` for the project's), most at the largest first. */
 	packages?: Array<{ package: string; steps: number[] }>;
+	/** Odds of each shape (null: steps that fall, or too few sizes). Absent in older reports. */
+	odds?: GrowthOdds | null;
+	/** The one more size active sizing counted for the odds (not in `sizes`). */
+	probe?: { size: number; input_size: number; steps: number };
+	/** The size the odds were read from, when the code took another path below it (odds.ts path_from). */
+	odds_from?: number;
 }
 
 export interface GrowthFunction {
@@ -79,6 +102,8 @@ export interface GrowthOptions extends LoadOptions {
 	cap?: number;
 	/** Only the cases that declare their own `scale` (default: every case, the rest scaled generically). */
 	scaled?: boolean;
+	/** Prior and bar of the growth odds. */
+	odds?: OddsOptions;
 	log?: (line: string) => void;
 }
 
@@ -174,12 +199,65 @@ export function where_steps(points: readonly GrowthPoint[]): Pick<GrowthCase, 't
 	};
 }
 
+/** The functions with self steps in a report. */
+export function ran_in(report: CaseReport): Set<string> {
+	const out = new Set<string>();
+	for (const f of report.functions) if (f.self_steps > 0) out.add(f.id);
+	return out;
+}
+
+/** Counted points with the one more size of active sizing, in size order. */
+export function with_probe(
+	points: readonly GrowthPoint[],
+	probe: GrowthPoint | null
+): GrowthPoint[] {
+	return probe ? [...points, probe].sort((a, b) => a.k - b.k) : [...points];
+}
+
+/**
+ * The odds of a curve over counted points, read from where their last path starts (odds.ts
+ * path_from); `steps` is the curve's value at each point (a case's steps, or one function's).
+ */
+export function points_odds(
+	points: readonly GrowthPoint[],
+	steps: readonly number[],
+	from: number,
+	opts: OddsOptions = {}
+): GrowthOdds | null {
+	// after another path, two sizes say only how much the steps rose, not along which curve
+	if (from > 0 && points.length - from < 3) return null;
+	return exact_odds(
+		points.slice(from).map((p) => p.k),
+		steps.slice(from),
+		opts
+	);
+}
+
+/**
+ * Active sizing, for odds that are a close call: one more size between the two largest, counted
+ * under the cap. The probe point, or null (no whole size between, or it went past the cap).
+ */
+export async function count_probe(
+	points: readonly GrowthPoint[],
+	count: (k: number) => Promise<GrowthPoint>
+): Promise<GrowthPoint | null> {
+	const k = probe_size(points.map((p) => p.k));
+	if (k === null || points.some((p) => p.k === k)) return null;
+	try {
+		return await count(k);
+	} catch (e) {
+		if (!(e instanceof StepCapError)) throw e;
+		return null;
+	}
+}
+
 /** Grow one case: the input at every size, counted. */
 export async function grow_case(
 	c: BenchCase,
 	m: Measurer,
 	sizes: number[] = DEFAULT_SIZES,
-	cap = GROWTH_CAP
+	cap = GROWTH_CAP,
+	odds: OddsOptions = {}
 ): Promise<GrowthCase> {
 	const own = c.scale;
 	const out: GrowthCase = {
@@ -233,6 +311,27 @@ export async function grow_case(
 		out.exponent = round3(fit.exponent);
 		if (fit.class === 'polynomial') out.power = fit.power;
 		Object.assign(out, where_steps(points));
+		const read = (pts: readonly GrowthPoint[]) => {
+			const from = path_from(pts.map((p) => ran_in(p.report)));
+			return {
+				from,
+				odds: points_odds(
+					pts,
+					pts.map((p) => p.steps),
+					from,
+					odds
+				)
+			};
+		};
+		const first = read(points);
+		// a close call, or too few sizes left after another path
+		const want = close_call(first.odds) || (first.odds === null && first.from > 0);
+		const probe = want ? await count_probe(points, count) : null;
+		const all = with_probe(points, probe);
+		const r = probe ? read(all) : first;
+		out.odds = r.odds;
+		if (r.from > 0) out.odds_from = all[r.from].k;
+		if (probe) out.probe = { size: probe.k, input_size: probe.input_size, steps: probe.steps };
 	} catch (e) {
 		out.error = e instanceof Error ? e.message : String(e);
 	}
@@ -267,6 +366,16 @@ function growth_lines(g: GrowthCase): string[] {
 	return lines;
 }
 
+/** `; odds quadratic 93%, n log n 7% (with 30x)`, or '' without odds. */
+export function odds_note(g: Pick<GrowthCase, 'odds' | 'probe' | 'odds_from'>): string {
+	if (!g.odds) return '';
+	const extra = [
+		g.probe ? `with ${g.probe.size}x` : '',
+		g.odds_from !== undefined ? `from ${g.odds_from}x, where the code took another path` : ''
+	].filter(Boolean);
+	return `; odds ${odds_words(g.odds)}${extra.length > 0 ? ` (${extra.join('; ')})` : ''}`;
+}
+
 /** `exceeded the cap at 10x, grown on 1x / 2x / 4x / 8x`, or '' when no size was capped. */
 export function capped_words(g: Pick<GrowthCase, 'capped_at' | 'sizes'>): string {
 	if (g.capped_at === undefined) return '';
@@ -281,13 +390,13 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 	const m = new Measurer(opts.root);
 	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
 	for (const c of list) {
-		const g = await grow_case(c, m, sizes, opts.cap);
+		const g = await grow_case(c, m, sizes, opts.cap, opts.odds);
 		report.cases.push(g);
 		log(
 			g.error
 				? `FAILED   ${c.name}: ${g.error}`
 				: [
-						`${g.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${growth_label(g.class, g.power)} (exponent ${g.exponent}; ${g.steps.map((s) => Math.round(s)).join(' / ')} steps${capped_words(g)})`,
+						`${g.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${growth_label(g.class, g.power)} (exponent ${g.exponent}; ${g.steps.map((s) => Math.round(s)).join(' / ')} steps${odds_note(g)}${capped_words(g)})`,
 						...growth_lines(g)
 					].join('\n')
 		);
@@ -312,11 +421,27 @@ export interface GrowthDiff {
 	 * likely not valid input, so no class change is read from it. Shown, never a finding.
 	 */
 	unclear: Array<{ case: string; text: string }>;
+	/**
+	 * A change to quadratic or worse whose odds of superlinear growth are under the bar (PR side):
+	 * shown, never a finding. Absent in diffs from before growth had odds.
+	 */
+	unsure?: Array<{ case: string; text: string }>;
 	failed: string[];
 }
 
-export function diff_growth(base: GrowthReport, pr: GrowthReport): GrowthDiff {
-	const out: GrowthDiff = { findings: [], better: [], same: [], unclear: [], failed: [] };
+export function diff_growth(
+	base: GrowthReport,
+	pr: GrowthReport,
+	opts: OddsOptions = {}
+): GrowthDiff {
+	const out: GrowthDiff = {
+		findings: [],
+		better: [],
+		same: [],
+		unclear: [],
+		unsure: [],
+		failed: []
+	};
 	for (const [b, p] of pair_cases(base.cases, pr.cases).pairs) {
 		if (b.error || p.error || !b.class || !p.class) {
 			out.failed.push(b.name);
@@ -327,12 +452,21 @@ export function diff_growth(base: GrowthReport, pr: GrowthReport): GrowthDiff {
 		const where = top
 			? `; most self steps in ${code(top.id)} (${growth_label(top.class, top.power)})${shares ? `, ${shares}` : ''}`
 			: '';
-		const text = `${code(b.name)} grows ${growth_label(b.class, b.power)} -> ${growth_label(p.class, p.power)}${where}${capped_words(p)}`;
+		const text = `${code(b.name)} grows ${growth_label(b.class, b.power)} -> ${growth_label(p.class, p.power)}${where}${odds_note(p)}${capped_words(p)}`;
 		const br = GROWTH_RANK[b.class];
 		const pr_rank = GROWTH_RANK[p.class];
 		if (br === null || pr_rank === null) {
 			if (b.class !== p.class) out.unclear.push({ case: b.name, text });
 		} else if (pr_rank > br) {
+			// a report from before odds (p.odds undefined) keeps the class rule alone
+			const bar = opts.min_odds ?? SUPERLINEAR_ODDS;
+			if (is_superlinear(p.class) && p.odds !== undefined && !odds_superlinear(p.odds, opts)) {
+				out.unsure!.push({
+					case: b.name,
+					text: `${text}; superlinear ${pct(p.odds?.superlinear ?? 0)}, under ${pct(bar)}`
+				});
+				continue;
+			}
 			out.findings.push({ case: b.name, base: b.class, pr: p.class, text });
 		} else if (pr_rank < br) {
 			out.better.push({ case: b.name, base: b.class, pr: p.class, text });

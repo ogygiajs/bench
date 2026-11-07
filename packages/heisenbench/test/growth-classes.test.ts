@@ -102,4 +102,12 @@ test('growth names every shape: cubic, quartic, exponential past the cap, and st
 	const shrinks = by.get('shrinks')!;
 	assert.equal(shrinks.class, 'shrinks');
 	assert.match(stdout, /shrinks: the scaled input may be invalid/);
+
+	// the odds keep every class, with at least 95% on it; steps that fall have none
+	for (const name of ['cubic', 'quartic', 'exponential']) {
+		const g = by.get(name)!;
+		assert.equal(g.odds?.odds[0].shape, g.class, `${name}: ${JSON.stringify(g.odds)}`);
+		assert.ok(g.odds!.odds[0].p >= 0.95, `${name}: ${JSON.stringify(g.odds)}`);
+	}
+	assert.equal(shrinks.odds, null);
 });

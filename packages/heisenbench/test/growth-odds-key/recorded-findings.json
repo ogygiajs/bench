@@ -1,0 +1,126 @@
+{
+	"what": "The growth findings and false alarms of bench #24, as its full recorded run on one real codebase (01dc5b9) counted them: steps per scale factor (scaled) or per recorded call size (recorded). `ran`: the functions with self steps at each factor, of the five the report names.",
+	"cases": [
+		{
+			"kind": "finding",
+			"name": "acorn Parser",
+			"function": "packages/core/src/compiler/region/transform.ts > transformHost",
+			"part": "acorn@8.18.0/dist/acorn.mjs > Parser",
+			"source": "recorded",
+			"sizes": [157, 160, 160, 177, 302, 401, 1309, 1471, 7956],
+			"steps": [5335.5, 270, 270, 5798, 16450.5, 44534, 401500, 573262.5, 18083973.5]
+		},
+		{
+			"kind": "finding",
+			"name": "flags.ts line_at",
+			"function": "packages/core/src/compiler/flags.ts > collect_from_source",
+			"part": "packages/core/src/compiler/flags.ts > line_at",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [1607, 17192, 240992],
+			"ran": [
+				["jsonParseAst", "line_at", "SyncWalker > visit", "isNode", "walk > enter"],
+				["jsonParseAst", "line_at", "SyncWalker > visit", "isNode", "walk > enter"],
+				["jsonParseAst", "line_at", "SyncWalker > visit", "isNode", "walk > enter"]
+			]
+		},
+		{
+			"kind": "finding",
+			"name": "lcp_rivals",
+			"function": "packages/core/src/insights/page-insights.ts > lcp_rivals",
+			"part": "packages/core/src/insights/page-insights.ts > lcp_rivals",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [1452.25, 8465.3125, 83755.5625],
+			"ran": [
+				["lcp_rivals", "lcp_rivals > find:0", "lcp_rivals > find:1"],
+				["lcp_rivals", "lcp_rivals > find:0", "lcp_rivals > find:1"],
+				["lcp_rivals", "lcp_rivals > find:0", "lcp_rivals > find:1"]
+			]
+		},
+		{
+			"kind": "finding",
+			"name": "running_at",
+			"function": "packages/devtools/src/profiler/gc.ts > attribute_gc",
+			"part": "packages/devtools/src/profiler/gc.ts > attribute_gc > running_at",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [148272, 2337072, 37252032],
+			"ran": [
+				["running_at", "between", "attribute_gc", "ident_of", "ours"],
+				["running_at", "between", "attribute_gc", "ident_of", "ours"],
+				["running_at", "between", "attribute_gc", "ident_of", "ours"]
+			]
+		},
+		{
+			"kind": "finding",
+			"name": "batched",
+			"function": "packages/devtools/src/profiler/patterns.ts > find_wait_patterns",
+			"part": "packages/devtools/src/profiler/patterns.ts > find_wait_patterns > batched",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [1112, 12704, 182912],
+			"ran": [
+				["batched", "find_stragglers", "find_wait_patterns", "batched > some", "sort"],
+				["batched", "find_stragglers", "find_wait_patterns", "batched > some", "sort"],
+				["batched", "find_stragglers", "find_wait_patterns", "batched > some", "sort"]
+			]
+		},
+		{
+			"kind": "finding",
+			"name": "impure",
+			"function": "packages/devtools/src/profiler/source-scan.ts > hoist_plan",
+			"part": "packages/devtools/src/profiler/source-scan.ts > constant_work > impure",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [0, 58672.5, 796774.5],
+			"ran": [
+				["tokens", "constant_work", "load_span", "hoist_plan"],
+				["impure", "tokens", "constant_work", "load_span", "hoist_plan"],
+				["impure", "tokens", "constant_work", "load_span", "hoist_plan"]
+			]
+		},
+		{
+			"kind": "false alarm",
+			"name": "doc_diff",
+			"function": "packages/devtools/src/profiler/doc-diff.ts > doc_diff",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [1243397.40625, 1303315.375, 4582492.375],
+			"ran": [
+				["pieces", "doc_diff", "clip", "doc_diff > add", "doc_diff > filter"],
+				["pieces", "doc_diff"],
+				["pieces", "doc_diff"]
+			]
+		},
+		{
+			"kind": "false alarm",
+			"name": "clip",
+			"function": "packages/devtools/src/profiler/doc-diff.ts > clip",
+			"source": "scaled",
+			"factors": [1, 4, 16],
+			"steps": [3, 3, 31.75],
+			"ran": [["clip"], ["clip"], ["clip"]]
+		},
+		{
+			"kind": "false alarm",
+			"name": "transformTsRegions",
+			"function": "packages/core/src/compiler/region/transform.ts > transformTsRegions",
+			"source": "recorded",
+			"sizes": [19, 81, 82, 108, 110, 122, 162, 166, 246, 308],
+			"steps": [
+				2065.078125, 50366.59375, 14979.953125, 12320.671875, 53315.6875, 109438.078125,
+				77133.59375, 145932.578125, 166562.328125, 166742.484375
+			]
+		},
+		{
+			"kind": "false alarm",
+			"name": "formatter_rewrite",
+			"function": "packages/devtools/src/profiler/source-scan.ts > formatter_rewrite",
+			"part": "packages/devtools/src/profiler/source-scan.ts > formatter_rewrite",
+			"source": "recorded",
+			"sizes": [14, 27, 33, 47, 68, 68, 81, 117],
+			"steps": [157, 189, 681.9375, 3946.1875, 5664.25, 5628.625, 11840.625, 4313.390625]
+		}
+	]
+}

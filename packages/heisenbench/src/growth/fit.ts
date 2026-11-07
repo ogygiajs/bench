@@ -15,7 +15,12 @@
  * (every step down) or `irregular` (up and down), and both mean the scaled input is likely not
  * valid input any more (a parser that stops at the first error), not a curve. Recorded calls of
  * different inputs are noisy instead: fit_noisy, below.
+ *
+ * The class is one name; how sure it is, is odds.ts (growth odds).
  */
+
+import { noisy_odds, odds_superlinear } from './odds.ts';
+import type { GrowthOdds, OddsOptions } from './odds.ts';
 
 export type GrowthClass =
 	| 'constant'
@@ -205,9 +210,9 @@ export function fit_growth(ks: number[], ys: number[]): Fit {
  *   trend   Kendall's tau between size and steps per unit of size: above 0, the work per input
  *           unit grows with the input (a line with a constant part gives -1: the constant spreads)
  *
- * The class is named by the power (POWER_CLASSES). A curve is superlinear (a finding) only when
- * the power is at least SUPERLINEAR_POWER, the line explains the points (r2 >= MIN_R2) and the work
- * per unit keeps rising (trend >= MIN_TREND).
+ * The class is named by the power (POWER_CLASSES). Whether the curve is superlinear (a finding) is
+ * read from its odds (odds.ts noisy_odds: the power fitted with Student-t errors, so one call that
+ * took a short path weighs little): at least SUPERLINEAR_ODDS of quadratic or worse.
  */
 
 /** Upper power bound of each class, for noisy points. */
@@ -222,14 +227,15 @@ const POWER_CLASSES: Array<[number, GrowthClass]> = [
 ];
 export const SUPERLINEAR_POWER = 1.5;
 export const MIN_R2 = 0.8;
-export const MIN_TREND = 0.3;
 
 export interface NoisyFit {
 	class: GrowthClass;
 	power: number;
 	r2: number;
 	trend: number;
-	/** The rule above: power, r2 and trend all say it grows faster than n log n. */
+	/** Odds of each shape (null with under three points). */
+	odds: GrowthOdds | null;
+	/** The odds of quadratic or worse are at least the bar (SUPERLINEAR_ODDS). */
 	superlinear: boolean;
 }
 
@@ -253,14 +259,12 @@ function kendall_tau(xs: number[], ys: number[]): number {
 	return den > 0 ? (c - d) / den : 0;
 }
 
-/** Slope and r2 of log(y) over log(x), leaving out point `skip` (-1: none). */
-function log_line(lx: number[], ly: number[], skip = -1): { power: number; r2: number } {
-	let n = 0;
+/** Slope and r2 of log(y) over log(x). */
+function log_line(lx: number[], ly: number[]): { power: number; r2: number } {
+	const n = lx.length;
 	let mx = 0;
 	let my = 0;
-	for (let i = 0; i < lx.length; i++) {
-		if (i === skip) continue;
-		n++;
+	for (let i = 0; i < n; i++) {
 		mx += lx[i];
 		my += ly[i];
 	}
@@ -269,8 +273,7 @@ function log_line(lx: number[], ly: number[], skip = -1): { power: number; r2: n
 	let sxy = 0;
 	let sxx = 0;
 	let syy = 0;
-	for (let i = 0; i < lx.length; i++) {
-		if (i === skip) continue;
+	for (let i = 0; i < n; i++) {
 		sxy += (lx[i] - mx) * (ly[i] - my);
 		sxx += (lx[i] - mx) ** 2;
 		syy += (ly[i] - my) ** 2;
@@ -281,12 +284,8 @@ function log_line(lx: number[], ly: number[], skip = -1): { power: number; r2: n
 	};
 }
 
-/**
- * The curve of noisy points (sizes > 0, any order). No single call decides a finding: the power
- * must stay at SUPERLINEAR_POWER or more with any one point left out (a trivial call that returns
- * at once, at the smallest size, would otherwise make a line look steep).
- */
-export function fit_noisy(xs: number[], ys: number[]): NoisyFit {
+/** The curve of noisy points (sizes > 0, any order), and its odds. */
+export function fit_noisy(xs: number[], ys: number[], opts: OddsOptions = {}): NoisyFit {
 	const lx = xs.map((x) => Math.log(x));
 	const ly = ys.map((y) => Math.log(Math.max(y, 1)));
 	const { power, r2 } = log_line(lx, ly);
@@ -294,13 +293,17 @@ export function fit_noisy(xs: number[], ys: number[]): NoisyFit {
 		xs,
 		ys.map((y, i) => y / xs[i])
 	);
-	let steep = power >= SUPERLINEAR_POWER && r2 >= MIN_R2 && trend >= MIN_TREND;
-	for (let i = 0; steep && i < xs.length; i++) {
-		if (log_line(lx, ly, i).power < SUPERLINEAR_POWER) steep = false;
-	}
+	const odds = noisy_odds(xs, ys, opts);
 	const cls = POWER_CLASSES.find(([top]) => power < top)?.[1] ?? 'polynomial';
 	const r = (v: number) => Math.round(v * 1000) / 1000;
-	return { class: cls, power: r(power), r2: r(r2), trend: r(trend), superlinear: steep };
+	return {
+		class: cls,
+		power: r(power),
+		r2: r(r2),
+		trend: r(trend),
+		odds,
+		superlinear: odds_superlinear(odds, opts)
+	};
 }
 
 /** The words for a class: `polynomial n^5.2`, `irregular: the scaled input may be invalid`. */
