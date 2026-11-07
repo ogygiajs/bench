@@ -52,6 +52,13 @@ cat suites/ogygia/out/section.md   # the comment section; result.json has the re
 
 Leave out `--base` to count every bench file of one commit.
 
+## Releasing Heisenbench
+
+Releases are automated with Changesets (`.changeset/README.md`). A PR that changes what
+`heisenbench` users get runs `pnpm changeset` and commits the file it writes. Merged changesets
+open the **update versions** PR; merging it publishes to npm. Every push and PR also gets a preview
+build on pkg.pr.new. Add the `ship` label to a PR to merge it once CI is green.
+
 ## The PR comment
 
 Each ogygia PR gets one comment, found by `<!-- ogygia-benchmarks -->`. Each suite owns one

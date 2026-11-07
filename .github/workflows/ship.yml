@@ -1,0 +1,54 @@
+name: ship
+
+# The `ship` label is the merge button: adding it to a PR into `main` turns on GitHub's auto-merge
+# (squash), so the PR merges by itself once the checks the `main` ruleset requires are green.
+# Removing the label before then cancels it.
+#
+# A PR in a stack cannot take auto-merge (GitHub merges stacks only through the asynchronous merge
+# call), so for one this job waits for the required checks itself and then makes that call, pinned
+# to the head the label was added at: a push after it cancels the merge, and removing the label
+# cancels the waiting job.
+#
+# `pull_request_target` runs this file as it is on the base branch, never the PR's code, and nothing
+# here checks the PR out. SHIP_TOKEN is a fine-grained token (this repo: contents + pull requests,
+# read and write): a merge made with the built-in GITHUB_TOKEN would not trigger the workflows that
+# a push to `main` runs (the release workflow above all).
+on:
+  pull_request_target:
+    types: [labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  auto-merge:
+    if: github.event.label.name == 'ship' && github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    concurrency:
+      group: ship-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    env:
+      GH_TOKEN: ${{ secrets.SHIP_TOKEN }}
+      PR: ${{ github.event.pull_request.number }}
+      REPO: ${{ github.repository }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      TITLE: ${{ github.event.pull_request.title }}
+    steps:
+      - name: Turn on auto-merge
+        if: github.event.action == 'labeled'
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::SHIP_TOKEN is not set, so the ship label cannot merge"
+            exit 1
+          fi
+          if out=$(gh pr merge "$PR" --auto --squash --repo "$REPO" 2>&1); then exit 0; fi
+          echo "$out"
+          # (GitHub words it two ways: "part of a stack", "not supported for stacked pull requests")
+          case "$out" in *stack*) ;; *) exit 1 ;; esac
+          gh pr checks "$PR" --repo "$REPO" --required --watch --fail-fast --interval 30
+          gh api -X PUT "repos/$REPO/pulls/$PR/merge-async" -f merge_method=squash \
+            -f sha="$HEAD_SHA" -f commit_title="$TITLE (#$PR)"
+
+      - name: Cancel auto-merge
+        if: github.event.action == 'unlabeled'
+        run: gh pr merge "$PR" --disable-auto --repo "$REPO"
