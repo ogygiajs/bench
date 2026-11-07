@@ -29,7 +29,8 @@
  * checked and grown on both trees, then timed with both trees in one process, taking turns. Real
  * bytes and leaks cost about 15 s a case a side, so a PR leaves them to the main and nightly runs
  * unless --measure asks. A full run (no --base): every bench file of the one commit, with every
- * plain-build layer. Writes to --out:
+ * plain-build layer. Both kinds then check the complexity contracts (`@heisenbench linear in x`
+ * tags, contracts.ts) against what was measured. Writes to --out:
  *
  *   section.md    the `heisenbench` section of the PR comment (a full run: a summary of every case)
  *   result.json   meta, selection, both reports, the diff and the time comparison (the results
@@ -65,6 +66,9 @@ import { select_all, select_changed } from './select.ts';
 import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
 import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
+import { run_contracts } from './contracts.ts';
+import type { Tree } from './checkout.ts';
+import type { RecordedGrowthReport } from '@bench/heisenbench';
 import { run_trend } from './trend.ts';
 
 const { values } = parseArgs({
@@ -173,11 +177,12 @@ async function main(): Promise<void> {
 		time: null
 	};
 
+	let base_tree: Tree | null = null;
 	if (selection.selected.length > 0) {
 		// Both trees side by side, each on half the cores (one at a time when measuring time). Engine
 		// health checks that V8 does the same thing twice everywhere, PRs included: only that check
 		// can mark a function unstable, and an unstable one is never a finding in the comment.
-		const base_tree = mb ? prepare_tree(repo, work, mb, HEISENBENCH_DIR, log) : null;
+		base_tree = mb ? prepare_tree(repo, work, mb, HEISENBENCH_DIR, log) : null;
 		const present = new Set(base_tree?.benches ?? []);
 		const base_files = selection.selected.filter((f) => present.has(f));
 		const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
@@ -286,6 +291,7 @@ async function main(): Promise<void> {
 	// Growth from recorded calls: a full run grows every recorded function; a PR only those of the
 	// source files it changed (docs/ci.md has the cost of each).
 	const recorded = values.recorded ?? (mb ? 'changed' : 'all');
+	let recorded_report: RecordedGrowthReport | null = null;
 	if (recorded !== 'off') {
 		const changed = mb
 			? changed_files(repo, mb, sha).filter((f) => /^packages\/[^/]+\/src\//.test(f))
@@ -297,11 +303,34 @@ async function main(): Promise<void> {
 				log,
 				recorded === 'all' ? null : changed
 			);
+			recorded_report = run.report;
 			result.recorded = summarize(run, recorded === 'all' ? 'all' : 'changed');
 			log(
 				`growth from recorded calls: ${result.recorded.findings.length} findings of ${result.recorded.grown} grown (build ${run.seconds.build} s, record ${run.seconds.record} s, grow ${run.seconds.grow} s)${run.error ? `; ${run.error}` : ''}`
 			);
 		}
+	}
+
+	// Complexity contracts: each tree's tags against its own growth cases (and the head's recorded
+	// growth). A PR that ran no bench file has no base tree (it is never installed for this alone):
+	// its comment shows only the head's contracts that do not hold.
+	result.contracts = await run_contracts(
+		{
+			tree: head,
+			report: result.head,
+			recorded: recorded_report ? { recorded_growth: recorded_report } : null
+		},
+		base_tree ? { tree: base_tree, report: result.base } : null,
+		join(out, 'contracts'),
+		log,
+		mb !== null
+	);
+	if (result.contracts) {
+		const c = result.contracts;
+		const held = c.head?.contracts.filter((x) => x.verdict === 'holds').length ?? 0;
+		log(
+			`complexity contracts: ${c.error ? `failed: ${c.error}` : `${held} of ${c.head?.contracts.length ?? 0} hold on the head`}`
+		);
 	}
 
 	// a full run: slow creep over main's earlier full runs, with this run as the newest

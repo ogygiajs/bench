@@ -147,7 +147,13 @@ export function private_dts(opts: DtsOptions): string {
 			}
 			let text = st.getText(d);
 			if (text.startsWith('declare ')) text = text.slice(8);
-			locals.push('export ' + tabs(text));
+			// the declaration's doc comment, as tsc kept it: hovers, and complexity contracts
+			// (`@heisenbench linear in rows`), read where the function is used
+			const docs = (ts.getJSDocCommentsAndTags(st) as import('typescript').Node[])
+				.filter((j) => j.kind === ts.SyntaxKind.JSDoc)
+				.map((j) => j.getText(d) + '\n')
+				.join('');
+			locals.push(docs + 'export ' + tabs(text));
 		}
 		if (!heisenbench_type) continue;
 

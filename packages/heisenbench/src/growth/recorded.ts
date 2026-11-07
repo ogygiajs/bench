@@ -15,10 +15,13 @@ import {
 	points_odds,
 	ran_in,
 	round3,
+	top_lines,
 	where_steps,
 	with_probe
 } from './index.ts';
 import type { GrowthPoint } from './index.ts';
+
+export { top_lines } from './index.ts';
 import { close_call, odds_superlinear, odds_words, path_from } from './odds.ts';
 import type { GrowthOdds, OddsOptions } from './odds.ts';
 import { Measurer, load_cases } from './measure.ts';
@@ -67,8 +70,6 @@ export const MIN_STEPS = 1000;
 export const SCALED_SIZES = [1, 4, 16];
 /** Steps one replay may take. */
 export const RECORDED_CAP = 5e8;
-/** Lines named per result. */
-const TOP_LINES = 5;
 
 export interface RecordedPoint {
 	/** The size the curve is over (the argument's, or the scaled input's). */
@@ -156,6 +157,10 @@ export interface RecordedGrowth {
 		power: number;
 		r2: number;
 		reason: string | null;
+		/** Odds of each shape over that argument's sizes (absent in older reports). */
+		odds?: GrowthOdds | null;
+		/** Steps of the call at the largest of that argument's sizes. */
+		top_steps?: number;
 	}>;
 }
 
@@ -240,23 +245,6 @@ async function count_call(
 	});
 	const f = report.functions.find((x) => x.id === id);
 	return { steps: f?.inclusive_steps ?? snap.steps, report };
-}
-
-/** The lines with the most self steps in a report. */
-export function top_lines(report: CaseReport): NonNullable<RecordedGrowth['lines']> {
-	const all: Array<{ at: string; steps: number }> = [];
-	let total = 0;
-	for (const f of report.functions) {
-		for (const l of f.lines) {
-			if (l.steps <= 0) continue;
-			all.push({ at: `${f.module}:${l.line}`, steps: l.steps });
-			total += l.steps;
-		}
-	}
-	all.sort((a, b) => b.steps - a.steps || (a.at < b.at ? -1 : 1));
-	return all
-		.slice(0, TOP_LINES)
-		.map((l) => ({ ...l, share: total > 0 ? round3(l.steps / total) : 0 }));
 }
 
 /** Self steps per function over `reports`, the functions with the most at the last one. */
@@ -404,7 +392,9 @@ async function grow_recorded(
 		class: c.fit?.class ?? null,
 		power: c.fit?.power ?? 0,
 		r2: c.fit?.r2 ?? 0,
-		reason: c.reason
+		reason: c.reason,
+		odds: c.fit?.odds ?? null,
+		top_steps: c.points[c.points.length - 1].steps
 	}));
 	// the argument whose size explains the steps best; their sum only when no argument decides
 	const deciding = candidates

@@ -30,6 +30,7 @@ import type { VerifyLayer } from './verify/index.ts';
 import { needs_bench_repo } from './own.ts';
 import { blame_command } from './blame/cli.ts';
 import { prove_command } from './prove/cli.ts';
+import { contracts_command } from './contracts/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -61,6 +62,10 @@ Layers (each writes its section into --out, default heisenbench-report.json)
                                  needs --superlinear-odds (default 0.9) of quadratic or worse
       [--modules a.ts,b.ts] [--alias built-to-source.json] [--cap 5e8] [--budget-steps n]
       [--root dir] [--out file] [--md file] [--superlinear-odds 0.9] [--growth-prior prior.json]
+  heisenbench contracts <source files...> --reports a.json[,b.json]   each complexity contract
+                                 (\`/** @heisenbench linear in items */\` on a function) held against
+                                 the growth those reports measured; exit 1 when one does not hold
+      [--list files.txt] [--root dir] [--out file] [--md file] [--contract-odds 0.9]
   heisenbench search <bench files...>   the input that costs the most work per unit of input:
                                  shrunk, grown 1x to 8x, blamed by line
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
@@ -108,7 +113,7 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
-  heisenbench verify [--layers steps,elision,leak,engine,growth,search,app,time,trend] [--filter text]
+  heisenbench verify [--layers steps,elision,leak,engine,growth,contract,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
 
 Optional peer dependencies, installed in the project when needed: typescript (heisenbench dts, and
@@ -313,6 +318,11 @@ const SPECS: Record<string, Spec> = {
 			'superlinear-odds',
 			'growth-prior'
 		],
+		args: [0, MANY],
+		files: true
+	},
+	contracts: {
+		values: ['root', 'list', 'reports', 'out', 'md', 'sha', 'contract-odds'],
 		args: [0, MANY],
 		files: true
 	},
@@ -608,6 +618,7 @@ async function main(argv: string[]): Promise<number> {
 	const app = await app_command(cmd, positional, flags);
 	if (app !== null) return app;
 	if (cmd === 'verify') return verify_command(flags);
+	if (cmd === 'contracts') return contracts_command(positional, flags);
 	if (cmd === 'prove') return prove_command(positional, flags);
 	const coverage = await coverage_command(cmd, positional, flags);
 	if (coverage !== null) return coverage;

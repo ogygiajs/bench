@@ -70,6 +70,21 @@ export type { AuditReport, AuditCase, AuditFinding, AuditInput } from './audit/f
 export { render_audit as renderAudit } from './audit/markdown.ts';
 export type { SearchReport, SearchCase, SearchOptions } from './search/index.ts';
 export { diff_sections as diffSections, render_sections as renderSections } from './sections.ts';
+export {
+	check_contracts as checkContracts,
+	diff_contracts as diffContracts,
+	render_contracts as renderContracts,
+	render_contracts_diff as renderContractsDiff,
+	CONTRACT_ODDS
+} from './contracts/index.ts';
+export type {
+	ContractReport,
+	ContractResult,
+	ContractSource,
+	ContractsDiff
+} from './contracts/index.ts';
+export { read_contracts as readContracts } from './contracts/declare.ts';
+export type { Contract, ContractError } from './contracts/declare.ts';
 export { measure_layers as measureLayers } from './measure/index.ts';
 export type { Layer, MeasureOptions } from './measure/index.ts';
 export type { CaseMeasure, Estimate, BytesMeasure } from './measure/types.ts';

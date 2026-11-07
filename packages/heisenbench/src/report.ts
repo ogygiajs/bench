@@ -11,6 +11,7 @@ import type { GrowthReport } from './growth/index.ts';
 import type { RecordedGrowthReport } from './growth/recorded.ts';
 import type { SearchReport } from './search/index.ts';
 import type { AuditReport } from './audit/fit.ts';
+import type { ContractReport } from './contracts/index.ts';
 import { package_url } from './own.ts';
 
 /*
@@ -142,6 +143,8 @@ export interface Report {
 	search?: SearchReport;
 	/** `heisenbench audit`: the prices checked against time at every growth size (audit/fit.ts). */
 	audit?: AuditReport;
+	/** `heisenbench contracts`: each complexity contract held against the growth measured (contracts/). */
+	contracts?: ContractReport;
 }
 
 export interface LoadError {

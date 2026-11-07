@@ -12,12 +12,15 @@ import {
 	markdownCode,
 	renderAudit,
 	renderBlame,
+	renderContracts,
+	renderContractsDiff,
 	renderMarkdown,
 	renderSections
 } from '@bench/heisenbench';
 import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
 import { calls_text, cost_text } from '@bench/heisenbench/weight';
 import type { BlameRun } from './blame.ts';
+import type { ContractsRun } from './contracts.ts';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { FullSearchRun, SearchRun } from './search.ts';
@@ -90,6 +93,8 @@ export interface Result {
 	blame?: BlameRun | null;
 	/** A full run: slow creep in each case's steps over main's earlier full runs (trend.ts). */
 	trend?: TrendRun | null;
+	/** Complexity contracts (contracts.ts): each tree's check, and what a PR changed (absent: no tags). */
+	contracts?: ContractsRun | null;
 }
 
 export interface RecordedSummary {
@@ -490,6 +495,19 @@ function capped_sections(d: SectionsDiff): string {
 	return parts.join('\n');
 }
 
+/**
+ * Complexity contracts: a PR's changes to them and every one that does not hold on its side
+ * (nothing when none changed and all hold); a full run, every contract.
+ */
+function contract_lines(r: Result, full: boolean): string[] {
+	const c = r.contracts;
+	if (!c) return [];
+	if (c.error) return ['', `**Complexity contracts failed**: ${code(one_line(c.error))}`];
+	if (full) return c.head ? ['', renderContracts(c.head).trimEnd()] : [];
+	const md = c.diff ? renderContractsDiff(c.diff) : '';
+	return md ? ['', md.trimEnd()] : [];
+}
+
 /** Growth from recorded calls: Heisenbench's findings, or one line on why there are none. */
 function recorded_lines(r: Result): string[] {
 	const rec = r.recorded;
@@ -510,6 +528,7 @@ export function render_pr_section(r: Result): string {
 			`No bench file reaches the files this PR changes (${plural(sel.all.length, 'bench file')} checked, ${against}).${run_link(meta)}`
 		);
 		lines.push(...recorded_lines(r));
+		lines.push(...contract_lines(r, false));
 		return lines.join('\n').trimEnd() + '\n';
 	}
 	const why =
@@ -551,6 +570,7 @@ export function render_pr_section(r: Result): string {
 		lines.push('', r.time.markdown);
 	}
 	lines.push(...recorded_lines(r));
+	lines.push(...contract_lines(r, false));
 	return lines.join('\n').trimEnd() + '\n';
 }
 
@@ -595,5 +615,6 @@ export function render_full_summary(r: Result): string {
 	if (r.trend) lines.push(...trend_lines(r.trend));
 	if (r.full_search) lines.push(...full_search_lines(r.full_search));
 	lines.push(...recorded_lines(r));
+	lines.push(...contract_lines(r, true));
 	return lines.join('\n').trimEnd() + '\n';
 }

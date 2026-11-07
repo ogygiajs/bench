@@ -52,6 +52,7 @@ code as it ships, nothing counted) next to the count:
 | Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?     |
 | Growth            | Is the case constant, linear, n log n, quadratic or worse in its input size?       |
 | Recorded growth   | Which function grows quadratically on its tests' real inputs, with no growth case? |
+| Contracts         | Does each function grow no faster than its `@heisenbench` contract says?           |
 | Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?      |
 | Worst-case search | Which input costs the most work per unit of input, and how does it grow?           |
 | Proof             | Is this faster version the same on every input, and cheaper? (on demand)           |
@@ -256,6 +257,21 @@ With that file in the project, `tsc` checks the bench file like any other. ogygi
 before every run and keeps it out of git. Class `#private` methods are measured through their
 public callers.
 
+### Complexity contracts
+
+A function can say how fast it may grow, in its doc comment:
+
+```ts
+/** @heisenbench linear in rows */
+export function rank(rows: Row[]): number[] {
+```
+
+`heisenbench growth` keeps the curve of every contracted function a growth case runs, and
+`heisenbench contracts src/*.ts --reports report.json` holds each contract against it: the declared
+class or a cheaper one needs 90% odds, or the check fails with the class it measured, the exponent,
+the sizes and the lines with the most steps at the largest size. A contract nothing measures fails
+too. [layers.md](docs/layers.md#complexity-contracts) has the details.
+
 ### What a bench file can load
 
 - TypeScript. Types are stripped, as Node does it. A module that stripping cannot run (`enum`,
@@ -292,6 +308,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input, the fitted curve class and the odds of each shape.                               |
 | `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
 | `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
+| `heisenbench contracts <source files> --reports <a.json,b.json>`                       | Each `@heisenbench` complexity contract held against the growth the reports measured; exit 1 when one fails.       |
 | `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.              |
 | `heisenbench prove <module> <function> --candidate <file>`                             | Accepts a faster version only when it behaves the same on every input and costs fewer steps.                       |
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
@@ -302,7 +319,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
 | `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
 
-`health`, `growth`, `search` and `audit` write their section into the report given by `--out`, so
+`health`, `growth`, `search`, `audit` and `contracts` write their section into the report given by `--out`, so
 one JSON file per commit holds everything `diff` needs.
 
 `calibrate` and `verify` run only in a clone of this repository. The npm package does not ship
@@ -453,7 +470,7 @@ CI runs it on every pull request and every push to main of this repository. Outp
 Node 26.4.0:
 
 ```
-Heisenbench verify: 34 of 34 planted cases pass
+Heisenbench verify: 36 of 36 planted cases pass
 pass  steps/comments             no-op    nothing flagged
 pass  steps/extra-allocation     planted  flagged lines 17 (+240 steps)
 pass  steps/extra-loop           planted  flagged lines 11,12 (+520 steps)
@@ -478,6 +495,8 @@ pass  engine/shape-order         planted  deopt in total:18, inline cache in tot
 pass  engine/shape-order-twin    no-op    nothing flagged
 pass  growth/constant-factor     no-op    no class change
 pass  growth/quadratic           planted  rank: linear -> quadratic
+pass  contract/broken            planted  broken: measured quadratic, most steps on lib.ts:22
+pass  contract/holds             no-op    holds
 pass  search/order               planted  worst/typical 11.25, flagged
 pass  search/count               planted  worst/typical 4.93, flagged
 pass  search/total               no-op    worst/typical 1.00, not flagged

@@ -1,5 +1,7 @@
+import { execFile } from 'node:child_process';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { diff_reports } from '../diff/index.ts';
 import { context_path } from '../identity.ts';
 import type { Finding } from '../diff/index.ts';
@@ -12,8 +14,11 @@ import { diff_growth } from '../growth/index.ts';
 import type { GrowthReport } from '../growth/index.ts';
 import { diff_search } from '../search/index.ts';
 import type { SearchReport } from '../search/index.ts';
-import { KEYS, cli, key_files, make_pair, temp_dir } from './fixture.ts';
+import { CLI, KEYS, cli, key_files, make_pair, temp_dir, write_all } from './fixture.ts';
 import type { Check } from './types.ts';
+import type { Report } from '../report.ts';
+
+const exec = promisify(execFile);
 
 /*
  * The answer keys that live as fixture directories under test/ (each `base/` plus one directory
@@ -25,6 +30,8 @@ import type { Check } from './types.ts';
  *   engine-key   V8: shape order, int -> double, delete (deopts), megamorphic access, each with a
  *                twin that changes the same line without changing a shape; no-ops.
  *   growth-key   a linear -> quadratic class change; a constant-factor change that is not one.
+ *   contract-key a function declared linear that is quadratic (broken, with its class and line);
+ *                one declared linear that is (holds).
  *   search-key   slow inputs found for quadratic code; none for linear code.
  */
 
@@ -247,6 +254,64 @@ function growth_checks(): Check[] {
 	});
 }
 
+// ---- complexity contracts
+
+function contract_checks(): Check[] {
+	return variants('contract-key').map((name) => {
+		const e = read_expect<{ what: string; verdict: string; class?: string; line?: number }>(
+			'contract-key',
+			name
+		);
+		const planted = e.verdict !== 'holds';
+		return {
+			layer: 'contract',
+			name,
+			what: e.what,
+			planted,
+			expect: planted
+				? `${e.verdict}: measured ${e.class}, most steps on lib.ts:${e.line}`
+				: 'holds',
+			exclusive: false,
+			run: async () => {
+				const dir = join(temp_dir('heisenbench-verify-'), name);
+				write_all(dir, key_files('contract-key', name));
+				await cli(dir, ['growth']);
+				const out = join(dir, 'heisenbench-report.json');
+				// exit 1 is the check failing a contract: the report says which
+				await exec(
+					process.execPath,
+					[
+						'--no-warnings',
+						CLI,
+						'contracts',
+						'lib.ts',
+						'--reports',
+						out,
+						'--root',
+						dir,
+						'--out',
+						out
+					],
+					{ cwd: dir }
+				).catch((err: { code?: number }) => {
+					if (err.code !== 1) throw err;
+				});
+				const c = (JSON.parse(readFileSync(out, 'utf8')) as Report).contracts?.contracts[0];
+				if (!c) return { pass: false, got: 'no contract read' };
+				const s = c.sources.find((x) => x.verdict === c.verdict);
+				const at = s?.lines[0]?.at;
+				const got = planted
+					? `${c.verdict}: measured ${s?.class ?? 'nothing'}, most steps on ${at ?? 'no line'}`
+					: c.verdict;
+				const pass = planted
+					? c.verdict === e.verdict && s?.class === e.class && at === `lib.ts:${e.line}`
+					: c.verdict === 'holds';
+				return { pass, got };
+			}
+		};
+	});
+}
+
 // ---- slow-input search
 
 function search_checks(): Check[] {
@@ -309,6 +374,7 @@ export function key_checks(): Check[] {
 		...variants('answer-key').map(steps_check),
 		...engine_checks(),
 		...growth_checks(),
+		...contract_checks(),
 		...search_checks()
 	];
 }

@@ -135,13 +135,21 @@ In this repository:
     on 4 cores. A PR with no case over the threshold costs nothing here. With the weights step 9
     ranks by, the blamed change gets the same real cost as the ranked findings: CPU time per day on
     the imported traffic, with its range, for the change and per hunk.
-13. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+13. **Complexity contracts** (`suites/ogygia/src/contracts.ts`). The source files of each tree that
+    hold an `@heisenbench` tag go to `heisenbench contracts`, with what that tree measured: the head
+    against its growth cases and its growth from recorded calls, the base against its growth cases
+    ([layers.md](layers.md#complexity-contracts)). The comment shows the contracts the PR adds,
+    changes or removes, and every one that does not hold on the head; a PR that changes none and
+    breaks none gets no part. A PR that ran no bench file has no base tree (it is not installed for
+    this alone), so its comment shows only the head's contracts that do not hold. The check reads
+    only the tagged files and the growth already counted: about a second.
+14. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
     job checks it (below), then `result.json` goes to the `results` branch and `section.md`
     becomes the `heisenbench` section of the PR's comment.
 
 ### Who can write
 
-Steps 3 to 12 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
+Steps 3 to 13 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
 that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
 token is left in `.git/config` for that code to find.
 
@@ -184,7 +192,8 @@ with every source file a target), and the summary lists what grows quadratically
 `01dc5b9` (M4 Max): 4,868 functions recorded, 1,299 grown (the rest had fewer than two samples,
 are closures or class methods, or their module does not load outside Vite), 1,116 of them decided,
 in 60 s of recording and 152 s of growing (6.2×10⁹ counted steps). Two recordings gave the same
-findings, and growing the same records twice the same report.
+findings, and growing the same records twice the same report. Then every complexity contract is
+checked against the growth cases and those recorded calls, and the summary lists them all.
 
 The nightly run also searches every case that declares an input for its worst input
 (`--search all`, [layers.md](layers.md#worst-case-search)): one `heisenbench search` process per
@@ -311,6 +320,8 @@ The `heisenbench` section, in order:
    one more line for each flagged case, with its worst input.
 9. **Time.** The time table for every case of the selected files. When no case got slower or
    faster beyond noise, one line says so and the table is collapsed under it.
+10. **Complexity contracts**, after growth from recorded calls: the contracts the PR adds, changes
+    or removes, and each one that does not hold, with the class measured, the sizes and the lines.
 
 Every list is capped (20 bench files, 10 files that did not run, 15 engine and growth findings)
 with a count of the rest, which are in `result.json`. Names and errors are escaped for markdown
@@ -410,5 +421,12 @@ every non-draft PR. Locally: `pnpm build:lib`, then `pnpm bench:unmeasured`.
    exemptions in `internal/heisenbench/unmeasured.json`.
 
 It writes `.heisenbench/unmeasured/gate.md` (also the job summary) and `gate.json`, and exits 1 when the
-PR adds a function with no measurement source. The numbers from PR #180 are in
-[layers.md](layers.md#the-measurement-source-gate).
+PR adds a function with no measurement source, or when any function with a complexity contract
+has none (the inventory lists the contracts; no change to ogygia's script needed). The numbers
+from PR #180 are in [layers.md](layers.md#the-measurement-source-gate).
+
+The contracts themselves are checked in this repository's run (step 13) and shown in the comment.
+To make a broken contract a failing check in ogygia's own CI too, a job would run
+`heisenbench growth <bench files> --scaled on --out r.json` and then
+`heisenbench contracts --list <tagged files> --reports r.json`, which exits 1 when one does not
+hold; this PR does not change ogygia's workflows.
