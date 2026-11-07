@@ -10,6 +10,7 @@ import { Builtins } from '../runtime/builtins.ts';
 import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
 import { one_line } from '../report.ts';
+import type { CaseWatch } from '../cache/index.ts';
 
 /*
  * Counting a case on an input of our choosing (growth and slow-input search). The case runs in the
@@ -28,8 +29,8 @@ export interface LoadOptions {
 	log?: (line: string) => void;
 }
 
-/** Register the counting loader (once per process) and import the bench files. */
-export async function load_cases(opts: LoadOptions): Promise<BenchCase[]> {
+/** Register the counting loader, once per process; the run root. */
+export function register_loader(opts: Pick<LoadOptions, 'root' | 'deps' | 'svelte'>): string {
 	const root = resolve(opts.root ?? process.cwd());
 	const g = globalThis as unknown as Record<symbol, string | undefined>;
 	if (g[LOADER] === undefined) {
@@ -38,19 +39,40 @@ export async function load_cases(opts: LoadOptions): Promise<BenchCase[]> {
 	} else if (g[LOADER] !== root) {
 		throw new Error('heisenbench: one process measures one root');
 	}
+	return root;
+}
+
+/** Import bench files (paths relative to the cwd or absolute); every case they define. */
+export async function import_cases(
+	files: readonly string[],
+	root: string,
+	log: (line: string) => void = console.error,
+	failed?: (file: string) => void
+): Promise<BenchCase[]> {
 	const start = cases().length;
-	for (const f of opts.files) {
-		const abs = resolve(f);
+	for (const f of files) {
+		const abs = resolve(root, f);
 		const file = relative(root, abs).split(sep).join('/');
 		set_current_file(file);
 		try {
 			await import(pathToFileURL(abs).href);
 		} catch (e) {
 			// One file that does not load costs only its own cases.
-			(opts.log ?? console.error)(`FAILED   ${file}: ${one_line(e)}`);
+			log(`FAILED   ${file}: ${one_line(e)}`);
+			failed?.(file);
 		}
 	}
-	let list = cases().slice(start);
+	return cases().slice(start);
+}
+
+/** Register the counting loader (once per process) and import the bench files. */
+export async function load_cases(opts: LoadOptions): Promise<BenchCase[]> {
+	const root = register_loader(opts);
+	let list = await import_cases(
+		opts.files.map((f) => resolve(f)),
+		root,
+		opts.log ?? console.error
+	);
 	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));
 	return list;
 }
@@ -59,6 +81,14 @@ export class Measurer {
 	rt: Runtime;
 	builtins: Builtins;
 	det: Determinism;
+	/** Incremental counting watches what each run ran (cache/capture.ts). */
+	watch?: CaseWatch;
+	/**
+	 * A fresh copy of a case (fresh.ts), taken before each run of `steps`: its module state starts
+	 * empty, so what an earlier case or size left in a memo or a lazily built table cannot make
+	 * this run cheaper. None: every run shares the copy the bench file loaded.
+	 */
+	fresh?: (c: BenchCase) => Promise<BenchCase>;
 
 	/** `root`: the run root, shown as VIRTUAL_ROOT inside the window (determinism.ts). */
 	constructor(root?: string) {
@@ -73,6 +103,7 @@ export class Measurer {
 	 */
 	async once(c: BenchCase, ctx: unknown, mode: IoMode, cap = Infinity): Promise<Snapshot> {
 		const { rt, det, builtins } = this;
+		this.watch?.before_window();
 		rt.reset();
 		rt.cap = cap;
 		det.open(mode);
@@ -98,6 +129,7 @@ export class Measurer {
 			det.close();
 		}
 		const snap = rt.snapshot();
+		this.watch?.after_window(snap);
 		if (c.teardown) await c.teardown(ctx);
 		det.drain_finalizers();
 		if (failure) throw failure;
@@ -110,12 +142,16 @@ export class Measurer {
 	 */
 	async steps(
 		c: BenchCase,
-		make: () => unknown,
+		make: (c: BenchCase) => unknown,
 		cap = Infinity
 	): Promise<{ steps: number; stable: boolean; snap: Snapshot }> {
-		await this.once(c, await make(), 'record', cap);
-		const a = await this.once(c, await make(), 'replay', cap);
-		const b = await this.once(c, await make(), 'replay', cap);
+		const run = async (mode: IoMode): Promise<Snapshot> => {
+			const cc = this.fresh ? await this.fresh(c) : c;
+			return this.once(cc, await make(cc), mode, cap);
+		};
+		await run('record');
+		const a = await run('replay');
+		const b = await run('replay');
 		return { steps: a.steps, stable: same_counts(a, b), snap: a };
 	}
 }
