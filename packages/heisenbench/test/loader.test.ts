@@ -6,6 +6,8 @@ import { pathToFileURL } from 'node:url';
 import { rolldown } from 'rolldown';
 import { heisenbench_plugin } from '../src/plugin.ts';
 import { RUNTIME_URL } from '../src/transform/index.ts';
+import { LoaderCore } from '../src/loader/core.ts';
+import { OWN_DIR } from '../src/own.ts';
 import { fn_of, measure, temp_dir, write_files } from './helpers.ts';
 
 const LIB = `interface Point {
@@ -105,4 +107,22 @@ console.log(JSON.stringify(fns));
 		['dist', 2],
 		['longest', 1]
 	]);
+});
+
+test('what Heisenbench itself requires (a peer compiler) is never counted, nor what that loads', () => {
+	const core = new LoaderCore({ root: '/project' });
+	const own = pathToFileURL(join(OWN_DIR, 'peer.ts')).href;
+	const compiler = 'file:///project/node_modules/svelte/compiler/index.js';
+	const inner = 'file:///project/node_modules/acorn/dist/acorn.js';
+	const bench = 'file:///project/lib.bench.ts?heisenbench_gen=1';
+	const lib = 'file:///project/lib.js';
+	core.note_resolved(compiler, own, ['require', 'node']);
+	core.note_resolved(inner, compiler, ['require', 'node']);
+	// its own `import` of a bench file is the code under test
+	core.note_resolved(bench, own, ['import', 'node']);
+	core.note_resolved(lib, bench, ['import', 'node']);
+	assert.equal(core.should_instrument(compiler), false);
+	assert.equal(core.should_instrument(inner), false);
+	assert.equal(core.should_instrument(lib), true);
+	assert.equal(core.should_instrument('file:///project/node_modules/acorn/dist/acorn.mjs'), true);
 });
