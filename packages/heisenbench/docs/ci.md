@@ -123,13 +123,23 @@ In this repository:
     tests with every function recorded, 4.5 s without), so a PR pays about a minute here, a few
     on a CI runner: cheap enough to run on every PR, and only the changed files' functions are
     grown, so the grow step stays seconds. `--recorded off` turns it off, `all` grows everything.
-12. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+12. **Blame.** For the cases whose steps grew by at least 1% and 1,000 steps, `blameRegressions`
+    finds the hunks of the PR that carry the extra steps: it undoes sets of them on scratch copies
+    of the PR tree and recounts only those cases, one child per tree, up to 4 side by side (see
+    [Blame](layers.md#blame)). The hunks searched are those of the changed files the regressed
+    cases' bench files reach (all changed files when the selection ran everything). It runs after
+    the time layer, which needs the cores, within 60 recounts and 5 minutes (`--blame-budget`,
+    `0` turns it off); past the budget the comment says "narrowed to these hunks". A recount costs
+    one `heisenbench run` of the regressed cases (2.1 s for the compiler's transformHost cases on an
+    M4 Max), so a regression in one hunk of ten takes about 10 to 30 recounts: well under a minute
+    on 4 cores. A PR with no case over the threshold costs nothing here.
+13. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
     job checks it (below), then `result.json` goes to the `results` branch and `section.md`
     becomes the `heisenbench` section of the PR's comment.
 
 ### Who can write
 
-Steps 3 to 10 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
+Steps 3 to 12 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
 that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
 token is left in `.git/config` for that code to find.
 
@@ -244,6 +254,11 @@ The `heisenbench` section, in order:
    bytes, and "new code" for lines inside a changed hunk. A line that changed the same way in
    several cases is one row. Under it, for the changed cases that count a dependency, self steps
    by package: which package's steps changed, and its share of the case (`acorn@8.18.0`, 66%).
+   Then **Which change made it slower**, when a case regressed: per cause, the cases, their growth
+   and the hunks it comes from (`+10.5% in transformHost: … comes from these 3 changes:
+   packages/core/src/compiler/region/transform.ts L1035–1049, L1058–1073 and L2143–2153`), whether
+   the hunks interact, and collapsed, each hunk's diff with 3 lines around it and the functions and
+   lines its steps are in.
 5. **Leaks, elided allocations, time-led cases**, when there are any.
 6. **Engine.** New deopts, lost optimizations, inline caches that got worse, per case and line.
    Cases where V8 did not do the same thing twice are listed as unstable.

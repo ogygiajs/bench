@@ -55,6 +55,7 @@ code as it ships, nothing counted) next to the count:
 | Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?      |
 | Worst-case search | Which input costs the most work per unit of input, and how does it grow?           |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
+| Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
 
 [docs/layers.md](docs/layers.md) explains each one.
 
@@ -282,6 +283,7 @@ writes JSON; `diff` and a few others also write markdown.
 | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
 | `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
+| `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
 | `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
@@ -413,7 +415,13 @@ only comparable on one V8.
   ([layers.md](docs/layers.md#real-traffic)).
 - **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes,
   leaks and the price audit run on main and nightly. The worst-case search runs on a PR only for
-  changed cases that declare a `setup`, within a 4 minute budget, and nightly on every case.
+  changed cases that declare a `setup`, within a 4 minute budget, and nightly on every case. Blame
+  runs on a PR only for cases whose steps grew by 1% and 1,000 steps or more, within 60 recounts
+  and 5 minutes.
+- **Blame sees hunks, not their meaning.** It names the smallest set of hunks that carries the
+  extra steps. Hunks that only load together (a renamed function and its callers) come out as one
+  set; a regression from a dependency or the lockfile is said to be outside the hunks, since every
+  candidate tree shares the head's `node_modules`.
 
 ## How it compares
 
