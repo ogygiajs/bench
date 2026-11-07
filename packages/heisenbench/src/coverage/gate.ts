@@ -39,6 +39,8 @@ export interface SourceFunction {
 	module: string;
 	path: string;
 	line: number;
+	/** Column of the function's start (0-based), where the transform found it. */
+	col?: number;
 	end_line: number;
 }
 
@@ -88,6 +90,7 @@ export function source_inventory(root: string, files: readonly string[]): Source
 					module: id,
 					path: f.path,
 					line: f.line,
+					col: f.col,
 					end_line: f.end_line
 				});
 			}

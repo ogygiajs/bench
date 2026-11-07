@@ -246,6 +246,29 @@ a night it fits in the 30 minutes on a runner up to 2.5 times slower, and the me
 is 150 minutes for the nightly run instead of 120. A file the budget does not reach is counted in
 the summary line.
 
+### The mutation score
+
+The nightly run then tests the benchmarks themselves (`--mutate all`,
+[layers.md](layers.md#mutation-score)): every function of `packages/<pkg>/src` gets injected
+slowdowns, and each one a case runs is recounted with them on scratch copies of the tree, with the
+recorded calls of step 11 (a quadratic mutant that growth from recorded calls flags is caught) and
+main's app weights (the missed functions are ranked by them). The summary gets the score per
+package and operator and the top missed functions, each with a case that would catch it; the
+artifact has `mutation/mutation.json` with every function. It has its own budget of 75 minutes
+(`--mutate-budget`, seconds), so the nightly measure job's limit is 240 minutes.
+
+On ogygia main `b46798f` it mutated all 631 functions a case runs in 20 minutes on an M4 Max
+(2,428 recounts, 105 CPU-minutes; [layers.md](layers.md#mutation-score) has the scores). The suite
+gives it every core (it is the run's last layer), so on a 4-core runner, about 2.5 times slower
+per core, that is about 65 minutes, close to its budget. A run whose budget ends first reports the
+functions it did not reach as skipped, and says so (a wall-time budget, so which ones depends on
+the runner's speed; the next night reuses nothing, since each run has fresh scratch copies).
+
+It does not run on PRs or main pushes. The score is about the benchmarks, not about a change: a
+PR's changed function is caught or missed whatever the PR did, and a new function no case runs is
+already the gate's job ([The gate on ogygia](#the-gate-on-ogygia)). `heisenbench mutate --modules`
+can score only some modules, if a PR ever wants it.
+
 A main or nightly run also counts the real apps, in an `app-weights` job beside the full run
 (read-only like it, 60 minutes): it waits for the commit's pkg.pr.new build, builds the ogygia app
 of the blog and of every scenario (`build-all.ts --only ogygia`) on Node 22, as the app benchmark
@@ -469,8 +492,10 @@ files per tree count one reused case again, default 1), `--measure time,bytes,le
 real cost on that traffic), `--requests-per-day <n>`, `--search changed|all|off` (default
 `changed` for a PR, `off` for a full run; the nightly run passes `all`), `--search-budget
 <seconds>` (default 240 for a PR, 1800 for a full run, `0` turns the search off), `--history <dir>`
-(a full run: the `results` branch, a checkout or a blobless clone, for the trend over main). The
-trend alone, on the runs the history already holds:
+(a full run: the `results` branch, a checkout or a blobless clone, for the trend over main),
+`--mutate all|<n>|off` (a full run: the mutation score of every function a case runs, or of a
+sample of n; default off, the nightly run passes `all`), `--mutate-budget <seconds>` (default
+4500). The trend alone, on the runs the history already holds:
 `node suites/ogygia/src/trend-cli.ts --repo <ogygia clone> --history <dir>`. On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
 already installed.

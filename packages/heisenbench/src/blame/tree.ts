@@ -60,7 +60,8 @@ function mirror_dir(
 	dst_root: string,
 	s: string,
 	d: string,
-	modules_root: string
+	modules_root: string,
+	copy_modules: boolean
 ): void {
 	mkdirSync(d, { recursive: true });
 	for (const e of readdirSync(s, { withFileTypes: true })) {
@@ -73,8 +74,8 @@ function mirror_dir(
 			if (existsSync(other)) mirror_modules(modules_root, dst_root, other, to);
 		} else if (e.isSymbolicLink()) copy_link(src_root, dst_root, from, to);
 		else if (e.isDirectory()) {
-			if (e.name === 'node_modules') mirror_modules(src_root, dst_root, from, to);
-			else mirror_dir(src_root, dst_root, from, to, modules_root);
+			if (e.name === 'node_modules' && !copy_modules) mirror_modules(src_root, dst_root, from, to);
+			else mirror_dir(src_root, dst_root, from, to, modules_root, copy_modules);
 		} else if (e.isFile()) copyFileSync(from, to, constants.COPYFILE_FICLONE);
 	}
 }
@@ -85,14 +86,22 @@ function mirror_dir(
  * the project's files of `root` with the dependencies of the other install. Links into the other
  * checkout (pnpm's links to workspace packages) reach the copy's packages, so the project's code
  * is `root`'s wherever it is loaded from.
+ *
+ * `copy_modules` copies the root's own dependencies too (links inside the root stay inside the
+ * copy), so a dependency's file can be rewritten in the copy: the mutation layer's dependency
+ * mutants. Slower, and only asked for then.
  */
-export function mirror_tree(root: string, dst: string, o: { modules_from?: string } = {}): void {
+export function mirror_tree(
+	root: string,
+	dst: string,
+	o: { modules_from?: string; copy_modules?: boolean } = {}
+): void {
 	const src = resolve(root);
 	const out = resolve(dst);
 	const modules = o.modules_from === undefined ? src : resolve(o.modules_from);
 	if (inside(src, out) || inside(modules, out))
 		throw new Error('heisenbench: the scratch tree cannot be inside the root');
-	mirror_dir(src, out, src, out, modules);
+	mirror_dir(src, out, src, out, modules, o.copy_modules === true);
 }
 
 /**

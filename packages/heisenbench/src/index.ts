@@ -29,6 +29,14 @@ export type {
 	RegressedCase as BlameCase
 } from './blame/index.ts';
 export { render_blame as renderBlame } from './blame/markdown.ts';
+export { mutation_score as mutationScore, MUTATION_SCHEMA } from './mutation/index.ts';
+export type {
+	MutationOptions,
+	MutationReport,
+	MutantResult,
+	FunctionResult as MutatedFunction
+} from './mutation/index.ts';
+export { render_mutation as renderMutation } from './mutation/markdown.ts';
 export { upgrade_diff as upgradeDiff, find_bumps as findBumps } from './upgrade/index.ts';
 export type {
 	Bump,

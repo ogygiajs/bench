@@ -15,8 +15,10 @@ name: heisenbench
 #                                      benchmark comment (the first section; the app benchmark fills
 #                                      its own when it finishes).
 #   repository_dispatch `ogygia-main`  a push to ogygia's main: every bench file of that commit.
-#   schedule (nightly)                 every bench file of ogygia's main head, and the worst-case
-#                                      search over every case that declares an input.
+#   schedule (nightly)                 every bench file of ogygia's main head, the worst-case
+#                                      search over every case that declares an input, and the
+#                                      mutation score: injected slowdowns in every function a case
+#                                      runs, and which ones the cases notice.
 #   workflow_dispatch                  by hand: `sha`, plus `base_sha` for a PR-style comparison;
 #                                      with `pr`, the section is posted to that PR of `comment_repo`.
 #                                      Kept as an artifact only.
@@ -155,8 +157,9 @@ jobs:
       contents: read
     # A PR counts and times what its changes reach; a full run also takes real bytes and leaks of
     # every case (about 15 s a case).
-    # The nightly run also has the worst-case search over every case (30 minutes at most).
-    timeout-minutes: ${{ github.event.action == 'ogygia-heisenbench' && 45 || github.event_name == 'schedule' && 150 || 120 }}
+    # The nightly run also has the worst-case search over every case (30 minutes at most) and the
+    # mutation score (75 minutes at most, its own budget).
+    timeout-minutes: ${{ github.event.action == 'ogygia-heisenbench' && 45 || github.event_name == 'schedule' && 240 || 120 }}
     steps:
       # No token in .git/config: everything after the install runs ogygia's code.
       - uses: actions/checkout@v7
@@ -178,9 +181,10 @@ jobs:
       # of a main run stores them) and, when the owner has uploaded one, by the weights of real
       # production traffic (`heisenbench/main/real-weights.json`, docs/ci.md "Real traffic"): those
       # files of the results branch, read as data. A missing app weights file or branch is said in
-      # one line of the section; a missing real-traffic file changes nothing.
+      # one line of the section; a missing real-traffic file changes nothing. The nightly run ranks
+      # the functions its mutants found unmeasured by the same weights.
       - name: Fetch main's real-app weights
-        if: needs.plan.outputs.base_sha != ''
+        if: needs.plan.outputs.base_sha != '' || github.event_name == 'schedule'
         continue-on-error: true
         uses: actions/checkout@v7
         with:
@@ -227,14 +231,19 @@ jobs:
           # the nightly run searches every case that declares an input (docs/ci.md#full-runs)
           SEARCH: ${{ github.event_name == 'schedule' && 'all' || '' }}
           SEARCH_BUDGET: ${{ github.event_name == 'schedule' && '1800' || '240' }}
+          # the nightly run mutates every function a case runs (docs/ci.md#the-mutation-score)
+          MUTATE: ${{ github.event_name == 'schedule' && 'all' || '' }}
           HISTORY: ${{ needs.plan.outputs.base_sha == '' && format('{0}/history', runner.temp) || '' }}
         run: |
           set -euo pipefail
+          WEIGHTS=""
+          if [ -n "$BASE_SHA" ] || [ -n "$MUTATE" ]; then WEIGHTS="$GITHUB_WORKSPACE/_weights/heisenbench/main/app-weights.json"; fi
           node suites/ogygia/src/cli.ts --sha "$SHA" ${BASE_SHA:+--base "$BASE_SHA"} ${PR:+--pr "$PR"} \
             ${HISTORY:+--history "$HISTORY"} \
-            ${BASE_SHA:+--weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/app-weights.json"} \
+            ${WEIGHTS:+--weights "$WEIGHTS"} \
             ${BASE_SHA:+--real-weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/real-weights.json"} \
             ${SEARCH:+--search "$SEARCH"} --search-budget "$SEARCH_BUDGET" \
+            ${MUTATE:+--mutate "$MUTATE"} \
             --kind "$KIND" --work "$RUNNER_TEMP/heisenbench" --out suites/ogygia/out --run-url "$RUN_URL" \
             --cache "$RUNNER_TEMP/heisenbench-cache"
           cat suites/ogygia/out/section.md >> "$GITHUB_STEP_SUMMARY"

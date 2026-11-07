@@ -52,6 +52,11 @@ export interface RecountOptions {
 	node_args: readonly string[];
 	env: NodeJS.ProcessEnv;
 	timeout_ms: number;
+	/**
+	 * More of child.ts's job: the mutation layer's twin check, growth, recorded growth, a listing,
+	 * a step cap. With growth or a listing the file at `out` holds that instead of a report.
+	 */
+	job?: Record<string, unknown>;
 }
 
 /** Count the cases on the lane; the report, or why there is none. */
@@ -69,7 +74,8 @@ export async function recount(
 				sha: null,
 				prefix: o.prefix,
 				deps: o.deps,
-				out: o.out
+				out: o.out,
+				...o.job
 			})
 		);
 		// a preload in the root (ogygia maps Vite-only specifiers to stubs) loads from the copy

@@ -22,6 +22,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Upstream draft    | `heisenbench upstream draft`                         | counting | no (on demand)                             | no (on demand)       |
 | History blame     | `heisenbench history`                                | none     | no (on demand)                             | no (on demand)       |
 | Proof             | `heisenbench prove`                                  | counting | no (on demand)                             | no (on demand)       |
+| Mutation score    | `heisenbench mutate`                                 | counting | no                                         | nightly: all reached |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
 | Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
 | Coverage          | `heisenbench coverage`                               | counting | no                                         | no                   |
@@ -1021,6 +1022,173 @@ this change in `packages/core/src/server/document-assembly.ts` L29–30 (+137.3K
 
 with `locate` in the table at "1 call/request (app scenarios) or 201 µs/request of real time × 37:
 1756x apart", the same row the ranked findings show for it. 8 recounts, 3 s.
+
+## Mutation score
+
+Do the benchmarks notice a slowdown? Mutation testing checks tests by planting bugs and seeing
+whether a test fails. `heisenbench mutate` checks bench cases the same way, with slowdowns that
+keep what the code does, and counts are exact, so "a case noticed" is a yes or a no, never a
+judgment through noise.
+
+```bash
+heisenbench mutate <bench files...> --root <dir> --list sources.txt [--report base.json] [--sample 60|all] [--seed 1]
+```
+
+**The mutants.** Every function of the source files (`--list`, one path per line) gets up to
+four, each a rewrite of its source in a scratch copy that adds text on existing lines only, so
+every line keeps its number. With `--mutate-deps on`, the dependency functions a case runs get
+them too; each scratch copy then copies `node_modules` instead of linking it (about 10 s per copy
+for ogygia's 600 MB), so the rewritten file is the one Node resolves:
+
+| Operator    | The rewrite                                                                                                                             | Applies to                    |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| `double`    | at the end of the outermost call, a counted loop runs until the steps since the call began have doubled: the call costs twice its steps | sync functions                |
+| `quadratic` | one more pass over the collection a loop walks (`for (const _ of xs) {}`) at the start of each iteration, its result unused             | a loop over a plain path      |
+| `alloc`     | one more object per iteration of that loop, or per call when there is no loop                                                           | every function                |
+| `cache`     | the memo is defeated: `if (c.has(k)) return …` never hits, `const hit = c.get(k)` reads nothing, `x ??= f()` always computes            | a memo of one of those shapes |
+
+The loop a mutant goes into is the one whose body ran the most steps in the base count. Generators
+take none; `double` leaves async functions alone (their steps while they wait are other code's).
+A recursive function doubles once, at its outermost call.
+
+**The twin.** A slowdown that changes behavior is not a slowdown. The mutated function also hands
+everything it returns, throws or (a constructor) builds to a hook that fingerprints it: data
+properties in order, Map and Set entries, cycles by reference, at most 20,000 values, read through
+built-ins captured before the measuring window so the counts never depend on it, and the scratch
+copy's path replaced by `<root>`. The original is counted with the same hook alone, on the same
+cases, and the two must agree call for call. Only a call that is not inside another call of the
+same function is compared (a defeated memo makes a recursive function call itself more; its
+outermost answer is what must not change), and past 2 million values in one count each further
+value is walked 64 values deep. A mutant that differs, or makes a case throw, is discarded, unless
+the original itself answers differently when counted again (a setup that draws a fresh key pair):
+then the twin cannot judge, the counts still can, and the mutant says so. Walking a generator
+twice consumes it, so a quadratic mutant of a function that counts what a generator yields
+returns a smaller count, and is discarded.
+
+**Caught.** By the rules a PR comment uses:
+
+- `double`, `alloc`, `cache`: the step table of `heisenbench diff` would show a change, the
+  hooked original against the mutant (a function whose own steps, allocations or bytes moved in
+  some case; counts are exact, so any change shows). It is also **loud** when a case grew by 1% and
+  1,000 steps or more, blame's threshold, the line the comment leads with.
+- `quadratic`: growth flags a class change: a case that declares `scale` (what CI grows) goes from
+  linear to quadratic or worse, or, with `--records`, growth from recorded calls newly finds the
+  function growing. The extra steps at the bench's one size are kept (`noticed_steps`) but are not
+  enough: at one size a quadratic loop looks like a constant cost. A mutant whose growth goes past
+  this layer's cap (below) at its smallest sizes, where the original fitted below quadratic, is
+  caught too: CI's growth, with its cap of 10¹⁰, would fit it. So is one whose growth does not
+  finish within 5 minutes, CI's limit for growing a bench file, where the original's did: the
+  comment lists a file that runs past it. That is the one verdict the clock gives.
+
+A counted case has a cap of 64 times its own steps: a mutant that runs past it is stopped there,
+and that is a case the comment would show as failed, so it is caught (and loud).
+
+A function no case runs misses every mutant with no recount: the change is inside a function that
+never ran, so no count can move.
+
+**Cost.** Blame's scratch copies and recount children (one child per tree, `--jobs` side by side,
+default half the cores up to 4), and only the cases that ran the function in the base count (the
+base report is finer than a bench file's import graph: a case that never calls the function
+cannot change). Every tree is counted once, keyed by the sha256 of its content, the cases, the
+job, Heisenbench's own source and the root's commit; with `--work` the counts stay on disk and a
+second run reuses them. A function costs its hooked original, one count per mutant and, for a
+quadratic mutant, a growth of its `scale` cases (the root's growth of each case is counted once and
+shared). Growth here has a cap of 5×10⁸ steps per run: a quadratic mutant at 100x stops there and
+is fitted on the doubling ladder below it. The recount budget (`--max-recounts`, 3,000) is spent in
+a fixed order, a function only when all of its recounts fit, so the same seed gives the same report;
+the wall-time budget (`--budget-ms`, 60 minutes) is a safety net that can end a run early.
+
+**Sampling.** `--sample n` (default 60) mutates n of the functions a case runs, stratified by
+package (each package its share, at least one), with a seeded generator. The functions no case
+runs are always all in, at no cost. Each package's score is then its unreached mutants exactly plus
+its sample's rate times its reached mutants (a stratified estimate, marked `≈`). `--sample all` is
+exact.
+
+**The report.** A score per package and operator, and overall, two ways: of every function's
+mutants, and of the mutants in functions a case runs. The missed functions are ranked by real
+cost when real-traffic weights are given (what doubling the function would cost the traffic per
+day), else by app weights (its inclusive steps per unit of real work), else by its steps in the
+bench cases, and the top ones get a case skeleton that would catch the miss: a new case in the
+package's bench file for a function no case runs (importing it, or its `__heisenbench` export,
+with a `scale` over the collection its loop walks); for a quadratic miss, which case to give a
+`scale` and what it must grow (the collection, and the argument it comes in), checked by growing
+the hottest case without one the generic way; for a cache miss, a case that calls it twice with
+the same input in one run (every run starts from fresh module state, so a memo filled in one call
+never hits otherwise). JSON (`--out`, schema `heisenbench-mutation/1`) and markdown (`--md`).
+
+**The planted test** ([`test/mutation.test.ts`](../test/mutation.test.ts)): a module of five
+functions and a bench file of four cases.
+
+| Function     | The case                    | 2x     | quadratic                             | alloc  | cache  |
+| ------------ | --------------------------- | ------ | ------------------------------------- | ------ | ------ |
+| `sum_all`    | a list that grows (`scale`) | caught | caught (linear to quadratic)          | caught |        |
+| `tag_all`    | three words, no `scale`     | caught | missed (the step table saw +48 steps) | caught |        |
+| `count_iter` | a generator                 | caught | discarded (changed what it returns)   | caught |        |
+| `label`      | the same key twice          | caught |                                       | caught | caught |
+| `never`      | none                        | missed | missed                                | missed |        |
+
+`Benchmarks catch 80% of 2x slowdowns, 33% of linear-to-quadratic slowdowns, 80% of extra
+allocations and 100% of defeated caches`, 23 recounts (4 of them growth), 2 s on an M4 Max. The same seed gives the
+same report from fresh scratch copies, and a second run with the same `--work` counts nothing
+again.
+
+**On ogygia** main `b46798f` (`--sample all`, with the nightly flow's recorded calls and main's
+app weights, M4 Max, 4 copies side by side): 8,178 functions in 519 source files, 631 of them run
+by a case and take a mutant (65 more are in compiled Svelte modules and take none).
+
+```
+Benchmarks catch 8% of 2x slowdowns, 2% of linear-to-quadratic slowdowns, 7% of extra allocations
+and 12% of defeated caches; in the functions a case runs, 100% of 2x slowdowns, 18% of
+linear-to-quadratic slowdowns, 95% of extra allocations and 90% of defeated caches.
+```
+
+| Package              | Functions | Run by a case |  2x | quadratic | alloc | cache |
+| -------------------- | --------: | ------------: | --: | --------: | ----: | ----: |
+| `@ogygia/core`       |     3,594 |           325 |  9% |  2% · 15% |    8% |   12% |
+| `@ogygia/devtools`   |     2,972 |           180 |  6% |  1% · 16% |    6% |   10% |
+| `@ogygia/content`    |       704 |            52 |  9% |  6% · 39% |    7% |   13% |
+| `@ogygia/postrender` |       166 |            16 | 10% | 12% · 33% |   10% |    0% |
+| `@ogygia/router`     |       109 |            24 | 24% |   0% · 0% |   21% |    0% |
+| `@ogygia/federation` |       103 |            20 | 24% |   0% · 0% |   20% |       |
+| `@ogygia/flags`      |        41 |            15 | 42% |   0% · 0% |   37% |  100% |
+| five more packages   |       489 |             0 |  0% |        0% |    0% |    0% |
+
+(After `·`, of the functions a case runs, where it is not 100% or close.) What it says, most
+important first:
+
+1. **Most of the code is never run by a case.** 7,547 of 8,178 functions miss every mutant. By the
+   app weights, the heaviest of them are the server request path, `OgygiaHandle >
+   inject_client_seeds` and the `transformPageChunk` it runs (7.3 million steps per dashboard
+   server request), and the client's hydration path, `hydrate_island`, `OgygiaRegion > #hydrate`
+   and `drain_background` (0.8 million steps per dashboard interaction). A 2x slowdown of any of
+   them reaches no bench case, so no PR comment would show it.
+2. **Quadratic slowdowns pass even where a case runs the code.** 26 of 146 judged (18%). Of the 120
+   missed: in 58 a case with `scale` runs the function but its scale grows something else (the
+   heaviest is `DocumentTail > render`, 2.2 million steps per dashboard request, whose loop walks
+   `this.#props`; then `seed-refs.ts > measure`); 26 have no case with `scale` at all (the
+   morph's `reconcile_children`, 0.34 million steps per docs interaction); 19 sit in a loop the
+   cases' inputs never enter; and 17 run only under a case that is already quadratic
+   (`transformHost` grows quadratically through acorn's parser, so a new quadratic loop in the
+   compiler does not change its class: a class change is the only growth finding).
+3. **A 2x slowdown always shows, but almost half of them quietly.** All 624 show in the step table;
+   only 342 make a case grow by 1% and 1,000 steps, the threshold at which the comment says which
+   change made it slower. The other 282 are functions under 1% of every case that runs them.
+4. Allocations: 29 missed, each an allocation in a loop the cases never enter. Caches: 2 missed
+   (the morph's `reconcile_children` fills its maps and never asks twice), 2 discarded (`ref.ts >
+   registry` and `define.ts > memo_of` look like memos, `x ??= new Map()`, but are shared state
+   made once: a fresh one loses what earlier calls put in it, and the twin sees the difference).
+
+The two mutants of `wire.ts > sign_headers` that the twin flagged were not discarded: counted
+again, the original signs differently too (its setup draws a fresh key pair).
+
+The whole run, counting its own base, took 20 minutes (105 CPU-minutes): 2,428 recounts, of which
+2,059 counts (1.2 s each on average), 206 growths (9 s each on average; the costliest, a quadratic
+mutant of `reversible.ts`, runs into growth's 5 minute limit) and 162 growths from recorded calls
+(4 s each); 229 trees were reached twice and counted once. Run again with the same `--work`, it
+counted nothing, took 10 s and wrote the same report. Two runs of a sample of 40 functions (seed 1)
+from fresh scratch copies gave the same 11.6 MB report but for the cost (104 and 129 s). A sample
+that small is a rough estimate of the rarer operators: it put the quadratic score of the functions
+a case runs at 0% (the full run: 18%).
 
 ## Dependency upgrades
 

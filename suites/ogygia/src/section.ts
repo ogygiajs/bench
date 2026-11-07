@@ -36,6 +36,7 @@ import type { Selection } from './select.ts';
 import type { TrendRun } from './trend.ts';
 import type { UpgradeRun } from './upgrade.ts';
 import type { WeightRun } from './weights.ts';
+import type { MutationRun } from './mutation.ts';
 
 export const RESULT_SCHEMA = 'ogygia-heisenbench/1';
 export const HEADING = '#### Heisenbench: steps per function';
@@ -100,6 +101,8 @@ export interface Result {
 	recorded?: RecordedSummary | null;
 	/** A PR: the hunks that made each regressed case slower (absent or null: none regressed, or off). */
 	blame?: BlameRun | null;
+	/** The nightly run: the benchmarks tested by injected slowdowns (mutation.ts). */
+	mutation?: MutationRun | null;
 	/** A PR that counts a dependency at another version: what the upgrade alone costs (absent: none). */
 	upgrade?: UpgradeRun | null;
 	/** A full run: slow creep in each case's steps over main's earlier full runs (trend.ts). */
@@ -694,5 +697,14 @@ export function render_full_summary(r: Result): string {
 	if (r.full_search) lines.push(...full_search_lines(r.full_search));
 	lines.push(...recorded_lines(r));
 	lines.push(...contract_lines(r, true));
+	lines.push(...mutation_lines(r));
 	return lines.join('\n').trimEnd() + '\n';
+}
+
+/** The nightly run's mutation score: Heisenbench's markdown, or why there is none. */
+function mutation_lines(r: Result): string[] {
+	const m = r.mutation;
+	if (!m) return [];
+	if (m.error) return ['', `**The mutation score failed**: ${code(one_line(m.error))}`];
+	return ['', m.markdown.trimEnd()];
 }

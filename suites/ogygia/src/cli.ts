@@ -80,6 +80,7 @@ import { select_all, select_changed } from './select.ts';
 import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
 import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
+import { MUTATION_BUDGET_MS, run_mutation } from './mutation.ts';
 import { run_contracts } from './contracts.ts';
 import { run_upgrade } from './upgrade.ts';
 import type { Tree } from './checkout.ts';
@@ -105,12 +106,16 @@ const { values } = parseArgs({
 		'search-budget': { type: 'string' },
 		recorded: { type: 'string' },
 		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) },
+		mutate: { type: 'string', default: 'off' },
+		'mutate-budget': { type: 'string', default: String(MUTATION_BUDGET_MS / 1000) },
 		upgrade: { type: 'string', default: 'on' },
 		history: { type: 'string' },
 		cache: { type: 'string' },
 		'cache-verify': { type: 'string', default: String(CACHE_VERIFY) }
 	}
 });
+if (values.mutate !== 'off' && values.mutate !== 'all' && !(Number(values.mutate) > 0))
+	throw new Error('--mutate takes all, a number of functions, or off');
 const cache_verify = Number(values['cache-verify']);
 if (!(Number.isInteger(cache_verify) && cache_verify >= 0))
 	throw new Error('--cache-verify takes a whole number');
@@ -382,6 +387,25 @@ async function main(): Promise<void> {
 			recorded: result.recorded.findings,
 			requests_per_day: values['requests-per-day'] ? Number(values['requests-per-day']) : undefined
 		});
+	}
+
+	// The benchmarks tested by mutants: a full run only, when asked (the nightly run, docs/ci.md).
+	if (!mb && values.mutate !== 'off' && result.head) {
+		const dir = join(out, 'mutation');
+		const recorded_dir = join(out, 'recorded');
+		result.mutation = await run_mutation(head, result.head, dir, log, {
+			sample: values.mutate === 'all' ? 'all' : Number(values.mutate),
+			budget_ms: Math.round(Number(values['mutate-budget']) * 1000),
+			weights: values.weights ? resolve(values.weights) : null,
+			records: {
+				dir: join(recorded_dir, 'records'),
+				alias: join(recorded_dir, 'aliases.json')
+			},
+			work: join(work, 'mutation')
+		});
+		log(
+			`mutation score: ${result.mutation.error ?? `${result.mutation.evaluated} functions mutated in ${result.mutation.seconds} s`}`
+		);
 	}
 
 	if (values.cache) {

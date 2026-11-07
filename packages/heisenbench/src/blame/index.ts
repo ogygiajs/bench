@@ -11,8 +11,9 @@ import type { Report } from '../report.ts';
 import { ddmin } from './ddmin.ts';
 import type { Outcome, Tester } from './ddmin.ts';
 import { diff_units } from './hunks.ts';
-import type { TreeFiles, Unit, Units } from './hunks.ts';
-import { mirror_tree, remove_tree, write_tree } from './tree.ts';
+import type { Unit, Units } from './hunks.ts';
+import { Lanes } from './lanes.ts';
+import { remove_tree } from './tree.ts';
 import type { FunctionChange } from '../diff/index.ts';
 import { load_weights } from '../calibrate/weights.ts';
 import { rank_changes } from '../weight/rank.ts';
@@ -263,47 +264,6 @@ interface Count {
 
 export { move_args } from './recount.ts';
 
-class Lanes {
-	#free: string[] = [];
-	#made = 0;
-	#waiting: Array<(dir: string) => void> = [];
-	root: string;
-	work: string;
-	jobs: number;
-	fixed: TreeFiles;
-	prefix: string;
-	constructor(root: string, work: string, jobs: number, fixed: TreeFiles, prefix: string) {
-		this.root = root;
-		this.work = work;
-		this.jobs = jobs;
-		this.fixed = fixed;
-		this.prefix = prefix;
-	}
-
-	take(): Promise<string> {
-		const dir = this.#free.pop();
-		if (dir) return Promise.resolve(dir);
-		if (this.#made < this.jobs) {
-			const d = join(this.work, `tree-${this.#made++}`);
-			remove_tree(d); // one a stopped run left
-			mirror_tree(this.root, d);
-			write_tree(d, this.fixed, this.prefix);
-			return Promise.resolve(d);
-		}
-		return new Promise((r) => this.#waiting.push(r));
-	}
-
-	give(dir: string): void {
-		const w = this.#waiting.shift();
-		if (w) w(dir);
-		else this.#free.push(dir);
-	}
-
-	remove(): void {
-		for (let i = 0; i < this.#made; i++) remove_tree(join(this.work, `tree-${i}`));
-	}
-}
-
 /** The units a set leaves applied, sorted. */
 function ids(s: Iterable<number>): number[] {
 	return [...s].sort((a, b) => a - b);
@@ -350,7 +310,7 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 		const out = join(work, 'counts', `${hash}.json`);
 		let got: { report: Report | null; error: string | null };
 		try {
-			write_tree(lane, units.tree(applied), prefix);
+			lanes.put(lane, units.tree(applied));
 			got = await recount({
 				lane,
 				given_root,

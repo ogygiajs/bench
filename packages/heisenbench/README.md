@@ -60,6 +60,7 @@ code as it ships, nothing counted) next to the count:
 | Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
 | Upgrades          | What does a dependency upgrade cost, on which of the package's lines?              |
 | Upstream draft    | The upgrade's slowdown as an issue for the package: a repro, the counts, the line. |
+| Mutation score    | Would a case notice? Slowdowns planted in each function, and which ones it caught. |
 | History blame     | Which commit last made each line cost more or less, and by how much?               |
 
 [docs/layers.md](docs/layers.md) explains each one.
@@ -349,6 +350,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.                               |
 | `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.                                 |
 | `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.                              |
+| `heisenbench mutate <bench files> --root <dir> --list <sources>`                       | Plants slowdowns that keep the output in every function; scores what the cases catch, a case for each miss.                                    |
 | `heisenbench history <file>[:<function>] --reports <dir>`                              | `git blame` for steps: the commit that last changed each line's cost, by how much; a timeline per function.                                    |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                                                     |
 | `heisenbench receipt <bench files> --package <tarball \| name@version>`                | A release's receipt: the published tarball counted in a scratch tree, each case in a process of its own, with everything the counts depend on. |
@@ -583,6 +585,10 @@ only comparable on one V8.
   changed cases that declare a `setup`, within a 4 minute budget, and nightly on every case. Blame
   runs on a PR only for cases whose steps grew by 1% and 1,000 steps or more, within 60 recounts
   and 5 minutes.
+- **The mutation score plants four kinds of slowdown only.** Twice the steps, one more pass over
+  a loop's collection, one more allocation, a defeated memo of a few shapes. A slowdown of another
+  shape is not planted, compiled Svelte modules are not mutated, and an async function takes no
+  2x mutant ([layers.md](docs/layers.md#mutation-score)).
 - **Blame sees hunks, not their meaning.** It names the smallest set of hunks that carries the
   extra steps. Hunks that only load together (a renamed function and its callers) come out as one
   set; a regression from a dependency or the lockfile is said to be outside the hunks, since every
