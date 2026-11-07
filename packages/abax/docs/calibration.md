@@ -109,7 +109,8 @@ The record from 2026-11-06, with other work running on the machine (load average
 | 3 vs 4 | 1.1% / -4.2%                | 1.1% / -0.1%          | timed two ways  | points yes, prices no     |
 | 4 vs 5 | 1.2% / +2.5%                | 0.9% / +0.2%          | 4.2%            | agreed                    |
 
-Sets 4 and 5 are committed in `calibration/data/`, and the weights are fitted on both together.
+Sets 4 and 5 are committed in `calibration/data/` (`points-corpus-1.json` and `-2.json`,
+`points-ogygia-1.json` and `-2.json`), and the weights are fitted on both together.
 
 ## Running it
 

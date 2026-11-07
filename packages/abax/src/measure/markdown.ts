@@ -60,6 +60,18 @@ export function render_time(t: TimeComparison): string {
 		return lines.join('\n');
 	}
 	const metrics: TimeMetric[] = ['p50_ns', 'p99_ns', 'throughput', 'cpu_ns'];
+	const moved = t.cases.filter((c) =>
+		metrics.some((m) => c.verdicts[m].regressed || c.verdicts[m].improved)
+	).length;
+	// Nothing beyond noise: one line, and the table for whoever wants the numbers.
+	if (moved === 0) {
+		lines.push(
+			`No case got slower or faster beyond noise (${t.cases.length} case${t.cases.length === 1 ? '' : 's'}, ${t.repeats} turns each).`,
+			'',
+			'<details><summary>Times</summary>',
+			''
+		);
+	}
 	lines.push(
 		`| Case | ${metrics.map((m) => LABEL[m]).join(' | ')} |`,
 		`| --- | ${metrics.map(() => '---').join(' | ')} |`
@@ -78,9 +90,10 @@ export function render_time(t: TimeComparison): string {
 	}
 	lines.push(
 		'',
-		`${t.repeats} turns each, the side going first alternating. ⚠️ worse beyond noise, better: better beyond noise, ≈ within noise.`,
+		`${t.repeats} turns each, the side going first alternating. Each cell is the range over the turns, base → PR: ⚠️ worse beyond noise, \`better\` better beyond noise, ≈ within noise.`,
 		''
 	);
+	if (moved === 0) lines.push('</details>', '');
 	if (t.errors.length > 0)
 		lines.push(`**Failed**: ${t.errors.map((e) => `${code(e.name)} (${e.side})`).join(', ')}`, '');
 	return lines.join('\n');

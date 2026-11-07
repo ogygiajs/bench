@@ -147,7 +147,7 @@ export function private_dts(opts: DtsOptions): string {
 			}
 			let text = st.getText(d);
 			if (text.startsWith('declare ')) text = text.slice(8);
-			locals.push('export ' + text);
+			locals.push('export ' + tabs(text));
 		}
 		if (!abax_type) continue;
 
@@ -178,10 +178,10 @@ export function private_dts(opts: DtsOptions): string {
 			};
 			return ts.visitNode(node, visit) as T;
 		};
-		const type_text = printer.printNode(ts.EmitHint.Unspecified, qualify(abax_type), d);
+		const type_text = tabs(printer.printNode(ts.EmitHint.Unspecified, qualify(abax_type), d));
 		const spec = rel_specifier(out_dir, file);
 		const body = [
-			`declare module ${JSON.stringify(spec)} {`,
+			`declare module '${spec.split('\\').join('\\\\').split("'").join("\\'")}' {`,
 			`\tnamespace ${NS} {`,
 			...locals.map((l) =>
 				l
@@ -204,6 +204,18 @@ export function private_dts(opts: DtsOptions): string {
 		...blocks,
 		''
 	].join('\n');
+}
+
+/** TypeScript prints with four spaces; the file around it indents with tabs. */
+function tabs(text: string): string {
+	return text
+		.split('\n')
+		.map((line) => {
+			let n = 0;
+			while (line.startsWith('    ', n * 4)) n++;
+			return '\t'.repeat(n) + line.slice(n * 4);
+		})
+		.join('\n');
 }
 
 export function write_private_dts(opts: DtsOptions): void {

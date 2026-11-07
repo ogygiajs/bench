@@ -90,11 +90,18 @@ function ns_text(ns: number): string {
 	return `${sign}${a.toFixed(a >= 10 ? 0 : 1)} ns`;
 }
 
+/** A time in the unit that reads best: `877.86 µs`, the same as the time table. */
+function time_text(ns: number): string {
+	if (ns >= 1e6) return `${(ns / 1e6).toFixed(2)} ms`;
+	if (ns >= 1e3) return `${(ns / 1e3).toFixed(2)} µs`;
+	return `${ns.toFixed(0)} ns`;
+}
+
 /** Changed functions ranked by real-app weight: a short table, or one line saying why not. */
 export function weight_lines(w: WeightRun): string[] {
 	const from = w.sha ? ` (main ${short(w.sha)})` : '';
 	if (w.status !== 'ranked') {
-		return [`**Real-app weight**: not ranked: ${markdownCell(w.note ?? w.status)}${from}.`, ''];
+		return [`**Real-app weight**: not ranked, ${markdownCell(w.note ?? w.status)}${from}.`, ''];
 	}
 	// no function changed: nothing to rank, nothing to say
 	if (w.ranked.length === 0) return [];
@@ -326,7 +333,7 @@ export function render_pr_section(r: Result): string {
 			? `all ${plural(sel.all.length, 'bench file')} ran (${markdownCell(sel.reason ?? '')})`
 			: `${sel.selected.length} of ${plural(sel.all.length, 'bench file')} reach the files this PR changes`;
 	lines.push(
-		`${against}: ${why}. Steps are exact counts, not timings: one run of each side decides.${run_link(meta)}`,
+		`${against}: ${why}. Steps are exact, so one run of each side decides.${run_link(meta)}`,
 		''
 	);
 	const env = env_note(r.diff);
@@ -375,14 +382,14 @@ export function render_full_summary(r: Result): string {
 	lines.push(...did_not_run(r, [['head', 'head']]));
 	if (cases.length > 0) {
 		lines.push(
-			'| Case | Steps | Allocations | Bytes (est.) | Bytes (real) | p50 | Leak | |',
+			'| Case | Steps | Allocations | Bytes (est.) | Bytes (real) | p50 | Leak | Note |',
 			'| --- | ---: | ---: | ---: | ---: | ---: | --- | --- |'
 		);
 		for (const c of cases.slice(0, CAPS.full_rows)) {
 			const m = c.measure;
 			const note = c.error ? `failed: ${code(one_line(c.error, 120))}` : c.stable ? '' : 'unstable';
 			const real = m?.bytes ? fmt(m.bytes.real) : '';
-			const p50 = m?.time ? `${fmt(m.time.p50_ns)} ns` : '';
+			const p50 = m?.time ? time_text(m.time.p50_ns) : '';
 			const leak = m?.leak
 				? m.leak.leaked
 					? `⚠️ ${fmt(m.leak.bytes_per_call)} B/call`

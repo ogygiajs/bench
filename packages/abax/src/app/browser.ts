@@ -107,25 +107,61 @@ interface PwRoute {
 	abort(): Promise<void>;
 }
 
+/** Round trips through the page per settle. */
+const SETTLE_TRIPS = 3;
+
+/**
+ * Lets the page run what a response or an action started. Outside a grant of virtual time the page
+ * runs only network tasks, microtasks and the harness's own evaluations; its timers, message
+ * channels and `scheduler` tasks wait for the next grant. So round trips through the page let a
+ * response's handlers run (and make the requests they make), and nothing else moves.
+ */
+async function settle(page: PwPage): Promise<void> {
+	for (let i = 0; i < SETTLE_TRIPS; i++) await page.evaluate('0').catch(() => 0);
+}
+
 /**
  * The page's network, in order: every request is answered one at a time, in the order the page
  * made them, and the harness waits for the queue to drain before it acts or reads. While a
  * response is out, virtual time stands still (`pauseIfNetworkFetchesPending`); answering in order
  * also fixes which of two concurrent responses the page sees first (a prefetch against the click
  * that wants the same page), which the real network would decide.
+ *
+ * Each response is followed by a settle (the page handles it and makes the requests that leads to)
+ * before the next is answered, and the harness acts or grants time only once a settle made no new
+ * request (Driver.quiet). Without that, the real clock decided whether the page finished reading a
+ * response before the next grant: a navigation's server-island request then went out before or
+ * after the grant that ran the navigation's swap, and the islands morphed before or after the
+ * focused link left the page (ogygia's `clear_aria_hidden_over_focus` counted 104 or 92 steps on
+ * two runs of one build).
  */
 class OrderedNetwork {
 	#chain: Promise<void> = Promise.resolve();
 	#pending = 0;
+	#seen = 0;
+	#settle: () => Promise<void>;
+
+	constructor(settle: () => Promise<void>) {
+		this.#settle = settle;
+	}
+
+	/** Requests answered or queued so far: a change means the page asked for more. */
+	get seen(): number {
+		return this.#seen;
+	}
 
 	answer(route: PwRoute): void {
 		this.#pending++;
+		this.#seen++;
 		this.#chain = this.#chain.then(async () => {
 			try {
-				const response = await route.fetch();
-				await route.fulfill({ response });
-			} catch {
-				await route.abort().catch(() => {});
+				try {
+					const response = await route.fetch();
+					await route.fulfill({ response });
+				} catch {
+					await route.abort().catch(() => {});
+				}
+				await this.#settle();
 			} finally {
 				this.#pending--;
 			}
@@ -190,12 +226,17 @@ class Driver {
 		this.net = net;
 	}
 
-	/** Every response out, and the page done with what they started (no virtual time passes). */
+	/**
+	 * Every response out, and the page done with what they started (no virtual time passes): drain,
+	 * let the page run, and again while that made new requests.
+	 */
 	async quiet(): Promise<void> {
-		await this.net.drained();
-		// two round trips through the page's task queue: the responses' own tasks run first
-		for (let i = 0; i < 2; i++) await this.page.evaluate('0').catch(() => 0);
-		await this.net.drained();
+		for (;;) {
+			const seen = this.net.seen;
+			await this.net.drained();
+			await settle(this.page);
+			if (this.net.seen === seen) return;
+		}
 	}
 
 	/** Grant `ms` of virtual time; resolves when it has passed. */
@@ -306,7 +347,7 @@ export async function run_session(
 		await context.addInitScript(page_clock, PAGE_SEED);
 		const page = await context.newPage();
 		page.on('pageerror', (e) => errors.push(e.message));
-		const net = new OrderedNetwork();
+		const net = new OrderedNetwork(() => settle(page));
 		await page.route('**/*', (route) => net.answer(route));
 		const requests: AppRequest[] = [];
 		page.on('request', (r) => {

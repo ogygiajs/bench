@@ -175,15 +175,17 @@ The `abax` section, in order:
    per unit. Or one line saying why nothing is ranked.
 3. **Steps per function.** One row per changed function per case: self steps base to PR, the Δ
    with its percent and the estimated ns, Δ allocations, Δ bytes, Δ inclusive steps.
-4. **Where.** Collapsed: the lines the change sits on, with Δ steps, allocations and bytes, and
-   "new code" for lines inside a changed hunk.
+4. **Where.** Collapsed: the case and the lines the change sits on, with Δ steps, allocations and
+   bytes, and "new code" for lines inside a changed hunk. A line that changed the same way in
+   several cases is one row.
 5. **Leaks, elided allocations, time-led cases**, when there are any.
 6. **Engine.** New deopts, lost optimizations, inline caches that got worse, per case and line.
    Cases where V8 did not do the same thing twice are listed as unstable.
 7. **Growth.** Cases whose curve class changed, and a collapsed list of the ones that kept it.
 8. **Worst-case search.** One line: how many cases were searched in how much of the budget, and
    one more line for each flagged case, with its worst input.
-9. **Time.** The time table for every case of the selected files.
+9. **Time.** The time table for every case of the selected files. When no case got slower or
+   faster beyond noise, one line says so and the table is collapsed under it.
 
 Every list is capped (20 bench files, 10 files that did not run, 15 engine and growth findings)
 with a count of the rest, which are in `result.json`. Names and errors are escaped for markdown

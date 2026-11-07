@@ -94,6 +94,16 @@ test('price calibration: times built-ins over sizes and writes a new prices vers
 	assert.equal(again.changed, false);
 });
 
+test('price calibration into a file that does not exist yet starts from the committed prices', () => {
+	const out = join(temp_dir('abax-prices-new-'), 'prices.new.json');
+	const current = load_prices().prices;
+	const r = write_prices(out, current.builtins, undefined, PRICES_PATH);
+	assert.equal(r.changed, false);
+	const written = JSON.parse(readFileSync(out, 'utf8')) as Prices;
+	assert.equal(written.version, current.version);
+	assert.deepEqual(written.builtins, current.builtins);
+});
+
 function point(
 	family: string,
 	size: number,
