@@ -26,6 +26,8 @@ export interface LoadOptions {
 	deps?: LoaderConfig['deps'];
 	svelte?: LoaderConfig['svelte'];
 	filter?: string;
+	/** Only the cases with exactly these names (a receipt grows each case in a process of its own). */
+	names?: readonly string[];
 	log?: (line: string) => void;
 }
 
@@ -74,6 +76,10 @@ export async function load_cases(opts: LoadOptions): Promise<BenchCase[]> {
 		opts.log ?? console.error
 	);
 	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));
+	if (opts.names) {
+		const wanted = new Set(opts.names);
+		list = list.filter((c) => wanted.has(c.name));
+	}
 	return list;
 }
 
