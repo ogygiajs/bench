@@ -41,7 +41,11 @@ export type {
 	RecordedGrowthReport,
 	RecordedGrowthOptions
 } from './growth/recorded.ts';
-export { run_search as runSearch, diff_search as diffSearch } from './search/index.ts';
+export {
+	run_search as runSearch,
+	diff_search as diffSearch,
+	render_search as renderSearch
+} from './search/index.ts';
 export {
 	run_audit as runAudit,
 	merge_audits as mergeAudits,

@@ -15,7 +15,8 @@ name: heisenbench
 #                                      benchmark comment (the first section; the app benchmark fills
 #                                      its own when it finishes).
 #   repository_dispatch `ogygia-main`  a push to ogygia's main: every bench file of that commit.
-#   schedule (nightly)                 every bench file of ogygia's main head.
+#   schedule (nightly)                 every bench file of ogygia's main head, and the worst-case
+#                                      search over every case that declares an input.
 #   workflow_dispatch                  by hand: `sha`, plus `base_sha` for a PR-style comparison;
 #                                      with `pr`, the section is posted to that PR of `comment_repo`.
 #                                      Kept as an artifact only.
@@ -154,7 +155,8 @@ jobs:
       contents: read
     # A PR counts and times what its changes reach; a full run also takes real bytes and leaks of
     # every case (about 15 s a case).
-    timeout-minutes: ${{ github.event.action == 'ogygia-heisenbench' && 45 || 120 }}
+    # The nightly run also has the worst-case search over every case (30 minutes at most).
+    timeout-minutes: ${{ github.event.action == 'ogygia-heisenbench' && 45 || github.event_name == 'schedule' && 150 || 120 }}
     steps:
       # No token in .git/config: everything after the install runs ogygia's code.
       - uses: actions/checkout@v7
@@ -201,11 +203,15 @@ jobs:
           PR: ${{ needs.plan.outputs.pr }}
           KIND: ${{ needs.plan.outputs.kind }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # the nightly run searches every case that declares an input (docs/ci.md#full-runs)
+          SEARCH: ${{ github.event_name == 'schedule' && 'all' || '' }}
+          SEARCH_BUDGET: ${{ github.event_name == 'schedule' && '1800' || '240' }}
         run: |
           set -euo pipefail
           node suites/ogygia/src/cli.ts --sha "$SHA" ${BASE_SHA:+--base "$BASE_SHA"} ${PR:+--pr "$PR"} \
             ${BASE_SHA:+--weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/app-weights.json"} \
-            ${BASE_SHA:+--real-weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/real-weights.json"} --search-budget 240 \
+            ${BASE_SHA:+--real-weights "$GITHUB_WORKSPACE/_weights/heisenbench/main/real-weights.json"} \
+            ${SEARCH:+--search "$SEARCH"} --search-budget "$SEARCH_BUDGET" \
             --kind "$KIND" --work "$RUNNER_TEMP/heisenbench" --out suites/ogygia/out --run-url "$RUN_URL"
           cat suites/ogygia/out/section.md >> "$GITHUB_STEP_SUMMARY"
 

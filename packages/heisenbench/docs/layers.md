@@ -15,7 +15,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Time              | `heisenbench time`, `heisenbench run --measure time` | plain    | yes                                        | yes                  |
 | Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
-| Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | no                   |
+| Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | nightly: every case  |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
 | Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
 | Coverage          | `heisenbench coverage`                               | counting | no                                         | no                   |
@@ -500,29 +500,134 @@ It runs on main and nightly, not on PRs ([ci.md](ci.md#full-runs)).
 
 ## Worst-case search
 
-Which input of the same size costs the most steps? `heisenbench search` starts from the case's own input,
-changes one place in it at a time, and keeps a change when it costs at least as many steps. A
-change is a string edit (repeat a character, special characters, reverse), an array edit
-(reverse, sort, shuffle, rotate, make every element the same), a number moved to an edge (0, -1,
-NaN, half; never bigger, so a size given as a number cannot grow the work), or extra nesting. It restarts from the worst input found after 40 tries without
-progress. It stops at 300 evaluations, 2×10⁸ counted steps or 30 s, whichever comes first; the
-first two are deterministic.
+Which input makes a function do the most work per unit of input? `heisenbench search` looks for
+slow parser paths, loops that go superlinear, and regexes that backtrack, in the project's own
+code, before a user's input finds them. It runs the case's function locally, inside the counting
+runtime, each try under a step cap.
 
-The step budget also caps each input: an input that would run past what is left of it is stopped
-inside the loop or call that keeps going, not after it. Such a case is reported as a runaway (an
-input that does not finish), and the search stops there.
+**The objective.** Steps per unit of input (characters, elements, keys; `input_size`) past what
+the case costs on an emptied input (every string and collection empty), so the case's fixed cost
+does not make a tiny input look dense. An input smaller than half the setup's counts as half its
+size. Inputs that set a new density high, or reach new code, are also made twice as big; their
+score is the density times how much faster than linear that doubling grew the steps (1 for
+linear, 2 for quadratic, at most 8).
+
+**The edits.** Strings are edited by their grammar, so they stay valid input: `html` (Svelte
+blocks included), `markdown`, `url` (paths, route patterns, queries), `js`, `json` and `text`. A
+string gets the grammar its text looks like, or the one its case declares
+(`bench(name, fn, { setup, grammar: 'html' })`, or a map from input paths such as `'page.body'`
+to grammars). The search duplicates, nests, wraps, swaps and repeats whole nodes, grows a run of
+one character inside a leaf (half the runs end one character off, `aaaaaaab`, what makes a
+matcher backtrack), and puts near-misses (an opening piece that never closes) at node
+boundaries. An edit that makes the input too big deletes other nodes, or runs of up to four
+sibling nodes, to make room, and for JSON only deletions that still parse. Plain text also gets
+the plain string edits, among them a run of a character taken from another string of the input
+(what the code compares it with). One try in six is a plain edit anywhere in the input: an
+array reversed, sorted, shuffled or made all the same, a number moved to an edge, extra nesting.
+Class instances and functions are never edited, and getters are never read (copies keep them as
+getters).
+
+**Steering.** Each try's per-block counts are its coverage. An input that reaches a block no
+input reached before, or runs one in a new power of two of its count, or sets a new density
+high, goes into a corpus (at most 48 inputs). The search climbs from the current input, keeps a
+change that is at least as dense, and after 40 tries without a new best restarts from the best
+input or from one in the corpus. Every random choice comes from one seeded generator.
+
+**Regexes.** Built-ins are priced by input size, so V8 running a regex that backtracks costs no
+more steps than one that walks its input once. During the search's own runs (never `heisenbench
+run`), every match first runs on a model of V8's backtracking matcher
+([`src/search/regex.ts`](../src/search/regex.ts)); instructions past one walk of the input are
+backtracking, charged like one more character each. A match that goes past its budget is
+stopped before V8 runs it (it could take hours) and reported as an input the code may never
+finish on. The model agreed with V8 on 145,523 test matches; a pattern it cannot model
+(lookbehind, `\p{}`, the `v` flag) or one where it disagrees with V8 is left to V8 and listed as
+not modeled.
+
+**Budget.** 300 tries, 2×10⁸ counted steps (or 600 times the case's own steps, when that is
+more, so a big case gets its tries), or 30 s, whichever comes first; the first two are
+deterministic. Each try has its own cap, 256 times the case's steps (at most 4×10⁹ unless that
+is below 16 times): an input that runs past it is stopped inside the loop or call that keeps
+going, reported as exceeding the cap at its size, never as the worst input, and the search
+stops there. A try that needs more than what is left of the budget is not run. The input never
+grows past its starting size (`--size-factor` to allow more).
+
+**After the search.** When the winner is worth a look (its density at least `--flag` times the
+setup input's, default 4; doubling it grew the steps 2^1.5 times or more; or it never finished),
+it is shrunk by delta debugging: whole grammar nodes deleted or unwrapped, runs of siblings
+deleted, then pieces of characters or elements halved down to one at a time. A change is kept
+while the input still runs away, still grows superlinearly when doubled (a quadratic core loses
+density as it shrinks, never its growth), or else keeps 95% of its density; at most 200 tries,
+with as many steps again as the search had. The shrunk input is then grown from about the
+winner's size to 8 times that (1x, 2x, 4x, 8x) in every way it grows: repeated (the generic
+scaler), nested deeper (its deepest nesting wrapped in more of its own opening and closing
+pieces), or by the case's own `scale`. The steepest way is fitted ([`fit_growth`](../src/growth/fit.ts)),
+and line blame says where the steps past linear go: per line, the steps at 8x past 8 times those
+at 1x.
+
+**Findings.** A case has a finding when the winner's density is at least 4 times the setup
+input's (`dense`), the shrunk input grows quadratically or worse with an exponent of 1.5 or more,
+or goes past its cap while growing (`superlinear`), or an input never finished (`runaway`). The
+JSON section keeps every case; `--md` writes only the findings:
 
 ```
-ok       rank: twenty rows  worst 897 vs typical 897 steps (1x, 300 inputs, stopped by evals)
+- `groups` (planted.bench.ts): 4.403x the setup input's steps per unit of input, grows quadratic (exponent 1.974) when nested deeper, on `{"src":"(m)"}` (shrunk from 60 to 4); most extra steps at m1.ts:23
+  - steps by input size: 46: 6363, 92: 23866, 182: 90241, 362: 350566
+  - `m1.ts:23` in `m1.ts > groups`: +114419 steps (38%)
+  - `m1.ts:24` in `m1.ts > groups`: +100114 steps (33%)
+  - `m1.ts:25` in `m1.ts > groups`: +85821 steps (29%)
 ```
 
 A PR case is flagged when its worst input costs at least 4 times its typical one and at least
-twice the base's ratio. In `heisenbench verify`, the search finds an input that costs 10.64x the typical
-steps for `xs.slice().sort()` and 4.61x for `text.split(pat)`, and nothing for a plain summing
-loop (1.00x).
+twice the base's ratio, when it never finishes and the base does, or when its pattern grows
+superlinearly and the base's does not. `--guided off` is the plain search (random edits, the
+most steps wins, no corpus, no shrinking or growing) and `--regex off` drops the regex model.
 
-Built-ins are priced by input size, so a regular expression that backtracks badly costs no more
-steps than one that does not. This search does not find catastrophic regexes.
+In `heisenbench verify`, the search finds an input that costs 11.25x the typical steps for an
+insertion sort and 4.93x for a naive substring count, and nothing for a plain summing loop
+(1.00x).
+
+**The planted tests** ([`test/search.test.ts`](../test/search.test.ts)), seeds 1 to 3:
+
+- A JSON document whose string values are checked with `/^(\w+\s?)*$/`. The plain mutator, with
+  the regex model on and the same 300 tries, finds no slow input on any seed (1.03x, 1.95x,
+  1.13x the typical steps, never a runaway): its edits break the JSON or cannot grow a value
+  past its seed length. The guided search finds a value the regex backtracks on without end on
+  every seed, within 42 to 111 tries, and shrinks it to one member: `{"":"llllllllllllll+"}`,
+  `{"":"11111111111111/"}`, `{"":"oooooooooooooo-"}` (about 100 characters to 23).
+- A parser that checks its brackets balance, then scans each group to its close: linear on flat
+  input, quadratic on deep valid nesting. The plain mutator finds nothing (1.02x to 1.03x): its
+  edits unbalance the brackets, which the parser rejects. The guided search finds it on every
+  seed, shrinks it to one or two groups (`(m)`, `(3)`, `()(())`) and grows it by nesting:
+  quadratic, exponent 1.97 to 1.99, with all of the extra steps on the three lines of the inner
+  scan.
+- A word counter: no finding (1.03x the setup's density on every seed).
+
+**On ogygia** main `01dc5b9` (M4 Max, seed 1, one process per bench file, every case bounded by
+tries or steps, never by the clock): 57 cases in 11 files, 698 s in all, and 729 s on a second
+run. Per file: `compiler` 381 s, `markdown` 152 s, `markup` 58 s, `serialize` 34 s, `match` 25
+s, `profiler` 19 s, `runtime` 11 s, `stitch` 9 s, `wire` 6 s, `dispatch` 2 s, `flags` 1 s. The
+two runs gave the same findings, and the same report for every file but `wire`, whose setup
+draws new key pairs on each run. Four findings:
+
+- `transformHost`, server and client legs: real, in Svelte's parser (`svelte@5.56.8`,
+  `src/compiler/phases/1-parse/state/tag.js:491`). Each `{#snippet name(params)}` blanks out
+  the whole template before it (`template.slice(0, params_start).replace(/\S/g, ' ')`) to parse
+  its parameters at the right offsets, so a file with n snippets costs about n² characters. The
+  search shrank a 7,957-character page to `{#snippet r()}<p></p>pet}` and grew it: quadratic,
+  exponent 1.92. Plain `svelte/compiler` `parse` on closed snippets agrees: 46 ms for 500
+  `{#snippet r(a)}<p>{a}</p>{/snippet}`, 170 ms for 1,000, 676 ms for 2,000, 2.8 s for 4,000.
+  Not ogygia's code; a component needs hundreds of snippets for it to matter.
+- `assemble`: harmless. An input with no `</head>` (the search reversed the page) makes `locate`
+  (`packages/core/src/server/document-assembly.ts:29`) scan the whole string with `indexOf`
+  instead of stopping early: 13.6x the setup's steps per character, but 0.19 steps per character
+  and linear.
+- `doc_diff`: harmless. Two renders that differ in most rows cost more per byte (4.8x) than two
+  that differ in a few, in the per-attribute grouping (`packages/devtools/src/profiler/doc-diff.ts:254`),
+  and the doubled input costs 2.03 times as much: linear.
+
+A case whose input holds class instances (a `Request`, a `URL`) gets them shared between tries,
+never copied: a function that caches by such an object (the flags bench memoizes per request)
+runs warm on every try after the first, and the search finds nothing there.
 
 ## Real-app weight
 

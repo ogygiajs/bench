@@ -1,4 +1,6 @@
-import { clone } from '../growth/scale.ts';
+import { clone, data_keys, shallow_copy } from '../growth/scale.ts';
+import { NEAR_COMMON, declared_grammar, infer_grammar, nodes_of, parse } from './grammar.ts';
+import type { Grammar, GrammarOption, Node } from './grammar.ts';
 
 /*
  * Input mutations for the slow-input search (spec 9). One mutation changes one place in the input:
@@ -6,6 +8,12 @@ import { clone } from '../growth/scale.ts';
  * another, reverse), an array (reverse, sort up or down, shuffle, swap, rotate, duplicate, all the
  * same), a number (edges: 0, -1, 1, -0, NaN, halves, negation; never bigger than it was, so a
  * size given as a number cannot grow the work), or nesting (wrap a value, nest an object in itself).
+ *
+ * `mutate_guided` edits a string by its grammar (grammar.ts) instead, so the input stays valid:
+ * whole nodes are duplicated, nested in themselves, wrapped, swapped, repeated or spliced in from
+ * another input, a leaf grows a run of one of its characters, and near-misses go in at node
+ * boundaries. An edit that makes the input too big deletes other nodes (never the edited one) to
+ * make room.
  */
 
 type Obj = Record<string | number, unknown>;
@@ -92,7 +100,7 @@ function places(v: unknown, path: Path, out: Place[], depth: number): void {
 	if (Array.isArray(v)) {
 		for (let i = 0; i < v.length; i++) places(v[i], [...path, i], out, depth + 1);
 	} else if (is_plain(v)) {
-		for (const k of Object.keys(v)) places(v[k], [...path, k], out, depth + 1);
+		for (const k of data_keys(v)) places(v[k], [...path, k], out, depth + 1);
 	}
 }
 
@@ -106,9 +114,18 @@ function set_at(root: unknown, path: Path, value: unknown): unknown {
 
 function compare(a: unknown, b: unknown): number {
 	if (typeof a === 'number' && typeof b === 'number') return a - b;
-	const x = typeof a === 'string' ? a : (JSON.stringify(a) ?? '');
-	const y = typeof b === 'string' ? b : (JSON.stringify(b) ?? '');
+	const x = typeof a === 'string' ? a : text_of(a);
+	const y = typeof b === 'string' ? b : text_of(b);
 	return x < y ? -1 : x > y ? 1 : 0;
+}
+
+/** JSON of a value, or '' when it has none (or a getter in it throws). */
+function text_of(v: unknown): string {
+	try {
+		return JSON.stringify(v) ?? '';
+	} catch {
+		return '';
+	}
 }
 
 function mutate_string(s: string, r: Rng): [string, string] {
@@ -198,9 +215,33 @@ function mutate_number(x: number, r: Rng): [number, string] {
 /** One mutation of a copy of `input`. Returns the new input and what was done. */
 export function mutate(input: unknown, r: Rng): { input: unknown; what: string } {
 	const root = clone(input);
-	const list: Place[] = [];
-	places(root, [], list, 0);
-	const p = r.pick(list);
+	const all: Place[] = [];
+	places(root, [], all, 0);
+	// only places a mutation can change: a class instance or a function stays as it is
+	const list = all.filter(
+		(x) =>
+			typeof x.value === 'string' ||
+			typeof x.value === 'number' ||
+			Array.isArray(x.value) ||
+			is_plain(x.value)
+	);
+	if (list.length === 0) return { input: root, what: 'nothing' };
+	// half the time a collection, by the square root of its length: one array of 500 rows is not
+	// drowned by the 2,000 values in its rows
+	const lists = list.filter((x) => Array.isArray(x.value) && x.value.length > 1);
+	let p = r.pick(list);
+	if (lists.length > 0 && r.int(2) === 0) {
+		let total = 0;
+		const w = lists.map((x) => (total += Math.sqrt((x.value as unknown[]).length)));
+		const at = r.u32() / 2 ** 32;
+		p =
+			lists[
+				Math.max(
+					0,
+					w.findIndex((t) => at * total < t)
+				)
+			];
+	}
 	const v = p.value;
 	let next: unknown = v;
 	let what = 'nothing';
@@ -214,17 +255,17 @@ export function mutate(input: unknown, r: Rng): { input: unknown; what: string }
 			[next, what] = mutate_array(v, r);
 		}
 	} else if (is_plain(v)) {
-		const keys = Object.keys(v);
+		const keys = data_keys(v);
 		if (keys.length > 0 && r.int(2) === 0) {
 			const k = r.pick(keys);
-			const copy = { ...v };
+			const copy = shallow_copy(v);
 			copy[k] = clone(v);
 			next = copy;
 			what = 'nesting: nest an object in itself';
 		} else if (keys.length >= 2) {
 			const a = r.pick(keys);
 			const b = r.pick(keys);
-			const copy = { ...v };
+			const copy = shallow_copy(v);
 			copy[a] = v[b];
 			copy[b] = v[a];
 			next = copy;
@@ -233,4 +274,349 @@ export function mutate(input: unknown, r: Rng): { input: unknown; what: string }
 	}
 	const label = p.path.length > 0 ? `${what} at ${p.path.join('.')}` : what;
 	return { input: set_at(root, p.path, next), what: label };
+}
+
+// ---------------------------------------------------------------- grammar plan
+
+/** The grammar of each string place of an input: declared by the case, or inferred once. */
+export class GrammarPlan {
+	#option: GrammarOption | undefined;
+	#by_shape = new Map<string, Grammar>();
+
+	constructor(option?: GrammarOption) {
+		this.#option = option;
+	}
+
+	/** The grammar of the string at `path` (one per place, array indices aside). */
+	at(path: Path, s: string): Grammar {
+		const shape = shape_of(path);
+		let g = this.#by_shape.get(shape);
+		if (!g) {
+			g = declared_grammar(this.#option, path) ?? infer_grammar(s);
+			this.#by_shape.set(shape, g);
+		}
+		return g;
+	}
+
+	/** `place -> grammar name`, for the report. */
+	names(): Record<string, string> {
+		const out: Record<string, string> = {};
+		const keys = [...this.#by_shape.keys()].sort();
+		for (const k of keys) out[k] = this.#by_shape.get(k)!.name;
+		return out;
+	}
+}
+
+/** `pages.*.body`: a path with its array indices as `*` (`<input>` for the root). */
+export function shape_of(path: Path): string {
+	if (path.length === 0) return '<input>';
+	return path.map((p) => (typeof p === 'number' ? '*' : p)).join('.');
+}
+
+export function get_at(root: unknown, path: Path): unknown {
+	let cur = root;
+	for (const k of path) {
+		if (cur === null || typeof cur !== 'object') return undefined;
+		cur = (cur as Obj)[k];
+	}
+	return cur;
+}
+
+/** Every string of an input, with its path. */
+export function string_places(input: unknown): Array<{ path: Path; value: string }> {
+	const list: Place[] = [];
+	places(input, [], list, 0);
+	const out: Array<{ path: Path; value: string }> = [];
+	for (const p of list) if (typeof p.value === 'string') out.push({ path: p.path, value: p.value });
+	return out;
+}
+
+export function replace_at(input: unknown, path: Path, value: unknown): unknown {
+	return set_at(clone(input), path, value);
+}
+
+// ---------------------------------------------------------------- node operators
+
+/** An input's size and the bounds an edit must keep it in. */
+export interface Room {
+	size: number;
+	min: number;
+	max: number;
+}
+
+interface TextEdit {
+	s: string;
+	what: string;
+	/** The edited span of the new string: making room never deletes inside it. */
+	from: number;
+	to: number;
+}
+
+const NODE_OPS: Array<[string, number]> = [
+	['duplicate', 12],
+	['nest', 12],
+	['wrap', 6],
+	['swap', 7],
+	['repeat', 9],
+	['run', 13],
+	['near', 13],
+	['atom', 6],
+	['splice', 8],
+	['delete', 6],
+	['char', 8]
+];
+const NODE_OPS_TOTAL = NODE_OPS.reduce((n, [, w]) => n + w, 0);
+
+function pick_node_op(r: Rng): string {
+	let x = r.int(NODE_OPS_TOTAL);
+	for (const [op, w] of NODE_OPS) {
+		if (x < w) return op;
+		x -= w;
+	}
+	return 'char';
+}
+
+function span(s: string, n: Node): string {
+	return s.slice(n.start, n.end);
+}
+
+function insert_at(s: string, at: number, piece: string, what: string): TextEdit {
+	return { s: s.slice(0, at) + piece + s.slice(at), what, from: at, to: at + piece.length };
+}
+
+function replace_node(s: string, n: Node, piece: string, what: string): TextEdit {
+	return {
+		s: s.slice(0, n.start) + piece + s.slice(n.end),
+		what,
+		from: n.start,
+		to: n.start + piece.length
+	};
+}
+
+/** One node operator on `s`. `grow`: characters it may add before room has to be made. */
+function node_edit(s: string, g: Grammar, r: Rng, grow: number, donors: string[]): TextEdit | null {
+	const all = nodes_of(parse(g, s));
+	if (all.length === 0) {
+		if (g.atoms.length === 0) return null;
+		return insert_at(s, 0, r.pick(g.atoms), 'atom');
+	}
+	const n = r.pick(all);
+	const text = span(s, n);
+	const op = pick_node_op(r);
+	switch (op) {
+		case 'duplicate':
+			return insert_at(s, n.end, text, `duplicate a ${n.key || 'node'}`);
+		case 'nest': {
+			if (!n.pair) break;
+			const open = s.slice(n.start, n.inner_start);
+			const close = s.slice(n.inner_end, n.end);
+			return replace_node(s, n, open + text + close, `nest a ${n.key} in itself`);
+		}
+		case 'wrap': {
+			if (g.wraps.length === 0) break;
+			const [a, b] = r.pick(g.wraps);
+			return replace_node(s, n, a + text + b, `wrap a ${n.key || 'node'}`);
+		}
+		case 'swap': {
+			const sibs = n.parent?.kids ?? [];
+			if (sibs.length < 2) break;
+			let i = r.int(sibs.length);
+			let j = r.int(sibs.length);
+			if (i === j) j = (i + 1) % sibs.length;
+			if (i > j) [i, j] = [j, i];
+			const a = sibs[i];
+			const b = sibs[j];
+			return {
+				s: s.slice(0, a.start) + span(s, b) + s.slice(a.end, b.start) + span(s, a) + s.slice(b.end),
+				what: 'swap two siblings',
+				from: a.start,
+				to: b.end
+			};
+		}
+		case 'repeat': {
+			if (text.length === 0) break;
+			const k = 2 + r.int(7);
+			const times = Math.max(
+				1,
+				Math.min(k - 1, Math.floor(Math.max(grow, text.length) / text.length))
+			);
+			return insert_at(
+				s,
+				n.end,
+				text.repeat(times),
+				`repeat a ${n.key || 'node'} ${times + 1} times`
+			);
+		}
+		case 'run': {
+			// leaves only: a run inside an element's tags would break it
+			if (n.inner_start !== n.start || text.length === 0) break;
+			// a quoted leaf (a string literal) keeps its quotes: the run goes between them
+			const q = text[0];
+			const quoted =
+				text.length >= 2 && (q === '"' || q === "'" || q === '`') && text[text.length - 1] === q;
+			const body = quoted ? text.slice(1, -1) : text;
+			const ch = body.length > 0 ? body[r.int(body.length)] : 'a';
+			if (quoted && (ch === '\\' || ch === q)) break;
+			const len = Math.max(
+				body.length,
+				Math.min(Math.max(1, body.length) * (2 + r.int(7)), body.length + Math.max(grow, 8))
+			);
+			// half the runs end one character off (`aaaaaaab`): what makes a matcher backtrack
+			let tail = '';
+			if (r.int(2) === 0) {
+				const c = r.pick(SPECIAL);
+				if (c !== ch && !(quoted && (c === q || c === '\\' || c < ' '))) tail = c;
+			}
+			const piece = ch.repeat(len) + tail;
+			const run = quoted ? q + piece + q : piece;
+			return replace_node(
+				s,
+				n,
+				run,
+				`a run of ${len}${tail ? ` and ${JSON.stringify(tail)}` : ''} in a ${n.key}`
+			);
+		}
+		case 'near': {
+			const pool = g.near.length > 0 && r.int(3) > 0 ? g.near : NEAR_COMMON;
+			const piece = r.pick(pool);
+			const at = r.int(2) === 0 ? n.start : n.end;
+			return insert_at(s, at, piece, `near-miss ${JSON.stringify(piece)}`);
+		}
+		case 'atom':
+			if (g.atoms.length === 0) break;
+			return insert_at(s, n.end, r.pick(g.atoms), 'insert a node');
+		case 'splice': {
+			const from = donors.length > 0 && r.int(2) === 0 ? r.pick(donors) : s;
+			const other = nodes_of(parse(g, from), 4096);
+			if (other.length === 0) break;
+			return replace_node(s, n, span(from, r.pick(other)), 'splice a node over another');
+		}
+		case 'delete':
+			return replace_node(s, n, '', `delete a ${n.key || 'node'}`);
+		case 'char': {
+			// one character inside the node, not a whole-string rewrite
+			if (text.length === 0) break;
+			// inside a quoted leaf, the quotes stay and no quote or backslash goes in
+			const q = text[0];
+			const quoted =
+				text.length >= 3 && (q === '"' || q === "'" || q === '`') && text[text.length - 1] === q;
+			const i = quoted ? n.start + 1 + r.int(text.length - 2) : n.start + r.int(text.length);
+			const c = r.int(3);
+			if (c === 0)
+				return { s: s.slice(0, i) + s.slice(i + 1), what: 'drop a character', from: i, to: i };
+			let piece = c === 1 ? s[i] + s[i] : r.pick(SPECIAL);
+			if (quoted && (piece === q || piece === '\\' || piece < ' ')) piece = '-';
+			return {
+				s: s.slice(0, i) + piece + s.slice(i + 1),
+				what: 'change a character',
+				from: i,
+				to: i + piece.length
+			};
+		}
+	}
+	// the operator does not fit this node: copy it instead
+	return insert_at(s, n.end, text, `duplicate a ${n.key || 'node'}`);
+}
+
+/** Delete nodes outside `[from, to)` until `s` is `excess` characters shorter, or null. */
+function make_room(
+	s: string,
+	g: Grammar,
+	r: Rng,
+	from: number,
+	to: number,
+	excess: number
+): string | null {
+	const was_valid = g.valid ? g.valid(s) : false;
+	for (let round = 0; round < 8 && excess > 0; round++) {
+		const outside = nodes_of(parse(g, s)).filter((n) => n.end <= from || n.start >= to);
+		if (outside.length === 0) return null;
+		// a node, or a run of up to 4 siblings (a JSON member is a key, a colon, a value and a comma)
+		const spans: Array<{ start: number; end: number }> = [];
+		for (const n of outside) {
+			const sibs = n.parent?.kids ?? [n];
+			const i = sibs.indexOf(n);
+			for (let k = 0; k < 4 && i + k < sibs.length; k++) {
+				const last = sibs[i + k];
+				if (!(last.end <= from || n.start >= to)) break;
+				spans.push({ start: n.start, end: last.end });
+			}
+		}
+		const fits = (x: { start: number; end: number }): boolean =>
+			x.end > x.start &&
+			(!was_valid || g.valid!(s.slice(0, x.start) + s.slice(x.end))) &&
+			(x.end <= from || x.start >= to);
+		const big = spans.filter((x) => x.end - x.start >= excess);
+		big.sort((a, b) => a.end - a.start - (b.end - b.start) || a.start - b.start);
+		// the smallest span that makes enough room, so little else goes; else any that fits
+		let x = big.find(fits);
+		if (!x) {
+			for (let tries = 0; tries < 8 && !x; tries++) {
+				const y = r.pick(spans);
+				if (fits(y)) x = y;
+			}
+		}
+		if (!x) return null;
+		const len = x.end - x.start;
+		s = s.slice(0, x.start) + s.slice(x.end);
+		if (x.end <= from) {
+			from -= len;
+			to -= len;
+		}
+		excess -= len;
+	}
+	return excess > 0 ? null : s;
+}
+
+/**
+ * One grammar edit of an input: a string place picked by length (most of the time), edited by a
+ * node operator of its grammar and kept inside `room`; otherwise a plain `mutate`.
+ */
+export function mutate_guided(
+	input: unknown,
+	r: Rng,
+	plan: GrammarPlan,
+	room: Room,
+	donors: unknown[] = []
+): { input: unknown; what: string } | null {
+	const strings = string_places(input);
+	if (strings.length === 0 || r.int(6) === 0) return mutate(input, r);
+	let total = 0;
+	const weights = strings.map((p) => (total += 1 + Math.floor(Math.sqrt(p.value.length))));
+	const x = r.int(total);
+	const p = strings[weights.findIndex((w) => x < w)];
+	const g = plan.at(p.path, p.value);
+	const others: string[] = [];
+	for (const d of donors) {
+		const v = get_at(d, p.path);
+		if (typeof v === 'string' && v !== p.value) others.push(v);
+	}
+	const where_at = p.path.length > 0 ? ` at ${p.path.join('.')}` : '';
+	if (g.name === 'text' && r.int(2) === 0) {
+		// plain text has no structure to keep: half its edits are the plain string edits, some of
+		// them a run of a character of another string of the input (what the code compares it with)
+		const other = strings.filter((q) => q !== p && q.value.length > 0);
+		let [s, what] = mutate_string(p.value, r);
+		if (other.length > 0 && p.value.length > 0 && r.int(3) === 0) {
+			const q = r.pick(other);
+			const ch = q.value[r.int(q.value.length)];
+			const i = r.int(p.value.length);
+			const len = 1 + r.int(p.value.length - i);
+			s = p.value.slice(0, i) + ch.repeat(len) + p.value.slice(i + len);
+			what = `string: a run of a character of ${q.path.join('.') || 'the input'}`;
+		}
+		const size = room.size + s.length - p.value.length;
+		if (size > room.max || size < room.min) return null;
+		return { input: replace_at(input, p.path, s), what: `${what}${where_at}` };
+	}
+	const e = node_edit(p.value, g, r, room.max - room.size, others);
+	if (!e) return null;
+	let s = e.s;
+	const size = room.size + s.length - p.value.length;
+	if (size > room.max) {
+		const fitted = make_room(s, g, r, e.from, e.to, size - room.max);
+		if (fitted === null) return null;
+		s = fitted;
+	} else if (size < room.min) return null;
+	return { input: replace_at(input, p.path, s), what: `${g.name}: ${e.what}${where_at}` };
 }
