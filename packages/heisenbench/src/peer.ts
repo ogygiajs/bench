@@ -15,30 +15,43 @@ function package_of(specifier: string): string {
 	return specifier.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0];
 }
 
-/** The resolved file of a peer, or an error naming what needs it (`need`) and how to install it. */
-export function resolve_peer(specifier: string, need: string, from?: string): string {
+/** Every copy of a peer that resolves, in the order they are tried, each file once. */
+function peer_files(specifier: string, from?: string): string[] {
 	const froms = [from, join(process.cwd(), 'package.json'), import.meta.url];
+	const files: string[] = [];
 	for (const f of froms) {
 		if (f === undefined) continue;
 		try {
-			return createRequire(f).resolve(specifier);
+			const file = createRequire(f).resolve(specifier);
+			if (!files.includes(file)) files.push(file);
 		} catch {
 			// next
 		}
 	}
+	return files;
+}
+
+/** The error for a peer that no candidate resolves: what needs it (`need`) and how to install it. */
+function missing(specifier: string, need: string): Error {
 	const name = package_of(specifier);
 	// TypeScript 7 has no JavaScript API (see require_typescript).
 	const install = name === 'typescript' ? 'typescript@6' : name;
-	throw new Error(
+	return new Error(
 		`heisenbench: ${need} needs ${name}, an optional peer dependency of ${PACKAGE_NAME}. Install it in the project: npm i -D ${install}`
 	);
+}
+
+/** The resolved file of a peer, or an error naming what needs it (`need`) and how to install it. */
+export function resolve_peer(specifier: string, need: string, from?: string): string {
+	const file = peer_files(specifier, from)[0];
+	if (file === undefined) throw missing(specifier, need);
+	return file;
 }
 
 const loaded = new Map<string, unknown>();
 
 /** A peer's module (CommonJS entry), loaded once per resolved file. */
-export function require_peer<T>(specifier: string, need: string, from?: string): T {
-	const path = resolve_peer(specifier, need, from);
+function load<T>(path: string): T {
 	let m = loaded.get(path);
 	if (m === undefined) {
 		m = createRequire(import.meta.url)(path);
@@ -47,20 +60,26 @@ export function require_peer<T>(specifier: string, need: string, from?: string):
 	return m as T;
 }
 
+/** A peer's module (CommonJS entry): the first copy that resolves. */
+export function require_peer<T>(specifier: string, need: string, from?: string): T {
+	return load<T>(resolve_peer(specifier, need, from));
+}
+
 /**
- * TypeScript's compiler API (`transpileModule`, the checker). TypeScript 7 is the native compiler
- * and has no JavaScript API, so it is refused with what to install instead.
+ * TypeScript's compiler API (`transpileModule`, the checker): the first copy that has it.
+ * TypeScript 7 is the native compiler and has no JavaScript API, so a project on 7 is passed over
+ * for the next copy (Heisenbench's own); with no copy that has the API, the error says what to
+ * install.
  */
 export function require_typescript<T>(need: string, from?: string): T {
-	const ts = require_peer<{ version?: string; transpileModule?: unknown }>(
-		'typescript',
-		need,
-		from
-	);
-	if (typeof ts.transpileModule !== 'function') {
-		throw new Error(
-			`heisenbench: ${need} needs TypeScript's compiler API, which typescript ${ts.version ?? '7+'} does not have. Install typescript 5 or 6 in the project: npm i -D typescript@6`
-		);
+	let refused: string | undefined;
+	for (const file of peer_files('typescript', from)) {
+		const ts = load<{ version?: string; transpileModule?: unknown }>(file);
+		if (typeof ts.transpileModule === 'function') return ts as T;
+		refused ??= ts.version ?? '7+';
 	}
-	return ts as T;
+	if (refused === undefined) throw missing('typescript', need);
+	throw new Error(
+		`heisenbench: ${need} needs TypeScript's compiler API, which typescript ${refused} does not have. Install typescript 5 or 6 in the project: npm i -D typescript@6`
+	);
 }
