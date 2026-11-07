@@ -86,8 +86,8 @@ function serve_candidate(
 		},
 		load(u, context, next) {
 			if (u !== url) return next(u, context);
-			const code = core.instrument(u, source, format);
-			return { format: 'module', source: code ?? source, shortCircuit: true };
+			const out = core.instrument(u, source, format);
+			return { format: 'module', source: out?.code ?? source, shortCircuit: true };
 		}
 	});
 	return url;
