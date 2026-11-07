@@ -29,6 +29,17 @@ export type {
 	RegressedCase as BlameCase
 } from './blame/index.ts';
 export { render_blame as renderBlame } from './blame/markdown.ts';
+export { upgrade_diff as upgradeDiff, find_bumps as findBumps } from './upgrade/index.ts';
+export type {
+	Bump,
+	UpgradeCase,
+	UpgradeFunction,
+	UpgradeOptions,
+	UpgradeResult
+} from './upgrade/index.ts';
+export { render_upgrade as renderUpgrade } from './upgrade/markdown.ts';
+export { draft_upstream as draftUpstream } from './upstream/index.ts';
+export type { Draft, DraftOptions } from './upstream/index.ts';
 export { git_diff as gitDiff } from './diff/git.ts';
 export { code as markdownCode, cell as markdownCell } from './md.ts';
 export { env_mismatch as envMismatch, environment } from './report.ts';

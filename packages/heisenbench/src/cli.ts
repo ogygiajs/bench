@@ -31,6 +31,8 @@ import { needs_bench_repo } from './own.ts';
 import { blame_command } from './blame/cli.ts';
 import { prove_command } from './prove/cli.ts';
 import { contracts_command } from './contracts/cli.ts';
+import { upgrade_command } from './upgrade/cli.ts';
+import { upstream_command } from './upstream/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -47,6 +49,15 @@ Counting (the counting build)
       [--repo dir] [--base sha] [--head sha] [--filter text] [--paths files.txt] [--min-ratio 0.02]
       [--max-recounts 60] [--budget-ms 600000] [--jobs n] [--work dir] [--out blame.json] [--md blame.md]
       [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]   the change's real cost
+  heisenbench upgrade <base.json> <pr.json> --root <pr checkout> --base-root <base checkout>
+                                 what the PR's dependency upgrades cost: the PR's code counted
+                                 with each side's install, the change placed on upstream lines
+      [--packages a,b] [--deps all|none|a,b] [--work dir] [--out upgrade.json] [--md upgrade.md]
+  heisenbench upstream draft <upgrade.json>   an issue for the upgraded package's maintainers: a
+                                 standalone repro script timed on both versions, the counts, the
+                                 line and the upstream change (written to files, never posted)
+      [--case text] [--function name] [--entry specifier#export] [--input generator.ts]
+      [--redact a,b] [--time-ms 1000] [--out issue.md] [--repro repro.ts] [--work dir]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -296,6 +307,17 @@ const SPECS: Record<string, Spec> = {
 		args: [2, 2],
 		files: true
 	},
+	upgrade: {
+		values: ['root', 'base-root', 'packages', 'deps', 'work', 'out', 'md'],
+		args: [2, 2],
+		files: true
+	},
+	// `draft` and the upgrade JSON
+	upstream: {
+		values: ['case', 'function', 'entry', 'input', 'redact', 'time-ms', 'out', 'repro', 'work'],
+		args: [2, 2],
+		files: true
+	},
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
 	health: { values: [...BENCH, 'warmup', 'runs', 'check'], args: [1, MANY], files: true },
 	audit: {
@@ -541,7 +563,7 @@ function parse(cmd: string, argv: string[]): Parsed {
 	}
 	if (spec.files) {
 		const files =
-			cmd === 'calibrate' || (cmd === 'weights' && positional[0] === 'import')
+			cmd === 'calibrate' || cmd === 'upstream' || (cmd === 'weights' && positional[0] === 'import')
 				? positional.slice(1)
 				: positional;
 		for (const f of files) {
@@ -658,6 +680,10 @@ async function main(argv: string[]): Promise<number> {
 	if (cmd === 'blame') {
 		return blame_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
 	}
+	if (cmd === 'upgrade') {
+		return upgrade_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
+	}
+	if (cmd === 'upstream') return upstream_command(positional, flags);
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
@@ -757,10 +783,12 @@ async function main(argv: string[]): Promise<number> {
 
 /** `--root` must be a directory, and the directories `--out`, `--md` and `--json` write into must exist. */
 function check_dirs(cmd: string, flags: Map<string, string>): void {
-	const root = flags.get('root');
-	if (root !== undefined && !(existsSync(root) && statSync(root).isDirectory()))
-		throw new UsageError(`--root ${root} is not a directory`);
-	for (const k of ['out', 'md', 'json', 'targets']) {
+	for (const k of ['root', 'base-root']) {
+		const d = flags.get(k);
+		if (d !== undefined && !(existsSync(d) && statSync(d).isDirectory()))
+			throw new UsageError(`--${k} ${d} is not a directory`);
+	}
+	for (const k of ['out', 'md', 'json', 'targets', 'repro']) {
 		const f = flags.get(k);
 		if (f === undefined) continue;
 		const dir = dirname(resolve(f));

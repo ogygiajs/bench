@@ -135,7 +135,16 @@ In this repository:
     on 4 cores. A PR with no case over the threshold costs nothing here. With the weights step 9
     ranks by, the blamed change gets the same real cost as the ranked findings: CPU time per day on
     the imported traffic, with its range, for the change and per hunk.
-13. **Complexity contracts** (`suites/ogygia/src/contracts.ts`). The source files of each tree that
+13. **Dependency upgrades** (`suites/ogygia/src/upgrade.ts`). When the base and the head count a
+    package at different versions (the PR changed the lockfile or a `package.json`, so every bench
+    file ran), `upgradeDiff` counts the head's code again with each tree's install, on two
+    scratch copies of the head tree, and puts the step change of the cases that count the package
+    on the package's own lines ([layers.md](layers.md#dependency-upgrades)). Both trees are
+    installed already, so it costs two recounts of the bench files that reach the package, side by
+    side: 9 s for the compiler bench file on an M4 Max. `--upgrade off` turns it off. The draft of
+    an upstream report (`heisenbench upstream draft`) is not run here: it runs the package's code
+    on its own and times it, on demand.
+14. **Complexity contracts** (`suites/ogygia/src/contracts.ts`). The source files of each tree that
     hold an `@heisenbench` tag go to `heisenbench contracts`, with what that tree measured: the head
     against its growth cases and its growth from recorded calls, the base against its growth cases
     ([layers.md](layers.md#complexity-contracts)). The comment shows the contracts the PR adds,
@@ -143,13 +152,13 @@ In this repository:
     breaks none gets no part. A PR that ran no bench file has no base tree (it is not installed for
     this alone), so its comment shows only the head's contracts that do not hold. The check reads
     only the tagged files and the growth already counted: about a second.
-14. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+15. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
     job checks it (below), then `result.json` goes to the `results` branch and `section.md`
     becomes the `heisenbench` section of the PR's comment.
 
 ### Who can write
 
-Steps 3 to 13 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
+Steps 3 to 14 run ogygia's code: its install scripts, Vite, the bench files. So they run in a job
 that can write nothing: `contents: read`, no secrets, and `persist-credentials: false`, so no
 token is left in `.git/config` for that code to find.
 
@@ -425,7 +434,7 @@ PR adds a function with no measurement source, or when any function with a compl
 has none (the inventory lists the contracts; no change to ogygia's script needed). The numbers
 from PR #180 are in [layers.md](layers.md#the-measurement-source-gate).
 
-The contracts themselves are checked in this repository's run (step 13) and shown in the comment.
+The contracts themselves are checked in this repository's run (step 14) and shown in the comment.
 To make a broken contract a failing check in ogygia's own CI too, a job would run
 `heisenbench growth <bench files> --scaled on --out r.json` and then
 `heisenbench contracts --list <tagged files> --reports r.json`, which exits 1 when one does not

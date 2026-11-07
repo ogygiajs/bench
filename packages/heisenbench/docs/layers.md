@@ -18,6 +18,8 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
 | Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | nightly: every case  |
 | Blame             | `heisenbench blame`                                  | counting | regressed cases, 60 recounts or 5 min      | no                   |
+| Upgrades          | `heisenbench upgrade`                                | counting | a package counted at another version       | no                   |
+| Upstream draft    | `heisenbench upstream draft`                         | counting | no (on demand)                             | no (on demand)       |
 | Proof             | `heisenbench prove`                                  | counting | no (on demand)                             | no (on demand)       |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
 | Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
@@ -930,6 +932,127 @@ this change in `packages/core/src/server/document-assembly.ts` L29–30 (+137.3K
 
 with `locate` in the table at "1 call/request (app scenarios) or 201 µs/request of real time × 37:
 1756x apart", the same row the ranked findings show for it. 8 recounts, 3 s.
+
+## Dependency upgrades
+
+A PR that changes a version in the lockfile or a `package.json` changes code nobody reviews in
+the PR. The step table shows the upgraded package's functions next to the project's, mixed with
+whatever else the PR changed, and blame says the cost is outside the hunks: every candidate tree
+shares the head's `node_modules`. `heisenbench upgrade` holds the project's code still and changes
+only the dependencies:
+
+```bash
+heisenbench upgrade base.json pr.json --root <the PR's checkout, installed> --base-root <the base's checkout, installed>
+```
+
+1. **Upgrades.** A package the two reports count at different versions (`svelte@5.56.8` in one,
+   `svelte@5.57.3` in the other; `--packages` keeps some). A package only one side counts is
+   listed as added or removed. A transitive upgrade is found the same way: on ogygia, the svelte
+   bump also moved `@sveltejs/acorn-typescript` from 1.0.11 to 1.0.13.
+2. **Two trees.** Scratch copies of the PR's checkout, made with blame's tree machinery
+   (`mirror_tree`): one as it is, one whose every `node_modules` comes from the base's checkout
+   instead. pnpm's links to workspace packages are relative, so in the second tree they reach the
+   copy's packages: the PR's code with the base's dependencies.
+3. **Recounts.** The cases that count an upgraded package on either side, together with every
+   other case of their bench files (the files run as `heisenbench run` ran them), counted on both
+   trees with blame's recount child, side by side.
+4. **Lines.** The two counts are diffed the way `heisenbench diff` diffs a PR, with the package's
+   own `git diff --no-index -M` between its two installed versions as the line map, in module ids
+   (`svelte@5.56.8/src/x.js` → `svelte@5.57.3/src/x.js`). Lines that only moved compare one to one;
+   lines inside an upstream hunk are "new code" and marked "changed upstream". A function is the
+   same across the versions by its place and its code hash (identity.ts), through files the
+   package moved: svelte 5.57 moved `fuzzymatch.js` and `check_graph_for_cycles.js` to
+   `src/compiler/utils/`, and their functions pair as they are.
+5. **Controls.** A case that counts none of the upgraded packages runs the same code on both
+   trees. When its steps change anyway, the count depends on something else: module state left by
+   the cases before it in the process, or a package that changed without being counted. It is
+   listed apart, never blamed on the upgrade. A case whose recount with the PR's install differs
+   from the PR's report is listed too: its count depends on run order.
+
+Each case gets one line, and the functions and lines under it:
+
+```md
+- upgrading svelte 5.56.8 → 5.57.3 and @sveltejs/acorn-typescript 1.0.11 → 1.0.13 makes
+  `transformHost: a route page with twenty islands, client leg` **−66.1%** (−12.70M steps; 78% in
+  `svelte@5.57.3/src/compiler/phases/1-parse/state/tag.js > open` L489)
+- upgrading @sveltejs/acorn-typescript 1.0.11 → 1.0.13 and svelte 5.56.8 → 5.57.3 makes
+  `page data keys: which page.data keys a component reads` **+0.9%** (+34.1K steps: +67.4K in
+  `@sveltejs/acorn-typescript@1.0.13/index.js > adaptParser > EffectAdapter > updateContext`
+  L1369, −33.3K elsewhere)
+```
+
+That is a local branch of ogygia `b46798f` that bumps svelte from 5.56.8 to 5.57.3 in the
+workspace catalog (and the lockfile): of the 9 cases of the compiler bench file, 5 count svelte,
+and the upgrade made four of them faster. In the transformHost cases `open` reads the template
+far less (its line 489 −9.92M steps) and acorn's `Parser` is built 141 times instead of 202
+(−2.64M). The one that got slower pays for the effect tracking acorn-typescript 1.0.13 added: a
+new `updateContext` on every token. 139 files of svelte changed between the two versions; the two
+recounts took 10 s on an M4 Max. No case that counts neither package moved, and every recount with
+the PR's install matched the PR's report.
+
+The planted case in `test/upgrade.test.ts` is a file dependency at 1.0.0 and 1.1.0: 1.1.0 adds two
+comment lines at the top (every later line moves down), moves a helper to another file, and plants
+a loop over the words found so far in `tokenize`. The upgrade names the two planted lines as
+changed upstream, and nothing else: the moved lines compare one to one, the moved helper is the
+same function, and the bench file's case that never calls the dependency does not change.
+
+### Drafting the upstream report
+
+`heisenbench upstream draft upgrade.json` turns one finding (the case slowed most and the function
+with most of its change, or `--case`, `--function`) into an issue for the package's maintainers. It
+writes the issue and a `repro.ts` beside it, and never posts anything.
+
+1. **The call.** The package's function that code outside it called in the case (the upgrade
+   keeps these per case, from the call graph), imported the way a stranger would: the `exports`
+   specifier whose file is that function's module or re-exports it (`slowdep`, `svelte/compiler`).
+   `--entry svelte/compiler#parse` names one instead.
+2. **The input.** The arguments the case passed to that function, recorded by running the case
+   once with the recorder on that one function (coverage/recorder.ts), the largest argument
+   repeated `n` times. A path into the checkout becomes `/repro/<file name>`. Or `--input
+   generator.ts`: a module that exports `input(n)` (the arguments of one call), optionally
+   `call(...args)` (when one call is more than one export: a parser built from a plugin) and
+   `sizes`. It may import Node's built-ins, the package and the packages the package itself
+   resolves; never the project's files.
+3. **The script.** A standalone `repro.ts` that times the call at each size, after a warm-up, on
+   whatever version is installed. It runs here on both versions, each linked into a scratch
+   directory as `node_modules/<name>`: first to keep only the sizes both run, then for the numbers,
+   three turns each, taking turns, the lowest median kept.
+4. **The counts.** The same calls counted with Heisenbench on both versions and diffed with the
+   package's own diff: the function's steps, its calls and the lines that changed, measured on the
+   script's input, not the project's. A draft whose input does not reach the slower code is
+   refused (the script would show nothing), and so is one whose call as a whole got faster.
+5. **No project names.** The words that name the project (the scopes and names of its
+   `package.json` files, its git remote, `--redact`) must not appear in the issue or the script;
+   a draft that has one is refused with the word.
+
+The issue has a title that says what does how much more work (`` `tokenize` (index.js) does 27.4×
+as much work in 1.1.0 as in 1.0.0 ``), one paragraph, the script and how to run it on each
+version, the timings, the counts per size (with "the gap grows with the input" when it does), the
+lines whose count changed, the code around the first one and the function's change between the two
+versions, cut to the function. For the acorn-typescript finding above, with a generator that parses
+`n` typed functions through `Parser.extend(tsPlugin())`, the draft read:
+
+```md
+# `adaptParser > EffectAdapter > updateContext` (index.js), new in 1.0.13, makes the call do 5.7%
+more work than in 1.0.11
+
+Since @sveltejs/acorn-typescript 1.0.13 (from 1.0.11), the call below does 5.7% more work on the
+same input, and 64% of the extra work is in `adaptParser > EffectAdapter > updateContext`
+(`index.js`) at line 1369.
+
+| n | 1.0.11 | 1.0.13 | Change |
+| 16 | 216 µs | 223 µs | +3.0% |
+
+| n | One call, all it does | `adaptParser > EffectAdapter > updateContext`, its own lines | ... |
+| 16 | 1,204,179 → 1,273,069 (+5.7%) | 0 → 44,224 (new) | 0 → 994 |
+```
+
+followed by the code around line 1369 and the 14 lines of the change that hold the new method. The
+draft that started from svelte's own `parse` on the case's recorded component was refused, and
+said where to look instead: "has_lf_line_breaks_only holds 3% of the call's extra 34,102 steps on
+the script's input; the most is in
+`@sveltejs/acorn-typescript@1.0.13/index.js > adaptParser > EffectAdapter > updateContext`
+(+67,382)".
 
 ## Proving a faster version
 

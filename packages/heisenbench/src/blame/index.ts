@@ -1,13 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { case_key } from '../cases.ts';
 import { diff_reports } from '../diff/index.ts';
 import type { DiffResult } from '../diff/index.ts';
 import type { LoaderConfig } from '../loader/register.ts';
-import { own_file } from '../own.ts';
-import { ProcessError, run_process } from '../proc.ts';
 import { one_line } from '../report.ts';
+import { recount } from './recount.ts';
 import type { Report } from '../report.ts';
 import { ddmin } from './ddmin.ts';
 import type { Outcome, Tester } from './ddmin.ts';
@@ -262,26 +261,7 @@ interface Count {
 	error: string | null;
 }
 
-const PATH_FLAGS = new Set(['--import', '--require', '-r', '--loader', '--experimental-loader']);
-
-/** Node flags with every path into `root` moved into `lane` (relative ones resolved first). */
-export function move_args(args: readonly string[], root: string, lane: string): string[] {
-	const move = (v: string): string => {
-		if (!(v.startsWith('.') || isAbsolute(v))) return v; // a package name
-		const abs = resolve(v);
-		return abs === root || abs.startsWith(root + sep) ? lane + abs.slice(root.length) : abs;
-	};
-	const out: string[] = [];
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
-		const eq = a.indexOf('=');
-		if (eq !== -1 && PATH_FLAGS.has(a.slice(0, eq)))
-			out.push(a.slice(0, eq + 1) + move(a.slice(eq + 1)));
-		else if (PATH_FLAGS.has(a) && i + 1 < args.length) out.push(a, move(args[++i]));
-		else out.push(a);
-	}
-	return out;
-}
+export { move_args } from './recount.ts';
 
 class Lanes {
 	#free: string[] = [];
@@ -368,51 +348,32 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 		const lane = await lanes.take();
 		const t0 = Date.now();
 		const out = join(work, 'counts', `${hash}.json`);
-		const job_file = join(work, 'counts', `${hash}.job.json`);
-		let error: string | null = null;
+		let got: { report: Report | null; error: string | null };
 		try {
 			write_tree(lane, units.tree(applied), prefix);
-			writeFileSync(
-				job_file,
-				JSON.stringify({
-					root: lane,
-					files,
-					cases: names,
-					sha: null,
-					prefix,
-					deps: o.deps ?? true,
-					out
-				})
-			);
-			const left = budget_ms - (Date.now() - started);
-			// a preload in the root (ogygia maps Vite-only specifiers to stubs) loads from the copy
-			const move = (args: readonly string[]) =>
-				move_args(move_args(args, given_root, lane), root, lane);
-			const opts = (env.NODE_OPTIONS ?? '').split(' ').filter(Boolean);
-			await run_process(process.execPath, [...move(node_args), own_file('blame/child'), job_file], {
-				cwd: lane,
-				env: { ...env, NODE_OPTIONS: move(opts).join(' ') },
-				timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, left))
+			got = await recount({
+				lane,
+				given_root,
+				root,
+				files,
+				cases: names,
+				prefix,
+				deps: o.deps ?? true,
+				out,
+				job_file: join(work, 'counts', `${hash}.job.json`),
+				node_args,
+				env,
+				timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, budget_ms - (Date.now() - started)))
 			});
 		} catch (e) {
-			const tail =
-				e instanceof ProcessError
-					? (e.stderr || e.stdout).trim().split('\n').slice(-3).join(' ')
-					: '';
-			error = `the recount ${one_line(e)}${tail ? `: ${tail}` : ''}`;
+			got = { report: null, error: `the recount ${one_line(e)}` };
 		} finally {
 			lanes.give(lane);
 		}
+		const { report } = got;
+		const error = got.error;
 		const steps = new Map<string, number | null>();
 		const errors = new Map<string, string>();
-		let report: Report | null = null;
-		if (error === null) {
-			try {
-				report = JSON.parse(readFileSync(out, 'utf8')) as Report;
-			} catch (e) {
-				error = `no report: ${one_line(e)}`;
-			}
-		}
 		for (const c of o.cases) {
 			const key = case_key(c);
 			const got = report?.cases.find((x) => x.file === c.file && x.name === c.name);

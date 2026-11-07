@@ -1,6 +1,7 @@
 import {
 	constants,
 	copyFileSync,
+	existsSync,
 	mkdirSync,
 	readdirSync,
 	readlinkSync,
@@ -54,27 +55,44 @@ function mirror_modules(src_root: string, dst_root: string, s: string, d: string
 	}
 }
 
-function mirror_dir(src_root: string, dst_root: string, s: string, d: string): void {
+function mirror_dir(
+	src_root: string,
+	dst_root: string,
+	s: string,
+	d: string,
+	modules_root: string
+): void {
 	mkdirSync(d, { recursive: true });
 	for (const e of readdirSync(s, { withFileTypes: true })) {
 		if (e.name === '.git') continue;
 		const from = join(s, e.name);
 		const to = join(d, e.name);
-		if (e.isSymbolicLink()) copy_link(src_root, dst_root, from, to);
+		if (e.name === 'node_modules' && modules_root !== src_root) {
+			// another install's dependencies, at the same place in that tree
+			const other = join(modules_root, relative(src_root, from));
+			if (existsSync(other)) mirror_modules(modules_root, dst_root, other, to);
+		} else if (e.isSymbolicLink()) copy_link(src_root, dst_root, from, to);
 		else if (e.isDirectory()) {
 			if (e.name === 'node_modules') mirror_modules(src_root, dst_root, from, to);
-			else mirror_dir(src_root, dst_root, from, to);
+			else mirror_dir(src_root, dst_root, from, to, modules_root);
 		} else if (e.isFile()) copyFileSync(from, to, constants.COPYFILE_FICLONE);
 	}
 }
 
-/** A scratch copy of `root` at `dst` (which must not exist yet). */
-export function mirror_tree(root: string, dst: string): void {
+/**
+ * A scratch copy of `root` at `dst` (which must not exist yet). With `modules_from` (another
+ * checkout of the same project, installed), every `node_modules` comes from that checkout instead:
+ * the project's files of `root` with the dependencies of the other install. Links into the other
+ * checkout (pnpm's links to workspace packages) reach the copy's packages, so the project's code
+ * is `root`'s wherever it is loaded from.
+ */
+export function mirror_tree(root: string, dst: string, o: { modules_from?: string } = {}): void {
 	const src = resolve(root);
 	const out = resolve(dst);
-	if (inside(src, out))
-		throw new Error('heisenbench blame: the scratch tree cannot be inside the root');
-	mirror_dir(src, out, src, out);
+	const modules = o.modules_from === undefined ? src : resolve(o.modules_from);
+	if (inside(src, out) || inside(modules, out))
+		throw new Error('heisenbench: the scratch tree cannot be inside the root');
+	mirror_dir(src, out, src, out, modules);
 }
 
 /**
