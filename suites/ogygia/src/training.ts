@@ -5,7 +5,8 @@
  *
  *   node suites/ogygia/src/training.ts measure [--planted] [--history --from <rev> [--to <rev>]
  *       [--bench <rev>] [--max 40] [--repo <url or path>]] [--work dir] [--repeats 7]
- *       [--time-ms 150] [--batch 24] [--filter text] [--counts-only]
+ *       [--time-ms 150] [--batch 24] [--filter text] [--counts-only] [--retime-above <load>]
+ *       [--max-load <load> [--max-wait-min 60]]
  *   node suites/ogygia/src/training.ts assemble [--work dir] [--out dir] [--version 1]
  *
  * Two sources of pairs, each measured in groups (a group is one timing run):
@@ -25,7 +26,9 @@
  * average is sampled while a group is timed. `--counts-only` skips health and time.
  *
  * `measure` writes `<work>/training/<source>/<group>/` and skips groups already there, so a
- * stopped run resumes. `assemble` reads them back and writes the dataset: the counted part
+ * stopped run resumes; `--retime-above <load>` measures again a group whose 1-minute load average
+ * went above that while it was timed (another job took the machine), and `--max-load` waits for
+ * the load to drop before a group is timed. `assemble` reads them back and writes the dataset: the counted part
  * (`training-counts-<version>.json`: the same bytes for the same inputs) and the timed part
  * (`training-times-<version>.json`), fields in packages/heisenbench/calibration/data/training.md.
  */
@@ -70,6 +73,12 @@ export interface MeasureOptions {
 	repeats?: number;
 	time_ms?: number;
 	counts_only?: boolean;
+	/** Measure again a finished group whose load average went above this while it was timed. */
+	retime_above?: number;
+	/** Before timing a group, wait for the 1-minute load average to be at most this... */
+	max_load?: number;
+	/** ...for this many minutes at most (default 60). */
+	max_wait_min?: number;
 	log?: (line: string) => void;
 }
 
@@ -86,6 +95,18 @@ function write_json(path: string, v: unknown): void {
 
 function read_json<T>(path: string): T | null {
 	return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as T) : null;
+}
+
+/** A group measured before, and not to be measured again (`retime_above`). */
+function done_before(dir: string, o: MeasureOptions): boolean {
+	const meta = read_json<GroupMeta>(join(dir, 'group.json'));
+	if (!meta) return false;
+	const max = meta.load?.load.max;
+	if (o.retime_above !== undefined && max !== undefined && max > o.retime_above) {
+		o.log?.(`${meta.id}: timed at a load of up to ${max}, measured again`);
+		return false;
+	}
+	return true;
 }
 
 /** What one group left on disk besides the reports. */
@@ -124,6 +145,25 @@ async function input_sizes(
 	return sizes;
 }
 
+/** Seconds between two looks at the load while waiting for it to drop. */
+const QUIET_EVERY_S = 15;
+
+/**
+ * Wait until the 1-minute load average is at most `max_load` (another job has the machine), for
+ * `max_wait_min` at most; then time anyway: the load is recorded either way.
+ */
+async function quiet_enough(id: string, o: MeasureOptions): Promise<void> {
+	if (o.max_load === undefined) return;
+	const until = Date.now() + (o.max_wait_min ?? 60) * 60_000;
+	let said = false;
+	while (loadavg()[0] > o.max_load && Date.now() < until) {
+		if (!said) o.log?.(`${id}: load ${loadavg()[0].toFixed(1)}, waiting for ${o.max_load} or less`);
+		said = true;
+		await new Promise((r) => setTimeout(r, QUIET_EVERY_S * 1000));
+	}
+	if (said) o.log?.(`${id}: load ${loadavg()[0].toFixed(1)}, timing`);
+}
+
 /** Time both trees (`heisenbench time`), sampling the load average all along. */
 async function timed(
 	id: string,
@@ -135,6 +175,7 @@ async function timed(
 	o: MeasureOptions
 ): Promise<{ load: GroupLoad; error: string | null }> {
 	const log = o.log ?? (() => {});
+	await quiet_enough(id, o);
 	const t0 = Date.now();
 	const series: Array<[number, number]> = [];
 	const sample = () =>
@@ -245,10 +286,11 @@ export async function measure_planted(
 	for (let g = 0; g < groups; g++) {
 		const id = `planted-${String(g + 1).padStart(2, '0')}`;
 		const dir = join(o.work, 'training', 'planted', id);
-		if (existsSync(join(dir, 'group.json'))) {
+		if (done_before(dir, o)) {
 			log(`${id} done before`);
 			continue;
 		}
+		rmSync(join(dir, 'group.json'), { force: true });
 		const chunk = pairs.slice(g * size, (g + 1) * size);
 		log(`${id}: ${chunk.length} pairs, ${chunk[0].id} to ${chunk[chunk.length - 1].id}`);
 		const base = write_tree(join(dir, 'base'), chunk, 'base');
@@ -300,7 +342,7 @@ export async function measure_history(o: HistoryOptions): Promise<void> {
 	for (const [i, { commit, parent }] of pairs.entries()) {
 		const id = commit.slice(0, 12);
 		const dir = join(root, id);
-		if (existsSync(join(dir, 'group.json'))) {
+		if (done_before(dir, o)) {
 			log(`${id} done before`);
 			continue;
 		}
@@ -527,7 +569,10 @@ if (import.meta.main) {
 			'time-ms': { type: 'string' },
 			batch: { type: 'string' },
 			filter: { type: 'string' },
-			'counts-only': { type: 'boolean' }
+			'counts-only': { type: 'boolean' },
+			'retime-above': { type: 'string' },
+			'max-load': { type: 'string' },
+			'max-wait-min': { type: 'string' }
 		}
 	});
 	const log = (l: string) => console.log(`[training] ${l}`);
@@ -538,6 +583,9 @@ if (import.meta.main) {
 		repeats: num(values.repeats),
 		time_ms: num(values['time-ms']),
 		counts_only: values['counts-only'] ?? false,
+		retime_above: num(values['retime-above']),
+		max_load: num(values['max-load']),
+		max_wait_min: num(values['max-wait-min']),
 		log
 	};
 	const cmd = positionals[0];

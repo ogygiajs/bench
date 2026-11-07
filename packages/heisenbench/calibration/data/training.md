@@ -26,6 +26,31 @@ sized; then timed on the plain build, both sides in one process taking turns, fr
 round, with confirming rounds for a case that looks changed (`heisenbench time`, the PR comment's
 time layer). A group (a batch of planted pairs, or one commit) is one timing run.
 
+## Version 1 (2026-11-07)
+
+475 timed pairs: 211 planted, 264 from 17 ogygia commits (30 touched a bench package's source;
+13 changed nothing a bench file reaches). Apple M4 Max, Node 26.4.0, 7 rounds of 150 ms a side.
+
+| Pairs                | Count | Time beyond noise (slower / faster) |
+| -------------------- | ----: | ----------------------------------: |
+| planted slower       |   101 |                              55 / 0 |
+| planted faster       |    56 |                              0 / 19 |
+| planted same         |    54 |  2 / 0 (engine twins that add work) |
+| history, steps moved |    21 |                               0 / 0 |
+| history, steps same  |   243 |                               0 / 0 |
+
+By the size of the step change, the share beyond noise: none of 293 pairs with no step change, 0
+of 53 under 3%, 9 of 38 at 3 to 10%, 15 of 30 at 10 to 30%, 28 of 35 at 30 to 100%, 24 of 26 at
+100% or more.
+
+**The machine was busy.** Other jobs ran the whole time: the 1-minute load average was 7 to 20 on
+16 cores while a group was timed (mean 12), and groups that went above 20 were timed again. The
+labels are what the noise rule said under that load, not smoothed: it is cautious, so a busy
+machine hides real changes rather than inventing them. Two ogygia changes plainly visible in the
+samples were judged `same` (a 9.6% step cut timed 24% faster, and a 158% step rise timed 49%
+slower, both with overlapping samples). Re-judge from the samples, or filter on `load`, as a
+model needs. A quieter run will be version 2.
+
 ## Regenerate
 
 From the repository root, on as quiet a machine as you have:
@@ -40,7 +65,10 @@ node suites/ogygia/src/training.ts assemble --work $W --version 1
 
 `measure` takes `--repeats 7` and `--time-ms 150` (the timing), `--batch 24` (planted pairs per
 group), `--max 40` (newest commits), `--bench <rev>` (whose bench files, default `--to`),
-`--filter text` (planted ids) and `--counts-only` (no health, no timing: the counts file alone).
+`--filter text` (planted ids), `--counts-only` (no health, no timing: the counts file alone) and
+`--retime-above <load>` (measure again the groups whose load average went above it) and
+`--max-load <load>` (before timing a group, wait up to `--max-wait-min 60` minutes for the load
+average to drop to it).
 `caffeinate` is macOS; leave it out elsewhere.
 
 ## Counts file
