@@ -49,11 +49,104 @@ labels are what the noise rule said under that load, not smoothed: it is cautiou
 machine hides real changes rather than inventing them. Two ogygia changes plainly visible in the
 samples were judged `same` (a 9.6% step cut timed 24% faster, and a 158% step rise timed 49%
 slower, both with overlapping samples). Re-judge from the samples, or filter on `load`, as a
-model needs. A quieter run will be version 2.
+model needs. Version 2 is the quieter run.
+
+## Version 2 (2026-11-07)
+
+The same 475 pairs (the same planted pairs, the same 19 ogygia commits with the same bench
+files), timed on a fresh GitHub-hosted runner where nothing else ran: the hand-run workflow
+[`training-data.yml`](../../../../.github/workflows/training-data.yml) (`version 2`, the default
+`from` and `to`, `--retime-above 3`), one job of 78 minutes, 42 of them timing. AMD EPYC (4
+cores), Linux, Node 26.13.0, 7 rounds of 150 ms a side, Heisenbench at `30b05cf`. The two
+`feel.json` and `ranges.json` models are trained on it.
+
+**Load.** The 1-minute load average was 1.3 to 6.8 while a group was timed (mean 2.9 over the
+28 groups; version 1: 7 to 20, mean 12.2). On 4 cores much of it is the timing's own work: a
+group is counted and checked by `heisenbench health` just before it is timed, four child
+processes at a time, and the 1-minute average carries that over. In 24 of the 28 groups the
+highest load is the first sample, and it falls all through the timing (planted-02: 6.8 at the
+start, 3.4 a minute in).
+
+**No group was timed again.** `--retime-above` is read when `measure` finds a group already on
+disk from an earlier run (`done_before` in `training.ts`): it is how a stopped or busy run is
+redone. The workflow starts from an empty work directory and runs `measure` once, so every group
+was timed once, though 23 of the 28 went above 3. Read the load as recorded; to re-time on a
+runner, run `measure` a second time over the same `--work`.
+
+| Pairs                | Count | v1: beyond noise (slower / faster) | v2: beyond noise (slower / faster) |
+| -------------------- | ----: | ---------------------------------: | ---------------------------------: |
+| planted slower       |   101 |                             55 / 0 |                             54 / 0 |
+| planted faster       |    56 |                             0 / 19 |                             0 / 32 |
+| planted same         |    54 |                              2 / 0 |                              3 / 0 |
+| history, steps moved |    21 |                              0 / 0 |                              2 / 1 |
+| history, steps same  |   243 |                              0 / 0 |                              0 / 0 |
+
+The three "planted same" pairs that timed slower are engine twins that add work (`planted_for`
+is `engine`): `engine-int-double-twin` at both sizes and `engine-shape-order-twin-n50`.
+
+By the size of the step change, the share beyond noise:
+
+| Step change   | v1: beyond noise | v2: beyond noise |
+| ------------- | ---------------: | ---------------: |
+| none          |         0 of 289 |         0 of 289 |
+| under 3%      |          0 of 57 |          2 of 57 |
+| 3 to 10%      |          9 of 38 |         23 of 36 |
+| 10 to 30%     |         15 of 30 |         15 of 32 |
+| 30 to 100%    |         28 of 35 |         26 of 35 |
+| 100% or more  |         24 of 26 |         26 of 26 |
+| history moved |          0 of 21 |          3 of 21 |
+
+(The by-size counts of version 1 above, 293 and 53, sort a pair by its rounded `steps_pct`; this
+table sorts by whether the steps moved at all, so a few pairs of tiny changes move from "none" to
+"under 3%".)
+
+The quiet machine shows most of its gain in small changes (3 to 10%: 9 to 23) and speedups (19
+to 32 planted faster). The two ogygia changes version 1 judged `same` though the samples showed
+them now are beyond noise: the `transformHost` step cut (server leg 19% faster) and the
+`federation` wire rise (`absolutize` +155% steps, 58% slower; `lift_document` +107%, 47% slower).
+
+**The counts changed too, though the code did not.** Version 1 was counted with prices v2,
+version 2 with prices v3 (#33): `split` is priced by its parts, `replace`, `replaceAll` and
+`match` by their matches and callbacks, `join` by the elements it turns into text, `Array.from`
+by its `mapFn` calls, where prices v2 priced each by its input size alone. 171 of
+the 475 pairs have other steps, all of it in those built-ins (`steps_by_kind` of the rest is the
+same). Two rows:
+
+- `markdown.bench.ts > frontmatter: a 120-page docs site`: 32,664,166 steps in v1, 3,277,869 in
+  v2. Its `replace` calls went from 28,977,780 steps to 215,640: few matches on long strings,
+  which v2 priced by the string's length.
+- `compiler.bench.ts > transformHost ... client leg` at `01dc5b99c13c`: 29.2M to 26.4M steps
+  (-9.6%) in v1, 22.0M to 19.2M (-12.7%) in v2. The cut itself is the same 2.8M steps, but the
+  case around it is smaller (`split` 18.4M to 2.7M steps, `join` 144K to 20K, `replace` 1.3M up
+  to 10.0M), so the pair moves from "3 to 10%" to "10 to 30%" (it and its server leg are the
+  only pairs to change bucket).
+
+Engine health is the runner's, not the laptop's, so it differs in 149 rows (another V8 and CPU
+optimize at other moments), and allocations or calls in 27 (the runner's Node 26.13 against
+26.4).
+
+**Caveats.**
+
+- **One machine type.** Every label is a 4-core cloud runner's verdict. A faster or slower core,
+  another V8, another number of cores can see other changes.
+- **Absolute times are the runner's.** The ns in `training-times-2.json` are not the laptop's:
+  the same case can differ by a factor (the `weights.json` baseline, calibrated on the laptop, is
+  off by 0.83 in log at the median here against 0.66 on version 1). A model of time trained on
+  version 2 predicts a runner like this one, which is what most PR comments are made on.
+- **A shared runner is not a quiet laptop.** Load near the core count is the bench's own
+  processes, but a cloud core can still be shared with other tenants. The noise rule's verdicts
+  are what it said there.
+- The two versions' counts differ by the prices (above): do not join their rows on `id` for
+  steps, only for labels.
 
 ## Regenerate
 
-From the repository root, on as quiet a machine as you have:
+On a fresh runner, as version 2 was: run the `training-data` workflow by hand (Actions, "Run
+workflow", with the version to write) and commit the two files of its `training-data-<version>`
+artifact here. Then retrain both models on it (`docs/feel-odds.md`, "Retraining";
+`docs/calibration.md`, "Ranges").
+
+Or locally, from the repository root, on as quiet a machine as you have:
 
 ```bash
 W=/tmp/hb-training   # clones, trees and the measured groups; a stopped run resumes

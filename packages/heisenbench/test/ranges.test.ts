@@ -9,7 +9,11 @@ import type { CaseReport } from '../src/report.ts';
 import { change_range, units_range, usable } from '../src/ranges/apply.ts';
 import { changes_of, load_dataset, weights_of } from '../src/ranges/dataset.ts';
 import { input_of_units, main_group, tree_row, TREE_FEATURES } from '../src/ranges/features.ts';
-import { calibrate_ranges, DEFAULT_DATA_DIR } from '../src/ranges/index.ts';
+import {
+	calibrate_ranges,
+	DEFAULT_DATA_DIR,
+	DEFAULT_DATASET_VERSION
+} from '../src/ranges/index.ts';
 import {
 	DEFAULT_RANGES_PATH,
 	folds_of,
@@ -85,8 +89,9 @@ test('held-out folds never split a group, and every group lands in one', () => {
 });
 
 test('the training data: two sides per pair, groups by change and by code, quiet groups weigh more', () => {
-	const d = load_dataset(DEFAULT_DATA_DIR, 1);
-	assert.equal(d.observations.length, 950);
+	// version 1 (a busy machine) stays readable beside version 2 (a quiet one)
+	for (const v of [1, 2]) assert.equal(load_dataset(DEFAULT_DATA_DIR, v).observations.length, 950);
+	const d = load_dataset(DEFAULT_DATA_DIR, DEFAULT_DATASET_VERSION);
 	const o = d.observations;
 	// an undo is the same change as the change it undoes
 	const loop = o.find((x) => x.pair === 'planted/answer-extra-loop-n20')!;
@@ -124,7 +129,7 @@ test('the committed model is what the training data and seed give, byte for byte
 	calibrate_ranges({ out: c });
 	assert.equal(readFileSync(b, 'utf8'), readFileSync(c, 'utf8'));
 	const m = load_ranges(a)!;
-	assert.equal(m.dataset.version, 1);
+	assert.equal(m.dataset.version, 2);
 	assert.equal(m.dataset.observations, 950);
 	assert.equal(m.features.length, TREE_FEATURES.length);
 	assert.equal(m.prices.hash, prices.hash);

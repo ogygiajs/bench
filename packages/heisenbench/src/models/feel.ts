@@ -308,6 +308,11 @@ export interface FeelTrainOptions {
 	folds?: number;
 }
 
+/**
+ * The dataset `feel train` fits by default. Version 2 was timed on a quiet machine; fitted on v1
+ * and v2 together, the held-out odds on v2 were worse calibrated (v1's labels lean "same").
+ */
+export const DEFAULT_DATASET_VERSION = 2;
 export const DEFAULT_SEED = 1;
 export const DEFAULT_L2 = 1;
 export const DEFAULT_FOLDS = 5;

@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { UsageError } from '../usage.ts';
 import { needs_bench_repo, package_file } from '../own.ts';
 import {
+	DEFAULT_DATASET_VERSION,
 	DEFAULT_SEED,
 	FEEL_FILE,
 	feel_text,
@@ -12,7 +13,7 @@ import {
 } from './feel.ts';
 
 /*
- * heisenbench feel train [--data-version 1] [--seed 1] [--data dir] [--out feel.json] [--md eval.md]
+ * heisenbench feel train [--data-version 2] [--seed 1] [--data dir] [--out feel.json] [--md eval.md]
  *     fit the "will users feel it" odds on a training dataset, print its held-out scores
  * heisenbench feel check [--out feel.json]
  *     fit it again from the dataset the model file names: exit 1 unless the bytes are the same
@@ -27,7 +28,7 @@ export function feel_command(positional: string[], flags: Map<string, string>): 
 	const data = flags.get('data');
 	if (data === undefined) needs_bench_repo('calibration/data');
 	if (what === 'train') {
-		const version = Number(flags.get('data-version') ?? 1);
+		const version = Number(flags.get('data-version') ?? DEFAULT_DATASET_VERSION);
 		const seed = Number(flags.get('seed') ?? DEFAULT_SEED);
 		const model = train_feel(read_feel_dataset(version, data), { seed });
 		writeFileSync(out, feel_text(model));

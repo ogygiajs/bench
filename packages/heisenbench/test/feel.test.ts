@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { auc, brier, fit_logistic, reliability, solve_spd } from '../src/models/logistic.ts';
 import {
+	DEFAULT_DATASET_VERSION,
 	FEATURES,
 	changed_rows,
 	feel_input,
@@ -57,17 +58,19 @@ test('logistic regression: Cholesky solve, a fit that separates, AUC, Brier and 
 	);
 });
 
-const data = read_feel_dataset(1);
+const data = read_feel_dataset(DEFAULT_DATASET_VERSION);
 
 test('the committed model is the dataset fitted again, byte for byte, and names its dataset', () => {
 	const committed = readFileSync(package_file('feel.json'), 'utf8');
 	const a = feel_text(train_feel(data));
-	const b = feel_text(train_feel(read_feel_dataset(1)));
+	const b = feel_text(train_feel(read_feel_dataset(2)));
 	assert.equal(a, b, 'two fits, the same bytes');
 	assert.equal(a, committed, 'feel.json is what `heisenbench feel train` writes');
 	const m = load_feel_model()!;
-	assert.equal(m.dataset.version, 1);
-	assert.equal(m.dataset.counts, 'training-counts-1.json');
+	assert.equal(m.dataset.version, 2);
+	assert.equal(m.dataset.counts, 'training-counts-2.json');
+	// version 1 (the busy machine) stays readable, for comparison
+	assert.equal(read_feel_dataset(1).rows.length, 475);
 	assert.deepEqual(
 		m.features,
 		FEATURES.map((f) => f.name)
@@ -124,9 +127,13 @@ test('odds rise with the size of the change, and fall for a case too small for t
 	assert.ok(odds(1e6, 1.01e6) < odds(1e6, 1.1e6));
 	assert.ok(odds(1e6, 1.1e6) < odds(1e6, 2e6));
 	assert.ok(odds(1e6, 2e6) > 0.8, `doubled: ${odds(1e6, 2e6)}`);
-	assert.ok(odds(1e6, 1.01e6) < 0.2, `+1%: ${odds(1e6, 1.01e6)}`);
+	// dataset v2 gives +1% of a million steps about a quarter: the fit is linear in log steps and
+	// reads a small change of a big case a little high (docs/feel-odds.md, "Range")
+	assert.ok(odds(1e6, 1.01e6) < 0.3, `+1%: ${odds(1e6, 1.01e6)}`);
+	// v1 put this gap near 0.3, v2 near 0.15: v2's tiny cases have the same labels, but its bigger
+	// cases show small changes more often, and one slope in steps_size fits both less well
 	assert.ok(
-		odds(900, 1400) < odds(1e6, 1.55e6) - 0.2,
+		odds(900, 1400) < odds(1e6, 1.55e6) - 0.1,
 		`+55% of 900 steps: ${odds(900, 1400)}, of a million: ${odds(1e6, 1.55e6)}`
 	);
 	assert.equal(odds_text(0.004), 'under 1%');
@@ -156,13 +163,13 @@ test('the PR comment shows the odds next to each changed case; the diff finds th
 	assert.ok(Math.abs(total - slower.cases[0].totals.steps) < 1e-6, 'kinds sum to the steps');
 
 	const d = diff_reports(base, slower);
-	assert.equal(d.feel?.dataset, 1);
+	assert.equal(d.feel?.dataset, 2);
 	assert.ok(d.feel!.odds.walk > 0.8, `4x the steps: ${d.feel!.odds.walk}`);
 	const md = render_markdown(d);
 	assert.match(md, /\| Case \| Steps \| Δ \| Odds it shows on the clock \|/);
 	assert.match(md, /\| walk \| [\d,]+ → [\d,]+ \| \+[\d,]+ \(\+300\.0%\) \| (over )?\d+% \|/);
 	assert.match(md, /Pass or fail never uses them/);
-	assert.match(md, /timed on a busy machine/);
+	assert.match(md, /timed on one machine/);
 
 	// the odds are extra words: without them the diff is the same, finding for finding
 	const plain = diff_reports(base, slower, { feel: null });

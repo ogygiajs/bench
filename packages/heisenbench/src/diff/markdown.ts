@@ -211,7 +211,7 @@ function case_table(d: DiffResult, names: ReadonlySet<string>): string[] {
 
 /** What the odds column is, in one line: a guess from timed changes, never pass or fail. */
 export function feel_note(f: { dataset: number; pairs: number }): string {
-	return `<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from ${f.pairs.toLocaleString('en-US')} timed changes (dataset v${f.dataset}). They were timed on a busy machine, so the odds lean low. Pass or fail never uses them.</sub>`;
+	return `<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from ${f.pairs.toLocaleString('en-US')} timed changes (dataset v${f.dataset}). They were timed on one machine, so on another the odds can be off. Pass or fail never uses them.</sub>`;
 }
 
 function share(n: number): string {

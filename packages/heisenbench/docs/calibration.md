@@ -253,9 +253,9 @@ run) and `training-times-<v>.json` (every sample and the machine's load while it
 [calibration/data/training.md](../calibration/data/training.md) has the fields and the command
 that regenerates them. Nothing in a count or the gate reads them.
 
-The odds next to a changed case in the PR comment ("57%: odds it shows on the clock") are a model
+The odds next to a changed case in the PR comment ("73%: odds it shows on the clock") are a model
 fitted on them: [feel-odds.md](feel-odds.md). `heisenbench feel train` fits it again from a
-dataset version.
+dataset version (2 by default, timed on a quiet runner).
 
 ## Ranges: steps to ms, with a range
 
@@ -283,18 +283,31 @@ A report's units say nothing of engine health or input size, so that is how the 
 almost everywhere (a function's change, a case's estimate, the audit). Trained on fully measured
 rows alone, it held only 68% of held-out times when asked from counts alone. So every training row
 is there twice at half its weight, as measured and from counts alone, and the trees learn both
-(a feature that is not known goes down the side most training rows went). On version 1 the
-engine and input-size features add nothing held out (the two "model" rows below); they are kept
-for data where they will.
+(a feature that is not known goes down the side most training rows went). On versions 1 and 2
+the engine and input-size features add nothing held out (the two "model" rows below); they are
+kept for data where they will.
 
 The trees use the quantile (pinball) loss: each tree fits the loss's gradient by least squares,
 and each leaf takes the q-quantile of what is left to explain in it. Rows are weighted by
-`10 / load` (the machine was busy while the data was timed, load 7 to 20 on 16 cores; the
-quieter groups count more) and by one over the number of times the same code was timed (an
-unchanged case at every commit counts once in all). The error shows no trend with load between
-8 and 16 (the "by load" table), so nothing more is done with it. Times measured on a busy machine
-are likely higher than on a quiet one: the model predicts them as they were measured. A quieter
-version 2 of the data will move the level.
+`10 / load` (the quieter groups count more) and by one over the number of times the same code was
+timed (an unchanged case at every commit counts once in all). On version 2 (load 2 to 4 on 4
+cores) the load weights still help a little: weighed alike, the held-out median log error is
+0.053 against 0.046.
+
+**Trained on version 2 alone**, the quiet runner (4-core AMD EPYC, Node 26.13). The times it
+predicts are that runner's, which is what most PR comments are made on; a laptop core can be
+faster. Version 1 (the busy laptop) and version 2 time the same code on two machines, and the
+model has no feature that tells them apart, so training on both blurs the level. Held out by
+change on the v2 sides (a change's v1 sides left out with it):
+
+| Trained on | Median abs error | Median log error | Inside 10-90% | Median width | Changes: median error | Changes: inside |
+| ---------- | ---------------: | ---------------: | ------------: | -----------: | --------------------: | --------------: |
+| v2 alone   |           9.5 µs |            0.046 |           86% |        1.63x |                   36% |             83% |
+| v1 and v2  |          12.1 µs |            0.057 |           91% |        1.90x |                   32% |             89% |
+
+Both together hold a few more held-out times, by widening every range; the estimates
+themselves are a quarter further off. Held out by code, both together are no better (median log
+error 0.636 against 0.639) and their range is 52x wide against 29x.
 
 **The range is checked on data it never saw.** The trees alone give ranges that are too narrow
 on new code. So the range is widened by conformalized quantile regression: the model is trained
@@ -308,8 +321,11 @@ other; at 80% the held-out coverage was 80 to 82% depending on the seed.
 estimate of the side with more steps, without the cost of the call itself, over its steps. Its
 range is wider, and its own: the same folds give how far the held-out changes (the pairs whose
 time moved beyond noise) were off, and the range is the estimate times and over the miss that
-85% of them stayed under (7.7x today). The linear part of the changed units, as the weights price
-a change, missed by 75% at the median, because the fit puts 0 ns on several op kinds; the
+85% of them stayed under (6.1x today). The cost of the call itself is taken off the model's
+estimate, not the linear part's: on version 2 the linear part puts 32 ns on a call and 0 ns on
+branches and compares, so for code made of those it is the call's cost alone, and a change of
+them came out as 0 ns. The linear part of the changed units, as the weights price a change,
+missed by 75% at the median on version 1, because the fit puts 0 ns on several op kinds; the
 difference of the two sides' estimates let a change that crosses one split of a tree move the
 whole call's time.
 
@@ -318,22 +334,29 @@ undo, is never on both sides), from [calibration/ranges.md](../calibration/range
 
 | Estimate                                 | Median abs error | Median log error | Mean log error | Inside 10-90% | Median width |
 | ---------------------------------------- | ---------------: | ---------------: | -------------: | ------------: | -----------: |
-| `weights.json` (today)                   |          59.8 µs |            0.655 |          0.966 |           58% |         5.5x |
-| linear part alone, refitted              |          41.3 µs |            0.314 |          0.601 |           74% |         2.9x |
-| model, from counts (as reports use it)   |          16.3 µs |            0.077 |          0.298 |           85% |         2.2x |
-| model, with engine health and input size |          17.1 µs |            0.081 |          0.297 |           87% |         2.2x |
+| `weights.json` (today)                   |         100.7 µs |            0.828 |          1.136 |           57% |         5.5x |
+| linear part alone, refitted (NNLS)       |          30.0 µs |            0.216 |          0.489 |           75% |         3.3x |
+| model, from counts (as reports use it)   |           9.5 µs |            0.046 |          0.233 |           86% |         1.6x |
+| model, with engine health and input size |           9.5 µs |            0.046 |          0.232 |           87% |         1.6x |
 
-For changes (76 pairs whose time moved beyond noise): median error 43% against 76% for the
-weights, the right sign every time, 80% inside a range 27x wide at the median. For a whole call,
-the groups below 80%, by the kind that holds most of the steps: regexp built-ins 75%, control
-flow 76%, Map/Set 67% (12 sides, log error 2.7: the one kind the model misses badly); by input
-size, 10K to 100K at 77%.
+On version 1 the same rows were 59.8 µs, 41.3 µs, 16.3 µs and 17.1 µs (median log error 0.655,
+0.314, 0.077, 0.081; inside 58%, 74%, 85%, 87%). The quiet runner's times are tighter, so the
+model's estimate and its range both close in (2.2x wide on v1). `weights.json` was calibrated on
+the laptop, so on the runner's clock it is further off than before.
+
+For changes (92 pairs whose time moved beyond noise): median error 36% against 86% for the
+weights and 29% for the refitted linear part, the right sign every time, 83% inside a range 13x
+wide at the median (v1: 43%, 80%, 27x). The linear part's estimate of a change is closer, but
+its range holds only 58% and it has the wrong sign 4% of the time. For a whole call, the groups
+below 80%, by the kind that holds most of the steps: control flow 72%, Map/Set 67% (12 sides,
+log error 1.7: still the kind the model misses most); by input size, 10K to 100K at 78%.
 
 Held out by code (a bench file of the history, or a planted template, never on both sides: 16
-groups) the model still has the lowest log error (median 0.412 against 0.547 and 0.655), but
-not the lowest median abs error (82 µs against the weights' 60 µs), and its range has to be 86x
-wide to hold 94%: on code unlike all of the training data, the range says little. That is the
-limit of version 1: 211 planted pairs and 19 commits of one project.
+groups) the model does worse than on version 1: median log error 0.639 against 0.528 for the
+linear part and 0.828 for the weights (v1: 0.412, 0.547, 0.655), median abs error 130 µs against
+91 µs and 101 µs, and its range has to be 29x wide to hold 87%. On code unlike all of the
+training data, the range says little, and on version 2 the plain linear fit is the better guess
+of the level. That is the limit of the data: 211 planted pairs and 19 commits of one project.
 
 **Determinism.** Training draws rows with a seeded generator and rounds every number it keeps to
 7 significant digits; the same data and seed give the same `ranges.json`, byte for byte (a test
@@ -344,10 +367,13 @@ the Node version.
 **Retrain** from `packages/heisenbench`:
 
 ```bash
-node src/cli.ts calibrate ranges                                   # ranges.json from training data 1
+node src/cli.ts calibrate ranges                                   # ranges.json from training data 2
 node src/cli.ts calibrate ranges --md calibration/ranges.md        # and the held-out evaluation
-node src/cli.ts calibrate ranges --data-version 2 --md calibration/ranges.md   # on training data 2
+node src/cli.ts calibrate ranges --data-version 1 --out /tmp/r1.json --md /tmp/r1.md   # the busy laptop's data
 ```
+
+Run it again over the committed file: it says `(unchanged)` and leaves the bytes as they are,
+which is the check that the committed model is what the data gives.
 
 `--seed` sets the seed, `--data` another data directory, `--out` another model file. The model's
 version goes up when what it predicts changes.
