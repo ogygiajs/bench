@@ -4,7 +4,8 @@ name: heisenbench
 # exactly (steps, allocations and calls per function and line), with V8's engine health and, for
 # the cases that declare a scaler, how their steps grow with the input. A PR is also timed (the
 # plain build, PR and base taking turns in this job); a main or nightly run adds every plain-build
-# layer of its one commit (time, real bytes, leaks). suites/ogygia does the work.
+# layer of its one commit (time, real bytes, leaks) and audits the prices against time at every
+# growth size (`heisenbench audit`). suites/ogygia does the work.
 #
 #   repository_dispatch `ogygia-heisenbench`  ogygia's CI, as soon as a PR is opened or pushed (Heisenbench builds
 #                                      from source: no pkg.pr.new preview to wait for). The PR's

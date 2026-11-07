@@ -18,8 +18,9 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'nod
 import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { REPORT_SCHEMA, renderTime } from '@bench/heisenbench';
+import { REPORT_SCHEMA, locateAuditFindings, mergeAudits, renderTime } from '@bench/heisenbench';
 import type {
+	AuditReport,
 	CaseReport,
 	EngineReport,
 	GrowthReport,
@@ -54,14 +55,23 @@ export interface TimeRun {
 	error: string | null;
 }
 
-type Command = 'run' | 'health' | 'growth';
+type Command = 'run' | 'health' | 'growth' | 'audit';
 
 /** The report key each command writes. */
-const WRITES: Record<Command, 'cases' | 'engine' | 'growth'> = {
+const WRITES: Record<Command, 'cases' | 'engine' | 'growth' | 'audit'> = {
 	run: 'cases',
 	health: 'engine',
-	growth: 'growth'
+	growth: 'growth',
+	audit: 'audit'
 };
+
+/**
+ * The price audit runs where the time layer does on one tree: main pushes and the nightly run
+ * (`heisenbench audit` after `growth`, which leaves it the steps at every size). Not on PRs: an
+ * ogygia PR cannot change a price, and the audit's timing at 1x, 10x and 100x would add minutes
+ * to every PR (docs/ci.md has the numbers).
+ */
+export const FULL_COMMANDS: readonly Command[] = ['run', 'health', 'growth', 'audit'];
 
 export function node_options(tree: Tree): string {
 	const base = process.env.NODE_OPTIONS ?? '';
@@ -79,7 +89,13 @@ function read_report(path: string): Report | null {
  * How long one command on one bench file may take. A case whose growth is quadratic at 100x (or
  * that never settles) costs its own part of the report, not the whole run.
  */
-const LIMIT_MIN: Record<Command | 'time', number> = { run: 15, health: 15, growth: 5, time: 20 };
+const LIMIT_MIN: Record<Command | 'time', number> = {
+	run: 15,
+	health: 15,
+	growth: 5,
+	audit: 15,
+	time: 20
+};
 
 function tail_of(r: GroupResult): string {
 	const text = (r.stderr || r.stdout || String(r.error ?? '')).trim();
@@ -142,7 +158,7 @@ async function heisenbench(
 	// Counting, growth and the search count every dependency (Heisenbench's default), blamed as
 	// name@version; engine health stays on ogygia's own functions (its default too).
 	const extra =
-		command === 'growth'
+		command === 'growth' || command === 'audit'
 			? ['--scaled', 'on']
 			: command === 'run'
 				? measure
@@ -181,7 +197,9 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 	const load_errors: NonNullable<Report['load_errors']> = [];
 	let engine: EngineReport | undefined;
 	let growth: GrowthReport | undefined;
+	const audits: AuditReport[] = [];
 	for (const p of parts) {
+		if (p.audit) audits.push(p.audit);
 		cases.push(...p.cases);
 		if (p.load_errors) load_errors.push(...p.load_errors);
 		if (p.engine) {
@@ -199,6 +217,12 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 	if (load_errors.length > 0) report.load_errors = load_errors;
 	if (engine) report.engine = engine;
 	if (growth) report.growth = growth;
+	// The audit is judged over every bench file's cases together; its findings name the lines.
+	const audit = mergeAudits(audits);
+	if (audit) {
+		locateAuditFindings(audit, report);
+		report.audit = audit;
+	}
 	return report;
 }
 
