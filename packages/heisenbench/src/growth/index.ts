@@ -8,6 +8,8 @@ import type { LoadOptions } from './measure.ts';
 import { input_size, scale_input } from './scale.ts';
 import { build_case_report } from '../report.ts';
 import { OWN_CODE, package_label } from '../identity.ts';
+import { add_units } from '../units.ts';
+import type { Units } from '../units.ts';
 
 /*
  * Growth (spec 9): a case's input scaled to several sizes (1x / 10x / 100x by default), steps
@@ -25,6 +27,11 @@ export interface GrowthCase {
 	/** Input size at each factor (chars + elements + entries + keys). */
 	input_sizes: number[];
 	steps: number[];
+	/**
+	 * What each size did, unpriced, summed over the case's functions (units.ts): the steps of each
+	 * op kind, dynamic kind and built-in at each size, which the price audit compares with time.
+	 */
+	units?: Units[];
 	/** Every size counted the same twice. */
 	stable: boolean;
 	/** `generic` (scale_input) or `case` (the case's own `scale`). */
@@ -79,6 +86,7 @@ export async function grow_case(
 		sizes,
 		input_sizes: [],
 		steps: [],
+		units: [],
 		stable: true,
 		scaler: own ? 'case' : 'generic',
 		class: null,
@@ -112,6 +120,9 @@ export async function grow_case(
 				runaway: false,
 				error: null
 			});
+			const units: Units = {};
+			for (const f of report.functions) if (f.units) add_units(units, f.units);
+			out.units!.push(units);
 			for (const f of report.functions) {
 				if (f.self_steps === 0) continue;
 				add(per_fn, f.id, i, f.self_steps);
