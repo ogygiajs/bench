@@ -56,6 +56,7 @@ code as it ships, nothing counted) next to the count:
 | Worst-case search | Which input costs the most work per unit of input, and how does it grow?           |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
 | Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
+| Mutation score    | Would a case notice? Slowdowns planted in each function, and which ones it caught. |
 
 [docs/layers.md](docs/layers.md) explains each one.
 
@@ -284,6 +285,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
 | `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
+| `heisenbench mutate <bench files> --root <dir> --list <sources>`                       | Plants slowdowns that keep the output in every function; scores what the cases catch, a case for each miss.        |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
 | `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
@@ -418,6 +420,10 @@ only comparable on one V8.
   changed cases that declare a `setup`, within a 4 minute budget, and nightly on every case. Blame
   runs on a PR only for cases whose steps grew by 1% and 1,000 steps or more, within 60 recounts
   and 5 minutes.
+- **The mutation score plants four kinds of slowdown only.** Twice the steps, one more pass over
+  a loop's collection, one more allocation, a defeated memo of a few shapes. A slowdown of another
+  shape is not planted, compiled Svelte modules are not mutated, and an async function takes no
+  2x mutant ([layers.md](docs/layers.md#mutation-score)).
 - **Blame sees hunks, not their meaning.** It names the smallest set of hunks that carries the
   extra steps. Hunks that only load together (a renamed function and its callers) come out as one
   set; a regression from a dependency or the lockfile is said to be outside the hunks, since every
