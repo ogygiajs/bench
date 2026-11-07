@@ -26,7 +26,7 @@ const heisenbench_result = (meta: Record<string, unknown>) =>
 const pr_plan = { kind: 'pr', sha: SHA, base_sha: BASE, pr: '12' };
 const pr_meta = { kind: 'pr', sha: SHA, base: BASE, pr: 12 };
 
-test('an Heisenbench artifact that matches the plan passes, as uploaded', () => {
+test('a Heisenbench artifact that matches the plan passes, as uploaded', () => {
 	const result = heisenbench_result(pr_meta);
 	const dir = dir_with({ 'result.json': result, 'section.md': '#### Heisenbench\n\nok' });
 	assert.deepEqual(validate_heisenbench(dir, pr_plan), {
@@ -35,7 +35,7 @@ test('an Heisenbench artifact that matches the plan passes, as uploaded', () => 
 	});
 });
 
-test('an Heisenbench artifact for another commit, PR, base or kind is rejected', () => {
+test('a Heisenbench artifact for another commit, PR, base or kind is rejected', () => {
 	for (const meta of [
 		{ ...pr_meta, sha: 'c'.repeat(40) },
 		{ ...pr_meta, pr: 13 },

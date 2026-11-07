@@ -9,7 +9,7 @@ const MiB = 1 << 20;
 
 /** The largest file of each kind the publish job takes. */
 export const LIMITS = {
-	/** An Heisenbench result.json: two merged reports and the diff. */
+	/** A Heisenbench result.json: two merged reports and the diff. */
 	result: 50 * MiB,
 	/** The app benchmark's run.json. */
 	run: 20 * MiB,

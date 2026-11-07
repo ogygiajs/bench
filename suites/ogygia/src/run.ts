@@ -96,7 +96,7 @@ function tail_of(r: GroupResult): string {
 }
 
 /**
- * Why an Heisenbench command's part cannot be trusted, or null when it can. Exit 0 is a clean run and
+ * Why a Heisenbench command's part cannot be trusted, or null when it can. Exit 0 is a clean run and
  * exit 1 is "a case failed" (the report holds that failure). Anything else, a signal or the time
  * limit means the process died: its part of the report may be from a layer that finished before
  * a later one crashed, so it is an error even when the part is there. A clean exit without its
