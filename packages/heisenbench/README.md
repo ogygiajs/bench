@@ -536,7 +536,10 @@ from small boosted trees trained on measured changes (`ranges.json`,
 - Every path the counted code can see names the run root `/heisenbench/root`: `import.meta.url`
   and its `filename`, `dirname` and `resolve`, `__filename` and `__dirname`, `require.resolve`,
   `error.stack` and `process.cwd()`. Code that splits, slices or matches its own path counts the
-  same in every checkout, at any depth. Files under it still read and import.
+  same in every checkout, at any depth. Files under it still read and import. Environment
+  variables that name the run root name `/heisenbench/root` too (`NODE_OPTIONS`, where `--import`
+  puts the preload's path, `INIT_CWD`, `npm_package_json`): a package that checks
+  `process.env.NODE_OPTIONS?.includes(...)` counted 150 steps more in a checkout with a longer path.
 
 **What changes the count:**
 

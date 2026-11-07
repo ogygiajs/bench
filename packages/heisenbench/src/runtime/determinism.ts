@@ -73,6 +73,25 @@ export function virtual_path(real: string, root: string): string | null {
 	return real.startsWith(prefix) ? VIRTUAL_ROOT + sep + real.slice(prefix.length) : null;
 }
 
+/**
+ * `text` with every path under `root` (the root itself, or the root and a separator) written as
+ * VIRTUAL_ROOT: `--import=/home/ci/work/app/bench/x.ts` -> `--import=/heisenbench/root/bench/x.ts`.
+ * A longer name that only starts like the root (`/work/app-2`) stays.
+ */
+export function virtual_text(text: string, root: string): string {
+	const base = root.length > 1 && root.endsWith(sep) ? root.slice(0, -1) : root;
+	if (base.length <= 1 || !text.includes(base)) return text;
+	let out = '';
+	let from = 0;
+	for (let at = text.indexOf(base); at !== -1; at = text.indexOf(base, from)) {
+		const next = text[at + base.length];
+		const whole = next === undefined || next === sep || next === '/' || !/[\w.-]/.test(next);
+		out += text.slice(from, at) + (whole ? VIRTUAL_ROOT : base);
+		from = at + base.length;
+	}
+	return out + text.slice(from);
+}
+
 /** A path argument as the real file system knows it (VIRTUAL_ROOT paths moved to `root`). */
 export function real_path(p: unknown, root: string): unknown {
 	const s = p instanceof URL && p.protocol === 'file:' ? fileURLToPath(p) : p;
@@ -600,13 +619,22 @@ export class Determinism {
 
 	// -------------------------------------------------------------- paths
 
-	/** The working directory as VIRTUAL_ROOT (when it is inside the run root). */
+	/**
+	 * The working directory as VIRTUAL_ROOT (when it is inside the run root), and the run root as
+	 * VIRTUAL_ROOT in every environment variable that names it: `NODE_OPTIONS` (Heisenbench's own
+	 * `--import=<root>/bench/preload.ts` is there), `INIT_CWD`, `npm_package_json`. Code that reads
+	 * one (a package checking `NODE_OPTIONS?.includes(...)`) then counts the same in every checkout.
+	 */
 	#patch_paths(): void {
 		if (this.root === null) return;
 		const cwd = virtual_path(process.cwd(), this.root);
-		if (cwd === null) return;
-		this.#set(process as unknown as Obj, 'cwd', () => cwd);
-		if (process.env.PWD !== undefined) this.#set(process.env as unknown as Obj, 'PWD', cwd);
+		if (cwd !== null) this.#set(process as unknown as Obj, 'cwd', () => cwd);
+		const env = process.env as unknown as Obj;
+		for (const [key, value] of Object.entries(process.env)) {
+			if (value === undefined) continue;
+			const shown = key === 'PWD' && cwd !== null ? cwd : virtual_text(value, this.root);
+			if (shown !== value) this.#set(env, key, shown);
+		}
 	}
 
 	// -------------------------------------------------------------- weak references

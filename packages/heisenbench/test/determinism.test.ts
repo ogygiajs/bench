@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { join, resolve } from 'node:path';
-import { HeisenbenchIoError, Determinism, VIRTUAL_ROOT } from '../src/runtime/determinism.ts';
+import {
+	HeisenbenchIoError,
+	Determinism,
+	VIRTUAL_ROOT,
+	virtual_text
+} from '../src/runtime/determinism.ts';
 import { run_case } from '../src/runner.ts';
 import { load_module, builtins, temp_dir } from './helpers.ts';
 
@@ -131,6 +136,56 @@ test('the working directory is the same virtual root in every checkout; its file
 	const deep = read_in(join(long, 'nested', 'deeper'));
 	assert.deepEqual(short, deep);
 	assert.deepEqual(short.slice(0, 3), [VIRTUAL_ROOT, join(VIRTUAL_ROOT, 'data.txt'), 'payload']);
+});
+
+test('environment variables that name the run root name the virtual root in the window', () => {
+	const read_in = (dir: string): string[] => {
+		const det = new Determinism({ root: dir });
+		const prev = process.cwd();
+		const keep = { NODE_OPTIONS: process.env.NODE_OPTIONS, HB_TEST_PATH: process.env.HB_TEST_PATH };
+		process.env.NODE_OPTIONS = `--import=${join(dir, 'bench/preload.ts')} --max-old-space-size=4096`;
+		process.env.HB_TEST_PATH = `${dir}:${dir}-other:/usr/bin`;
+		process.chdir(dir);
+		const seen: string[] = [];
+		try {
+			det.open('replay');
+			try {
+				seen.push(process.env.NODE_OPTIONS!, process.env.HB_TEST_PATH!);
+			} finally {
+				det.close();
+			}
+			assert.ok(process.env.NODE_OPTIONS!.includes(dir), 'the real value is back after the window');
+		} finally {
+			process.chdir(prev);
+			for (const [k, v] of Object.entries(keep)) {
+				if (v === undefined) delete process.env[k];
+				else process.env[k] = v;
+			}
+		}
+		return seen;
+	};
+	const short = read_in(temp_dir('e-'));
+	const long = temp_dir('e-a-much-longer-checkout-path-');
+	mkdirSync(join(long, 'nested'), { recursive: true });
+	const deep = read_in(join(long, 'nested'));
+	assert.equal(short[0], deep[0]);
+	assert.equal(
+		short[0],
+		`--import=${join(VIRTUAL_ROOT, 'bench/preload.ts')} --max-old-space-size=4096`
+	);
+	// the root and a sibling that only starts like it: the root is virtual, the sibling is not
+	assert.match(short[1], new RegExp(`^${VIRTUAL_ROOT}:/.+-other:/usr/bin$`));
+});
+
+test('virtual_text: whole paths under the root only', () => {
+	assert.equal(virtual_text('/w/app', '/w/app'), VIRTUAL_ROOT);
+	assert.equal(
+		virtual_text('x=/w/app/a.ts y=/w/app', '/w/app/'),
+		`x=${VIRTUAL_ROOT}/a.ts y=${VIRTUAL_ROOT}`
+	);
+	assert.equal(virtual_text('/w/app-2/a.ts /w/apps', '/w/app'), '/w/app-2/a.ts /w/apps');
+	assert.equal(virtual_text('"/w/app",/w/app;', '/w/app'), `"${VIRTUAL_ROOT}",${VIRTUAL_ROOT};`);
+	assert.equal(virtual_text('nothing here', '/'), 'nothing here');
 });
 
 test('weak references made in the window never clear', () => {
