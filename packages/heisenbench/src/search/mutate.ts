@@ -14,6 +14,10 @@ import type { Grammar, GrammarOption, Node } from './grammar.ts';
  * another input, a leaf grows a run of one of its characters, and near-misses go in at node
  * boundaries. An edit that makes the input too big deletes other nodes (never the edited one) to
  * make room.
+ *
+ * `mutate_arm` makes one edit with a given operator (an arm of the bandit schedule, bandit.ts):
+ * the same edits, each operator by name, and `arms_of` lists the operators that can change an
+ * input with their shares in `mutate_guided`'s fixed schedule.
  */
 
 type Obj = Record<string | number, unknown>;
@@ -165,13 +169,27 @@ function mutate_string(s: string, r: Rng): [string, string] {
 	}
 }
 
-function mutate_array(a: unknown[], r: Rng): [unknown[], string] {
+/** The array edits, in the order `mutate_array` numbers them. */
+const ARRAY_OPS = [
+	'reverse',
+	'sort up',
+	'sort down',
+	'shuffle',
+	'swap two',
+	'rotate',
+	'duplicate an element',
+	'drop an element',
+	'all the same'
+];
+
+/** One array edit: `op` (an index into ARRAY_OPS), or a random one. */
+function mutate_array(a: unknown[], r: Rng, op?: number): [unknown[], string] {
 	const n = a.length;
 	const b = a.slice();
 	if (n === 0) return [b, 'array: empty'];
 	const i = r.int(n);
 	const j = r.int(n);
-	switch (r.int(9)) {
+	switch (op ?? r.int(9)) {
 		case 0:
 			return [b.reverse(), 'array: reverse'];
 		case 1:
@@ -393,8 +411,18 @@ function replace_node(s: string, n: Node, piece: string, what: string): TextEdit
 	};
 }
 
-/** One node operator on `s`. `grow`: characters it may add before room has to be made. */
-function node_edit(s: string, g: Grammar, r: Rng, grow: number, donors: string[]): TextEdit | null {
+/**
+ * One node operator on `s`: `forced`, or one picked by NODE_OPS's weights. `grow`: characters it
+ * may add before room has to be made.
+ */
+function node_edit(
+	s: string,
+	g: Grammar,
+	r: Rng,
+	grow: number,
+	donors: string[],
+	forced?: string
+): TextEdit | null {
 	const all = nodes_of(parse(g, s));
 	if (all.length === 0) {
 		if (g.atoms.length === 0) return null;
@@ -402,7 +430,7 @@ function node_edit(s: string, g: Grammar, r: Rng, grow: number, donors: string[]
 	}
 	const n = r.pick(all);
 	const text = span(s, n);
-	const op = pick_node_op(r);
+	const op = forced ?? pick_node_op(r);
 	switch (op) {
 		case 'duplicate':
 			return insert_at(s, n.end, text, `duplicate a ${n.key || 'node'}`);
@@ -581,35 +609,74 @@ export function mutate_guided(
 ): { input: unknown; what: string } | null {
 	const strings = string_places(input);
 	if (strings.length === 0 || r.int(6) === 0) return mutate(input, r);
+	const p = pick_string(strings, r);
+	const g = plan.at(p.path, p.value);
+	const others = donor_strings(donors, p);
+	if (g.name === 'text' && r.int(2) === 0) return text_edit(input, p, strings, r, room);
+	return grammar_edit(input, p, g, r, room, others);
+}
+
+type StringPlace = { path: Path; value: string };
+
+/** A string place, picked by the square root of its length. */
+function pick_string(strings: StringPlace[], r: Rng): StringPlace {
 	let total = 0;
 	const weights = strings.map((p) => (total += 1 + Math.floor(Math.sqrt(p.value.length))));
 	const x = r.int(total);
-	const p = strings[weights.findIndex((w) => x < w)];
-	const g = plan.at(p.path, p.value);
+	return strings[weights.findIndex((w) => x < w)];
+}
+
+/** The other inputs' strings at the same place (what a splice can take a node from). */
+function donor_strings(donors: unknown[], p: StringPlace): string[] {
 	const others: string[] = [];
 	for (const d of donors) {
 		const v = get_at(d, p.path);
 		if (typeof v === 'string' && v !== p.value) others.push(v);
 	}
-	const where_at = p.path.length > 0 ? ` at ${p.path.join('.')}` : '';
-	if (g.name === 'text' && r.int(2) === 0) {
-		// plain text has no structure to keep: half its edits are the plain string edits, some of
-		// them a run of a character of another string of the input (what the code compares it with)
-		const other = strings.filter((q) => q !== p && q.value.length > 0);
-		let [s, what] = mutate_string(p.value, r);
-		if (other.length > 0 && p.value.length > 0 && r.int(3) === 0) {
-			const q = r.pick(other);
-			const ch = q.value[r.int(q.value.length)];
-			const i = r.int(p.value.length);
-			const len = 1 + r.int(p.value.length - i);
-			s = p.value.slice(0, i) + ch.repeat(len) + p.value.slice(i + len);
-			what = `string: a run of a character of ${q.path.join('.') || 'the input'}`;
-		}
-		const size = room.size + s.length - p.value.length;
-		if (size > room.max || size < room.min) return null;
-		return { input: replace_at(input, p.path, s), what: `${what}${where_at}` };
+	return others;
+}
+
+function where(p: { path: Path }): string {
+	return p.path.length > 0 ? ` at ${p.path.join('.')}` : '';
+}
+
+/**
+ * A plain string edit of `p`, some of them a run of a character of another string of the input
+ * (what the code compares it with). Plain text has no structure to keep.
+ */
+function text_edit(
+	input: unknown,
+	p: StringPlace,
+	strings: StringPlace[],
+	r: Rng,
+	room: Room
+): { input: unknown; what: string } | null {
+	const other = strings.filter((q) => q !== p && q.value.length > 0);
+	let [s, what] = mutate_string(p.value, r);
+	if (other.length > 0 && p.value.length > 0 && r.int(3) === 0) {
+		const q = r.pick(other);
+		const ch = q.value[r.int(q.value.length)];
+		const i = r.int(p.value.length);
+		const len = 1 + r.int(p.value.length - i);
+		s = p.value.slice(0, i) + ch.repeat(len) + p.value.slice(i + len);
+		what = `string: a run of a character of ${q.path.join('.') || 'the input'}`;
 	}
-	const e = node_edit(p.value, g, r, room.max - room.size, others);
+	const size = room.size + s.length - p.value.length;
+	if (size > room.max || size < room.min) return null;
+	return { input: replace_at(input, p.path, s), what: `${what}${where(p)}` };
+}
+
+/** A node operator of `p`'s grammar (`op`, or one by NODE_OPS's weights), kept inside `room`. */
+function grammar_edit(
+	input: unknown,
+	p: StringPlace,
+	g: Grammar,
+	r: Rng,
+	room: Room,
+	others: string[],
+	op?: string
+): { input: unknown; what: string } | null {
+	const e = node_edit(p.value, g, r, room.max - room.size, others, op);
 	if (!e) return null;
 	let s = e.s;
 	const size = room.size + s.length - p.value.length;
@@ -618,5 +685,172 @@ export function mutate_guided(
 		if (fitted === null) return null;
 		s = fitted;
 	} else if (size < room.min) return null;
-	return { input: replace_at(input, p.path, s), what: `${g.name}: ${e.what}${where_at}` };
+	return { input: replace_at(input, p.path, s), what: `${g.name}: ${e.what}${where(p)}` };
+}
+
+// ---------------------------------------------------------------- operators as arms
+
+/**
+ * Every operator the bandit schedule picks between, by name: the grammar's node operators, each
+ * plain string edit, each array edit, and the number and object edits.
+ */
+export const ARMS: readonly string[] = [
+	...NODE_OPS.map(([op]) => `node: ${op}`),
+	'string: edit',
+	...ARRAY_OPS.map((op) => `array: ${op}`),
+	'array: wrap',
+	'number: edge value',
+	'object: nest in itself',
+	'object: swap two values'
+];
+
+/** The places of a copy of `input` an operator can change, by kind. */
+interface Kinds {
+	root: unknown;
+	strings: StringPlace[];
+	arrays: Place[];
+	numbers: Place[];
+	objects: Place[];
+}
+
+/** `copy`: the places of a copy (to edit), else of `input` itself (to look at). */
+function kinds_of(input: unknown, copy = true): Kinds {
+	const root = copy ? clone(input) : input;
+	const all: Place[] = [];
+	places(root, [], all, 0);
+	const k: Kinds = { root, strings: [], arrays: [], numbers: [], objects: [] };
+	for (const p of all) {
+		const v = p.value;
+		if (typeof v === 'string') k.strings.push({ path: p.path, value: v });
+		else if (typeof v === 'number') k.numbers.push(p);
+		else if (Array.isArray(v)) k.arrays.push(p);
+		else if (is_plain(v) && data_keys(v).length > 0) k.objects.push(p);
+	}
+	return k;
+}
+
+/** An operator that can change an input, and how often the fixed schedule runs it there. */
+export interface ArmChoice {
+	arm: string;
+	weight: number;
+}
+
+/**
+ * The arms that can change `input`, in ARMS order, each with about its share of the fixed
+ * schedule (`mutate_guided`). One try in six is a plain edit (`mutate`): half the time an array
+ * (when one has two elements or more), else any place, then an edit for its kind. The rest are
+ * grammar edits, by NODE_OPS's weights, except that half the edits of a plain-text string are
+ * plain string edits.
+ */
+export function arms_of(input: unknown, plan: GrammarPlan): ArmChoice[] {
+	const k = kinds_of(input, false);
+	const swap = k.objects.filter((p) => data_keys(p.value as Obj).length >= 2).length;
+	// the share of string picks that land on plain text
+	let all = 0;
+	let text = 0;
+	for (const p of k.strings) {
+		const w = 1 + Math.floor(Math.sqrt(p.value.length));
+		all += w;
+		if (plan.at(p.path, p.value).name === 'text') text += w;
+	}
+	const t = all > 0 ? text / all : 0;
+	const guided = k.strings.length > 0 ? 5 / 6 : 0;
+	// a plain edit's place, by kind
+	const places = k.strings.length + k.arrays.length + k.numbers.length + k.objects.length;
+	const lists = k.arrays.some((p) => (p.value as unknown[]).length > 1) ? 1 / 2 : 0;
+	const share = (n: number): number => ((1 - guided) * (1 - lists) * n) / Math.max(1, places);
+	const out: ArmChoice[] = [];
+	for (const arm of ARMS) {
+		let weight = 0;
+		if (arm.startsWith('node: ')) {
+			const w = NODE_OPS.find(([op]) => `node: ${op}` === arm)![1];
+			weight = (guided * (1 - t / 2) * w) / NODE_OPS_TOTAL;
+		} else if (arm === 'string: edit') {
+			weight = share(k.strings.length) + (guided * t) / 2;
+		} else if (arm.startsWith('array: ')) {
+			const a = share(k.arrays.length) + (k.arrays.length > 0 ? (1 - guided) * lists : 0);
+			weight = arm === 'array: wrap' ? a / 6 : (a * 5) / 6 / ARRAY_OPS.length;
+		} else if (arm === 'number: edge value') {
+			weight = share(k.numbers.length);
+		} else if (arm === 'object: swap two values') {
+			weight = share(swap) / 2;
+		} else {
+			weight = share(k.objects.length) - share(swap) / 2;
+		}
+		if (weight > 0) out.push({ arm, weight });
+	}
+	return out;
+}
+
+/** An array place: by the square root of its length, so one long list is not drowned out. */
+function pick_array(list: Place[], r: Rng): Place {
+	let total = 0;
+	const w = list.map((x) => (total += 1 + Math.sqrt((x.value as unknown[]).length)));
+	const at = r.u32() / 2 ** 32;
+	return list[
+		Math.max(
+			0,
+			w.findIndex((t) => at * total < t)
+		)
+	];
+}
+
+/**
+ * One edit of `input` by the operator `arm`, at a place it applies to (null when it has none, or
+ * the edit does not fit `room`).
+ */
+export function mutate_arm(
+	input: unknown,
+	arm: string,
+	r: Rng,
+	plan: GrammarPlan,
+	room: Room,
+	donors: unknown[] = []
+): { input: unknown; what: string } | null {
+	const k = kinds_of(input);
+	if (arm.startsWith('node: ') || arm === 'string: edit') {
+		if (k.strings.length === 0) return null;
+		const p = pick_string(k.strings, r);
+		if (arm === 'string: edit') return text_edit(input, p, k.strings, r, room);
+		const g = plan.at(p.path, p.value);
+		return grammar_edit(input, p, g, r, room, donor_strings(donors, p), arm.slice(6));
+	}
+	let p: Place;
+	let next: unknown;
+	let what: string;
+	if (arm.startsWith('array: ')) {
+		if (k.arrays.length === 0) return null;
+		p = pick_array(k.arrays, r);
+		const v = p.value as unknown[];
+		if (arm === 'array: wrap') [next, what] = [[clone(v)], 'nesting: wrap an array'];
+		else [next, what] = mutate_array(v, r, ARRAY_OPS.indexOf(arm.slice(7)));
+	} else if (arm === 'number: edge value') {
+		if (k.numbers.length === 0) return null;
+		p = r.pick(k.numbers);
+		[next, what] = mutate_number(p.value as number, r);
+	} else {
+		const list =
+			arm === 'object: swap two values'
+				? k.objects.filter((x) => data_keys(x.value as Obj).length >= 2)
+				: k.objects;
+		if (list.length === 0) return null;
+		p = r.pick(list);
+		const v = p.value as Obj;
+		const keys = data_keys(v);
+		const copy = shallow_copy(v);
+		if (arm === 'object: nest in itself') {
+			copy[r.pick(keys)] = clone(v);
+			what = 'nesting: nest an object in itself';
+		} else {
+			const a = r.pick(keys);
+			const b = r.pick(keys);
+			copy[a] = v[b];
+			copy[b] = v[a];
+			what = 'object: swap two values';
+		}
+		next = copy;
+	}
+	// like `mutate`, the caller checks the size
+	const label = p.path.length > 0 ? `${what} at ${p.path.join('.')}` : what;
+	return { input: set_at(k.root, p.path, next), what: label };
 }
