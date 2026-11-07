@@ -1,7 +1,7 @@
 import type { ModuleMeta } from '../meta.ts';
 import { load_prices, builtin_names, n_log_n } from '../prices.ts';
 import type { Prices } from '../prices.ts';
-import { array_bytes, object_bytes, string_bytes } from '../layout.ts';
+import { array_bytes, CONS_MIN, CONS_STRING, object_bytes, string_bytes } from '../layout.ts';
 import { DisposeScope } from './dispose.ts';
 
 /*
@@ -496,8 +496,14 @@ export class Runtime {
 	// Per dynamic site, d[2i] holds bytes and d[2i+1] the size units (characters, keys, elements):
 	// the report prices units with the site kind's dynamic price, so a price change can recount.
 
+	/** A join's result: a ConsString (fixed size, nothing copied) from CONS_MIN characters on, a
+	 *  flat copy priced per character below that (layout.ts). */
 	str(d: Float64Array, i: number, v: string): string {
 		const n = v.length;
+		if (n >= CONS_MIN) {
+			d[2 * i] += CONS_STRING;
+			return v;
+		}
 		d[2 * i] += string_bytes(n);
 		d[2 * i + 1] += n;
 		this.s[0] += n * this.price_string_char;
