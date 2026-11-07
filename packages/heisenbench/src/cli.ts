@@ -475,10 +475,12 @@ function check_dirs(cmd: string, flags: Map<string, string>): void {
 	}
 }
 
+const ERROR_PREFIX = 'heisenbench: ';
+
 /** Errors as Heisenbench prints them: one line, `heisenbench <cmd>: ...`; the stack only with --debug. */
 function message_of(e: unknown): string {
 	const m = one_line(e);
-	return m.startsWith('heisenbench: ') ? m.slice(6) : m;
+	return m.startsWith(ERROR_PREFIX) ? m.slice(ERROR_PREFIX.length) : m;
 }
 
 const argv = process.argv.slice(2);

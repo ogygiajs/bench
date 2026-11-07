@@ -12,6 +12,9 @@
  * sources, in order with everything else.
  */
 
+/** How a window marker's script source starts; the child writes it, the parser reads past it. */
+export const MARKER_PREFIX = '"heisenbench:';
+
 export interface LogModule {
 	/** file: URL the module was loaded from. */
 	url: string;
@@ -366,10 +369,11 @@ export function parse_v8_log(text: string, modules: LogModule[]): LogFacts {
 			if (mi !== undefined) facts.scripts.set(id, mi);
 			if (head === 'script-source' && c3 !== -1 && mi === undefined) {
 				const src = line.slice(c3 + 1);
-				const at = src.indexOf('"heisenbench:');
+				const at = src.indexOf(MARKER_PREFIX);
 				if (at !== -1 && src.length - at < 64) {
-					const end = src.indexOf('"', at + 6);
-					const marker = src.slice(at + 6, end === -1 ? src.length : end);
+					const from = at + MARKER_PREFIX.length;
+					const end = src.indexOf('"', from);
+					const marker = src.slice(from, end === -1 ? src.length : end);
 					if (marker.startsWith('open:')) {
 						window = Number(marker.slice(5));
 						facts.windows = Math.max(facts.windows, window + 1);

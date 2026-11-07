@@ -4,7 +4,7 @@ Heisenbench is a benchmark engine for JavaScript and TypeScript functions. It co
 function does, line by line, and the count is the same on every run, so one run of a PR and one
 run of its base are enough to tell which line got slower.
 
-The name comes from the heisenbench, the Greek counting board.
+The name is a nod to Heisenberg and the Heisenbug: a benchmark with no uncertainty.
 
 Heisenbench was built for [ogygia](https://github.com/ogygiajs/ogygia) and runs on every ogygia PR. It
 lives in this repository as `packages/heisenbench` and is on npm as `heisenbench`.

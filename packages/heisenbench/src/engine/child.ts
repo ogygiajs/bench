@@ -17,6 +17,7 @@ import {
 	ts_to_js
 } from '../transform/index.ts';
 import { private_bindings } from '../transform/instrument.ts';
+import { MARKER_PREFIX } from './log.ts';
 import { calibrate, decode, natives } from './natives.ts';
 import type { Tier } from './types.ts';
 
@@ -213,7 +214,7 @@ async function main(): Promise<void> {
 	const det = new Determinism();
 	// Compiling a new script logs its source: a marker in the V8 log, in order with everything else.
 	const mark = (what: string): void => {
-		new Function(`"heisenbench:${what}"`);
+		new Function(`${MARKER_PREFIX}${what}"`);
 	};
 	let window = 0;
 	const run = async (mode: IoMode): Promise<void> => {
