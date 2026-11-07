@@ -4,7 +4,7 @@ import { module_id, module_specifier } from '../transform/index.ts';
 import { instrument } from '../transform/instrument.ts';
 import { load_prices } from '../prices.ts';
 import type { FunctionMeta } from '../meta.ts';
-import { executed_code, is_plain_source } from './plain.ts';
+import { executed_code, is_dependency_source, is_plain_source } from './plain.ts';
 
 /*
  * From a script position V8 reports (heap profile call frames, snapshot closures) to the function
@@ -36,14 +36,22 @@ export class Attributor {
 	#modules = new Map<string, ModuleIndex | null>();
 	#prices = load_prices();
 
-	constructor(root: string) {
+	/** Dependencies are functions of their own too (`deps`), as the counting build names them. */
+	deps: boolean;
+
+	constructor(root: string, o: { deps?: boolean } = {}) {
 		this.root = root;
+		this.deps = o.deps ?? false;
 	}
 
-	/** True for a script URL of a source module under the root (not a bench file, not a dep). */
+	/**
+	 * True for a script URL of a source module under the root (not a bench file), or of a
+	 * dependency when `deps` is on.
+	 */
 	wants(url: string): boolean {
 		if (!url.startsWith('file:')) return false;
-		return is_plain_source(fileURLToPath(url), [this.root]);
+		const path = fileURLToPath(url);
+		return is_plain_source(path, [this.root]) || (this.deps && is_dependency_source(path));
 	}
 
 	#index(url: string): ModuleIndex | null {

@@ -232,3 +232,48 @@ test('a renamed function brings the functions inside it along, by path', () => {
 		]
 	);
 });
+
+test('a callback whose own code changed pairs by its place, not as a new function', () => {
+	// `sort:0~…` got a new shape hash from its own edit (nothing alike left in its body), and a
+	// new callback came before it; the edited one is a change, the added one is new
+	const base = report([fn('a.ts', 'lower', 5, 1), fn('a.ts', 'lower > sort:0~aaaaaa', 3, 2)]);
+	const pr = report([
+		fn('a.ts', 'lower', 5, 1),
+		fn('a.ts', 'lower > sort:0~cccccc', 7, 2),
+		fn('a.ts', 'lower > sort:0~bbbbbb', 40, 3)
+	]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(d.renames, []);
+	const edited = d.changes.find((c) => c.base?.path === 'lower > sort:0~aaaaaa');
+	assert.equal(edited?.pr?.path, 'lower > sort:0~cccccc', 'the most alike in the place pairs');
+	assert.equal(edited?.renamed_from, null);
+	assert.deepEqual(
+		d.findings.filter((f) => f.kind === 'new function').map((f) => f.function),
+		['lower > sort:0~bbbbbb']
+	);
+	assert.equal(d.findings.filter((f) => f.kind === 'removed function').length, 0);
+});
+
+test('a renamed function brings its edited callbacks along by place', () => {
+	const base = report([fn('a.ts', 'v1', 5, 1), fn('a.ts', 'v1 > map:0~aaaaaa', 3, 2)]);
+	const pr = report([fn('a.ts', 'z1', 5, 11), fn('a.ts', 'z1 > map:0~bbbbbb', 30, 12)]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(
+		d.renames.map((r) => [r.from, r.to]),
+		[
+			['a.ts > v1', 'a.ts > z1'],
+			['a.ts > v1 > map:0~aaaaaa', 'a.ts > z1 > map:0~bbbbbb']
+		]
+	);
+	assert.equal(d.findings.filter((f) => f.kind === 'new function').length, 0);
+});
+
+test('an upgraded dependency pairs across versions', () => {
+	const base = report([fn('acorn@8.14.0/dist/acorn.mjs', 'Parser', 5, 1)]);
+	const pr = report([fn('acorn@8.15.0/dist/acorn.mjs', 'Parser', 9, 1)]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(
+		d.changes.map((c) => [c.base?.id, c.pr?.id, c.delta.self_steps]),
+		[['acorn@8.14.0/dist/acorn.mjs > Parser', 'acorn@8.15.0/dist/acorn.mjs > Parser', 4]]
+	);
+});

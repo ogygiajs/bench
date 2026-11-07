@@ -173,9 +173,9 @@ interval spreads the same estimate over fewer samples; it is not biased.
 
 Bytes are charged the way the estimate counts them. A byte allocated in a built-in or in Node's own
 `node:` modules goes to the nearest source function under it, so bytes allocated inside `map` are
-charged to the function that called `map`. A byte allocated in a dependency, the bench file or the
-harness is charged to none of them: a dependency is not counted, so its allocations are not in the
-estimate either.
+charged to the function that called `map`. A byte allocated in a dependency goes to that
+dependency's function (`acorn@8.18.0/dist/acorn.mjs > Parser`), which the estimate counts too. A
+byte allocated in the bench file or the harness is charged to none of them.
 
 ```
 bytes   rank: twenty rows  estimated 16 B, real 907.66 B
@@ -262,7 +262,7 @@ closure cache keyed by the row object.
 **Leaks** (retained heap grows with every call):
 
 - `rank: twenty rows`: 3406.76 B per call, 40 (string) per call held by `seen` (`lib.ts:14`, kept growing by `rank`)
-- `rank: twenty rows`: 3888.2 B per call, 40 (string) per call held by `cache` (`lib.ts:15`, kept growing by `memo > <anonymous>`)
+- `rank: twenty rows`: 3888.2 B per call, 40 (string) per call held by `cache` (`lib.ts:15`, kept growing by `memo > <anonymous>~8c88e4`)
 ```
 
 Their twins (only the last row kept; the cache keyed by row id, twenty entries whatever the
@@ -277,6 +277,25 @@ picking the best fit and the simpler class on a tie. Counts are exact, so three 
 ```
 ok       rank: twenty rows  linear (exponent 0.999; 897 / 8817 / 88017 steps)
 ```
+
+Under each case it says where the steps are at the largest size: each package's share, and the
+functions with the most self steps, each with its own curve. ogygia's compiler case on `57882cc`:
+
+```
+ok       transformHost: a route page as its island count grows  quadratic (exponent 1.921; 1903230 / 59631955 / 4976398602 steps)
+           at 100x: 78% acorn@8.18.0, 14% own code, 6% svelte@5.56.8
+           acorn@8.18.0/dist/acorn.mjs > Parser  quadratic (exponent 1.989; 573263 / 39848734 / 3888985404 self steps)
+           packages/core/src/compiler/region/transform.ts > FileCompilation > #ast_refs_local > walk  quadratic (exponent 1.991; 85054 / 6995234 / 684590168 self steps)
+           svelte@5.56.8/src/compiler/phases/1-parse/state/tag.js > open  quadratic (exponent 1.986; 40853 / 2717845 / 263030825 self steps)
+           svelte@5.56.8/src/compiler/phases/1-parse/index.js > Parser > match_regex  quadratic (exponent 1.942; 11680 / 462466 / 40498614 self steps)
+           magic-string@1.4.5/dist/index.mjs > MappingsEncoder > drain  linear (exponent 0.994; 102761 / 782582 / 7717161 self steps)
+```
+
+Svelte's template parser calls `acorn.parseExpressionAt(source, index, { locations: true })` for
+every expression, and acorn's `Parser` constructor splits the whole source up to `index` into
+lines: work linear in the position, quadratic over the file. With dependencies left uncounted
+(`--deps none`) the same case read 705,683,366 steps at 100x, all of them ogygia's. A class change
+in a PR names the function and the shares too.
 
 The input is grown by a generic scaler: arrays and strings repeated k times, `Map` and `Set`
 entries repeated with distinct keys, linked chains made k times deeper, plain objects scaled
@@ -413,8 +432,15 @@ turned on for a codebase that is far from covered. An exemption names a function
 ```
 
 An exemption covers that function and every function nested in it: the closure inside it
-(`src/rank.ts > total > reduce:0`) is exempt with it. `"nested": false` exempts the function
-alone.
+(`src/rank.ts > total > reduce:0~3fa9c2`) is exempt with it. `"nested": false` exempts the function
+alone. An exemption may also name a place without the shape hash (`src/rank.ts > total > reduce:0`):
+it covers every callback there, through edits to their code
+([how-counting-works.md](how-counting-works.md#identity)).
+
+A function whose own code changed has a new shape hash in the same place. The gate counts it as
+old: in each place, every base function the PR no longer has stands for one PR function there the
+base did not have. A callback added before an old one does not rename the old one, so only the
+added one is new.
 
 A file the PR moved keeps its functions' history when the gate gets the git range
 (`--repo dir --base sha --head sha`): its unmeasured functions stay old, not new. A new file the

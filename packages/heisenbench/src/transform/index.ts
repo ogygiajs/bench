@@ -1,7 +1,8 @@
 import '../warnings.ts';
 import { createHash } from 'node:crypto';
 import { stripTypeScriptTypes } from 'node:module';
-import { relative, sep } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import remapping from '@jridgewell/remapping';
 import { instrument } from './instrument.ts';
@@ -45,17 +46,42 @@ export function module_specifier(filename: string): string {
 }
 
 /**
- * Report identity of a module: the path relative to the run root, or `pkg/path/in/pkg` for a file
- * inside node_modules (dependencies are blamed under their package names).
+ * Report identity of a module: the path relative to the run root, or `pkg@version/path/in/pkg` for
+ * a file inside node_modules (dependencies are blamed under their package names and versions;
+ * identity.ts reads them back).
  */
 export function module_id(filename: string, root: string): string {
-	const nm = filename.lastIndexOf(`${sep}node_modules${sep}`);
-	if (nm !== -1)
-		return filename
-			.slice(nm + 14)
-			.split(sep)
-			.join('/');
-	return relative(root, filename).split(sep).join('/');
+	const marker = `${sep}node_modules${sep}`;
+	const nm = filename.lastIndexOf(marker);
+	if (nm === -1) return relative(root, filename).split(sep).join('/');
+	const parts = filename.slice(nm + marker.length).split(sep);
+	const n = parts[0].startsWith('@') ? 2 : 1;
+	const name = parts.slice(0, n).join('/');
+	const version = package_version(
+		filename.slice(0, nm + marker.length) + parts.slice(0, n).join(sep)
+	);
+	return [version === null ? name : `${name}@${version}`, ...parts.slice(n)].join('/');
+}
+
+const versions = new Map<string, string | null>();
+
+/**
+ * The `version` of the package at `dir` (from its package.json), so a dependency is named
+ * `acorn@8.15.0/dist/acorn.mjs` wherever it is installed: the lockfile decides it, not the path.
+ */
+function package_version(dir: string): string | null {
+	let v = versions.get(dir);
+	if (v !== undefined) return v;
+	try {
+		const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+			version?: unknown;
+		};
+		v = typeof pkg.version === 'string' && pkg.version !== '' ? pkg.version : null;
+	} catch {
+		v = null;
+	}
+	versions.set(dir, v);
+	return v;
 }
 
 /**

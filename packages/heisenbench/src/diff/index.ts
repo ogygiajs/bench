@@ -7,6 +7,7 @@ import { align_prices } from '../recount.ts';
 import { measure_diff } from '../measure/diff.ts';
 import type { MeasureDiff } from '../measure/diff.ts';
 import type { Prices } from '../prices.ts';
+import { OWN_CODE, context_path, package_of, unversioned_module } from '../identity.ts';
 
 /*
  * PR vs base (spec 11). Functions are matched by identity (`module > path`), through git file
@@ -70,6 +71,12 @@ export interface DiffResult {
 	failed: string[];
 	missing: { base: string[]; pr: string[] };
 	cases: Array<{ name: string; base_steps: number; pr_steps: number }>;
+	/**
+	 * Self steps per package per case (`own code` for the project's), for the cases that count a
+	 * dependency at all: "68% of this case is in acorn". A package upgraded between the two sides
+	 * is one row, under the PR's version.
+	 */
+	packages: PackageSteps[];
 	/** Both sides are counted with the same prices (as they came, or after a recount). */
 	prices_match: boolean;
 	/** The prices both sides were recounted with when they came with different ones. */
@@ -78,6 +85,49 @@ export interface DiffResult {
 	measure?: MeasureDiff;
 	/** How the two reports' environments differ (Node, V8, platform, weights): empty when alike. */
 	env?: string[];
+}
+
+export interface PackageSteps {
+	case: string;
+	/** `acorn@8.15.0`, or `own code`. */
+	package: string;
+	base_steps: number;
+	pr_steps: number;
+	/** The package's share of the PR case's self steps (0..1). */
+	pr_share: number;
+}
+
+/** Self steps of one case by package, keyed by the package name without its version. */
+function steps_by_package(c: CaseReport): Map<string, { label: string; steps: number }> {
+	const out = new Map<string, { label: string; steps: number }>();
+	for (const f of c.functions) {
+		const p = package_of(f.module);
+		const key = p ? p.name : '';
+		const row = out.get(key) ?? { label: p ? `${p.name}@${p.version}` : OWN_CODE, steps: 0 };
+		row.steps += f.self_steps;
+		out.set(key, row);
+	}
+	return out;
+}
+
+function package_rows(name: string, base: CaseReport, pr: CaseReport): PackageSteps[] {
+	const b = steps_by_package(base);
+	const p = steps_by_package(pr);
+	if ([...b.keys(), ...p.keys()].every((k) => k === '')) return [];
+	let total = 0;
+	for (const r of p.values()) total += r.steps;
+	const rows: PackageSteps[] = [];
+	for (const key of new Set([...b.keys(), ...p.keys()])) {
+		const pr_steps = round(p.get(key)?.steps ?? 0);
+		rows.push({
+			case: name,
+			package: (p.get(key) ?? b.get(key))!.label,
+			base_steps: round(b.get(key)?.steps ?? 0),
+			pr_steps,
+			pr_share: total > 0 ? pr_steps / total : 0
+		});
+	}
+	return rows.sort((x, y) => y.pr_steps - x.pr_steps || (x.package < y.package ? -1 : 1));
 }
 
 export interface DiffOptions {
@@ -148,6 +198,19 @@ class Paths {
 	line_maps = new Map<string, LineMap>();
 
 	constructor(base: Report, pr: Report, files: FileDiff[] | null | undefined) {
+		// An upgraded dependency is the same code under a new version: `svelte@5.1.0/src/x.js` is
+		// `svelte@5.2.0/src/x.js`. Its lines are compared as they are (git sees no diff of it).
+		const pr_modules = new Map<string, string>();
+		for (const c of pr.cases) for (const f of c.functions) pr_modules.set(f.module, f.module);
+		const by_unversioned = new Map<string, string>();
+		for (const m of pr_modules.keys()) by_unversioned.set(unversioned_module(m), m);
+		for (const c of base.cases) {
+			for (const f of c.functions) {
+				if (pr_modules.has(f.module) || package_of(f.module) === null) continue;
+				const to = by_unversioned.get(unversioned_module(f.module));
+				if (to !== undefined) this.module_map.set(f.module, to);
+			}
+		}
 		if (!files) return;
 		for (const f of files) {
 			const pr_id = f.new_path ? strip(pr.git.prefix, f.new_path) : null;
@@ -329,12 +392,27 @@ function diff_case(
 	// `b`), so outer functions are matched first and their insides follow by path. At each depth the
 	// best-scoring pair goes first: one base function taking a sibling's better match leaves that
 	// sibling to a worse one.
+	//
+	// A function whose own code changed keeps its place (identity.ts `context_path`): the same path
+	// without shape hashes, under the PR path its enclosing function was matched to. A callback
+	// edited past the shape threshold is still the callback in that slot, and is not a rename.
 	const matched_base = new Set<string>();
+	const pr_path_of = new Map<string, string>();
+	for (const [b, p] of pairs) pr_path_of.set(b.id, p.path);
+	const place = (b: FunctionReport): string => {
+		const at = b.path.lastIndexOf(' > ');
+		const outer = at === -1 ? undefined : pr_path_of.get(`${b.module} > ${b.path.slice(0, at)}`);
+		return outer === undefined
+			? context_path(b.path)
+			: context_path(outer) + context_path(b.path.slice(at));
+	};
 	const accept = (b: FunctionReport, p: FunctionReport): void => {
-		pairs.push([b, p, b.path]);
+		const moved = context_path(b.path) !== context_path(p.path);
+		pairs.push([b, p, moved ? b.path : null]);
 		matched_base.add(b.id);
 		matched_pr.add(p.id);
-		renames.push({ case: name, from: b.id, to: p.id });
+		pr_path_of.set(b.id, p.path);
+		if (moved) renames.push({ case: name, from: b.id, to: p.id });
 		const inside = `${b.path} > `;
 		for (const c of unmatched_base) {
 			if (matched_base.has(c.id) || !c.path.startsWith(inside)) continue;
@@ -350,10 +428,13 @@ function diff_case(
 			if (matched_base.has(b.id) || depth(b) !== d) continue;
 			const module = paths.pr_module(b.module);
 			const mapped = paths.lines(module).forward(b.line);
+			const at = place(b);
 			for (const p of unmatched_pr) {
 				if (matched_pr.has(p.id) || p.module !== module || p.kind !== b.kind) continue;
 				let score = shape_similarity(b.shape, p.shape);
 				if (mapped === p.line) score += 0.01;
+				// same place first, whatever its shape; the most alike first among several
+				if (context_path(p.path) === at) score += 1;
 				if (score >= threshold) candidates.push({ b, p, score });
 			}
 		}
@@ -452,6 +533,7 @@ export function diff_reports(
 		failed: [],
 		missing: { base: [], pr: [] },
 		cases: [],
+		packages: [],
 		prices_match: aligned.comparable,
 		recounted: aligned.recounted,
 		env: env_mismatch(base_report, pr_report)
@@ -467,6 +549,7 @@ export function diff_reports(
 		}
 		if (!bc.stable || !pc.stable) result.unstable.push(bc.name);
 		result.cases.push({ name: bc.name, base_steps: bc.totals.steps, pr_steps: pc.totals.steps });
+		result.packages.push(...package_rows(bc.name, bc, pc));
 		const d = diff_case(bc.name, bc, pc, paths, threshold, aligned.recounted === null);
 		result.changes.push(...d.changes);
 		result.renames.push(...d.renames);

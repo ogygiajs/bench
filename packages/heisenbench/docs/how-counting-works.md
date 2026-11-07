@@ -8,7 +8,9 @@ keeps the count the same from run to run, and how the count is mapped back to so
 
 `heisenbench run` registers a module loader (`module.registerHooks`) and imports the bench file. Every
 module loaded after that goes through the transform: oxc-parser reads it, magic-string edits it,
-and the edits keep a source map. The same transform is also a Vite, Rolldown and Rollup plugin
+and the edits keep a source map. That includes the ES modules of dependencies in `node_modules`
+(`--deps none` or `--deps a,b` narrows it); it never includes Heisenbench's own modules, Node's
+built-in modules, or CommonJS files, which run as they are. The same transform is also a Vite, Rolldown and Rollup plugin
 (`heisenbench/plugin`), used for the counted app builds.
 
 This module:
@@ -136,8 +138,8 @@ Where wrapping the receiver would change what the code does (inside an optional 
 `await` in the arguments, on `super`), the site is announced without it and the wrapper checks
 that its caller is the module that announced it, from V8's stack.
 
-So a built-in is charged only when counted code calls it directly. Code that is not counted, a
-dependency run without `--deps` or Node's own JavaScript, costs nothing, and neither do the
+So a built-in is charged only when counted code calls it directly. Code that is not counted,
+Node's own JavaScript or a dependency left out with `--deps`, costs nothing, and neither do the
 built-ins it calls: a same-named method of uncounted code (`headers.get(...)`, which calls
 `Map.prototype.get` inside) is not a call of the built-in. Before this rule, Node's `URLSearchParams`
 parsing (non-primordial `slice` calls) cost ogygia's flag `override` 651 `slice` calls on Node 26.4
@@ -265,9 +267,37 @@ so bench files run unchanged on it.
 ## Identity
 
 A function is `module > path`: `packages/router/src/match.ts > match_one`, or
-`router.ts > Router > match` for a method, or `rank.ts > total > reduce:0` for an arrow passed to
-`reduce` inside `total`. A block is its function plus an index
-(`... > match_one > block 4`). Dependencies are named from their package (`devalue/src/...`).
+`router.ts > Router > match` for a method. A block is its function plus an index
+(`... > match_one > block 4`).
+
+A function without a name of its own is named by where it is, plus its shape:
+`rank.ts > total > reduce:0~3fa9c2` is the arrow passed as argument 0 to `reduce` inside
+`total`, and `3fa9c2` is six hex digits of a hash of its syntax tree (node types, names,
+operators, literal values). Whitespace, comments, parentheses, quotes and TypeScript types are
+not in the tree, so formatting the function or stripping its types does not move its id; adding
+another `reduce` callback before it does not either. Only two callbacks alike in place and shape
+are told apart by order: `reduce:0~3fa9c2#2`. A function the language names (a declaration, a
+method, `const f = () => {}`, `{ f() {} }`) keeps that name, and only a second one of the same
+name in the same scope gets its hash.
+
+Before this, the `n`th callback in a slot was `reduce:0#n`, so adding one earlier renamed every
+later one: ogygia's gate then reported an untouched comparator as a new, unmeasured function.
+
+An edit to a callback's own code gives it a new hash. Everything that compares two trees pairs it
+by its place, the path without hashes:
+
+- `heisenbench diff` pairs a function with a new hash in the same place (under the function its
+  parent was matched to) before it pairs by shape. That is a change, not a rename.
+- The gate counts it as on the base: in each place, every base function the PR no longer has
+  stands for one PR function there the base did not have.
+- An exemption may name a place (`rank.ts > total > reduce:0`): it covers every callback there.
+- Real-app weights are kept per place, since a PR's edited callback has a hash main never saw.
+
+Dependencies are named by package, version and file: `acorn@8.18.0/dist/acorn.mjs > Parser`.
+The version comes from the package's `package.json`, so the name is the same in every checkout
+and with any package manager's layout (`node_modules/.pnpm/acorn@8.18.0/node_modules/acorn/...`
+and `node_modules/acorn/...` are both `acorn@8.18.0/...`). When a PR upgrades a dependency,
+`heisenbench diff` pairs its functions across the two versions.
 
 `heisenbench diff` matches functions by identity, through git renames of the file, and by body shape
 when the function itself was renamed (80% similar block prices). A function whose own steps,

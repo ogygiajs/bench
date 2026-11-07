@@ -90,7 +90,9 @@ export async function real_bytes(
 	const warm = o.warm ?? 2000;
 	const runs = o.runs ?? 1000;
 	const batch = o.batch ?? 100;
-	const attributor = new Attributor(root);
+	// a dependency's functions are counted (and estimated) like the project's: their real bytes are
+	// theirs too, or each would read as eliding all it allocates
+	const attributor = new Attributor(root, { deps: true });
 	for (let done = 0; done < warm; done += batch) await run_batch(c, Math.min(batch, warm - done));
 	gc?.();
 

@@ -260,10 +260,15 @@ public callers.
   files still run.
 - `.svelte` components and `.svelte.ts` modules, compiled with the project's own Svelte (server
   output). Lines map back to the `.svelte` source.
-- Dependencies run uncounted unless `--deps all` or `--deps devalue,svelte` asks for them; counted
-  ones are reported under their package names
-  (`devalue/src/operations.js > parse_operations > createMap`). suites/ogygia counts devalue,
-  Svelte and magic-string (see [docs/ci.md](docs/ci.md)).
+- Dependencies are counted like your own code, and reported under their package name and
+  version: `acorn@8.18.0/dist/acorn.mjs > Parser`. Work a dependency does for your code is your
+  code's work: ogygia's compiler case read 33 times less work after a fix while its wall time
+  dropped 1.9 times, because Svelte's template parser, which calls acorn once per expression
+  with the whole file, was not counted. Counted, the case grown to 100 times its input is 78%
+  acorn (see [growth](docs/layers.md#growth)). `--deps none` counts
+  your code alone, `--deps devalue,svelte` only those packages. CommonJS dependencies run as
+  they are (the transform is for ES modules), and Node's built-in modules are never counted:
+  the built-ins they reach are priced where counted code calls them.
 
 ## CLI
 
@@ -346,11 +351,12 @@ fitted cost in ns. It is not a measurement. Only the time layer measures.
   `heisenbench diff` recounts both with the current prices from the units each report keeps, and compares
   those.
 
-**What does not:** the machine, the Node version, the checkout path, and code Heisenbench does not
-count. A priced built-in is charged only when counted code calls it directly. Built-ins that a
-dependency running uncounted or Node's own JavaScript calls are free, whatever counted code called
-into them. ogygia `86e537b` counted in two checkouts at different depths, and under Node 26.4.0
-and 26.13.0: all 57 cases and 934 functions gave the same steps.
+**What does not:** the machine, the Node version, the checkout path (a dependency is named
+`name@version` wherever it is installed), and code Heisenbench does not count. A priced built-in
+is charged only when counted code calls it directly. Built-ins that Node's own JavaScript (or a
+dependency left out with `--deps`) calls are free, whatever counted code called into them.
+ogygia `86e537b` counted in two checkouts at different depths, and under Node 26.4.0 and
+26.13.0: all 57 cases and 934 functions gave the same steps.
 
 A report records Node, V8, the platform and the weights it was counted with. `heisenbench diff` says so
 at the top when two reports differ in any of them, and leaves engine health out: what V8 does is

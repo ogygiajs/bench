@@ -26,7 +26,8 @@ const HELP = `heisenbench: count the work a function does, per line, the same on
 
 Counting (the counting build)
   heisenbench run <bench files...>      count every case: steps, allocations, bytes, calls
-      [--out heisenbench-report.json] [--root dir] [--filter text] [--deps all|a,b] [--sha sha]
+      [--out heisenbench-report.json] [--root dir] [--filter text] [--sha sha]
+      [--deps all|none|a,b]   dependencies counted (default all), blamed as name@version
       [--state fresh|shared] [--measure time,bytes,leaks|all] [--time-ms 300]
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
@@ -38,7 +39,8 @@ Layers (each writes its section into --out, default heisenbench-report.json)
   heisenbench health <bench files...>   V8 tiers, deopts and inline caches on the plain build
       [--warmup 20] [--runs 3] [--check on|off] [--root dir] [--filter text] [--out file]
   heisenbench growth <bench files...>   steps at 1x, 10x, 100x the input; the curve class
-      [--sizes 1,10,100] [--scaled on|off] [--root dir] [--filter text] [--out file]
+      [--sizes 1,10,100] [--scaled on|off] [--deps all|none|a,b] [--root dir] [--filter text]
+      [--out file]
   heisenbench search <bench files...>   the input of the same size that costs the most steps
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
   heisenbench time <bench files...> --base dir --pr dir   both trees timed in one process, in turns
@@ -93,6 +95,14 @@ async function verify_command(flags: Map<string, string>): Promise<number> {
 	const json = flags.get('json');
 	if (json) writeFileSync(json, JSON.stringify(rows, null, '\t') + '\n');
 	return rows.length > 0 && rows.every((r) => r.pass) ? 0 : 1;
+}
+
+/** `--deps all|none|a,b`: which dependencies are counted (`fallback` when the flag is absent). */
+function deps_of(flag: string | undefined, fallback: boolean): boolean | string[] {
+	if (flag === undefined) return fallback;
+	if (flag === 'all') return true;
+	if (flag === 'none') return false;
+	return flag.split(',').filter((p) => p !== '');
 }
 
 interface Parsed {
@@ -336,9 +346,7 @@ async function main(argv: string[]): Promise<number> {
 	}
 	check_dirs(cmd, flags);
 	if (cmd === 'run') {
-		const deps_flag = flags.get('deps');
-		const deps =
-			deps_flag === undefined ? false : deps_flag === 'all' ? true : deps_flag.split(',');
+		const deps = deps_of(flags.get('deps'), true);
 		const report = await run_benches({
 			files: positional,
 			root: flags.get('root'),
@@ -397,12 +405,13 @@ async function main(argv: string[]): Promise<number> {
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
-		const deps_flag = flags.get('deps');
 		const common = {
 			files: positional,
 			root,
 			filter: flags.get('filter'),
-			deps: deps_flag === undefined ? false : deps_flag === 'all' ? true : deps_flag.split(','),
+			// engine health stays on the project's own code: what V8 does with a dependency is not
+			// the project's to fix
+			deps: deps_of(flags.get('deps'), cmd !== 'health'),
 			log: (l: string) => console.log(l)
 		};
 		const num = (k: string): number | undefined =>

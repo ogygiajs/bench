@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { diff_reports } from '../diff/index.ts';
+import { context_path } from '../identity.ts';
 import type { Finding } from '../diff/index.ts';
 import { git_diff } from '../diff/git.ts';
 import { render_markdown } from '../diff/markdown.ts';
@@ -105,7 +106,7 @@ function steps_check(name: string): Check {
 					s !== null &&
 					s !== undefined &&
 					s.module === e.leak!.module &&
-					s.function === e.leak!.function &&
+					context_path(s.function) === e.leak!.function &&
 					s.variable === e.leak!.variable &&
 					s.line === e.leak!.line;
 				return {
@@ -150,7 +151,7 @@ interface Rule {
 }
 
 function matches(f: EngineFinding, r: Rule): boolean {
-	if (r.function !== f.function) return false;
+	if (r.function !== context_path(f.function)) return false;
 	if (r.kind && r.kind !== f.kind) return false;
 	if (r.lines && (f.line < r.lines[0] || f.line > r.lines[1])) return false;
 	return true;

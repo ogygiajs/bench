@@ -134,7 +134,7 @@ test('counted server: requests inside the measuring window, twice, the same coun
 		assert.equal(by.get('Server > respond')?.calls, 3);
 		assert.equal(by.get('render_part')?.calls, 12); // '/abc'.length per request
 		assert.equal(r.report!.timers, 3); // one fake timer per request, run by the fake loop
-		assert.ok(loaded['fakekit/server.js'].some((f) => f[0] === 'Server > init'));
+		assert.ok(loaded['fakekit@1.2.3/server.js'].some((f) => f[0] === 'Server > init'));
 		// served over HTTP for a browser: static files first, then the app
 		const base = await server.listen();
 		assert.match(await (await fetch(base + '/')).text(), /class="inc"/);
@@ -243,6 +243,6 @@ test('run_scenario: browser phases and server cases as app cases, with the page 
 			['fake › server › page view requests (1)', 'request', 2]
 		]
 	);
-	assert.ok(run.loaded['fakekit/client.js'].some((f) => f[0] === 'inc'));
-	assert.ok(run.loaded['fakekit/server.js'].some((f) => f[0] === 'Server > respond'));
+	assert.ok(run.loaded['fakekit@1.2.3/client.js'].some((f) => f[0] === 'inc'));
+	assert.ok(run.loaded['fakekit@1.2.3/server.js'].some((f) => f[0] === 'Server > respond'));
 });

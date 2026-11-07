@@ -11,9 +11,10 @@ import { temp_dir, write_files } from './helpers.ts';
 
 /*
  * Estimated bytes (counted build) and real bytes (V8's sampling heap profiler, plain build) are
- * per call and cover the same code: the source functions, what their built-in calls return, not a
- * dependency's own allocations. Found by a full run of suites/ogygia: real bytes crashed on large
- * cases, and came out 10 to 100 times the estimate on string-heavy ones.
+ * per call and cover the same code: the source functions and what their built-in calls return; a
+ * dependency's own allocations are its functions' on both sides. Found by a full run of
+ * suites/ogygia: real bytes crashed on large cases, and came out 10 to 100 times the estimate on
+ * string-heavy ones.
  */
 
 const BENCH_API = fileURLToPath(new URL('../src/bench.ts', import.meta.url));
@@ -129,5 +130,12 @@ test('estimated and real bytes are both per call, over the same code', async () 
 		!caller || caller.bytes < 200,
 		`through: ${caller?.bytes} B per call charged to the caller`
 	);
-	assert.ok(t.other > 1000 * 12, `the dependency's ${t.other} B per call are its own`);
+	const pad = t.functions.find((f) => f.id === 'dep/index.js > pad');
+	assert.ok(pad && pad.bytes > 1000 * 12, `the dependency's ${pad?.bytes} B per call are its own`);
+	// and the count estimates them there too, so they do not read as elided
+	const through = report.cases.find((c) => c.name === 'through')!;
+	const counted = through.functions.find((f) => f.id === 'dep/index.js > pad');
+	assert.ok(counted && counted.bytes > 1000 * 12, `estimated ${counted?.bytes} B`);
+	const both = compare_bytes(through, t).functions.find((f) => f.id === 'dep/index.js > pad');
+	assert.equal(both?.elided, false);
 });

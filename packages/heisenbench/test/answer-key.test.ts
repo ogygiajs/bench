@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { diff_reports } from '../src/diff/index.ts';
 import type { Finding } from '../src/diff/index.ts';
 import { git_diff } from '../src/diff/git.ts';
+import { context_path } from '../src/identity.ts';
 import { render_markdown } from '../src/diff/markdown.ts';
 import type { Report } from '../src/report.ts';
 import { temp_dir } from './helpers.ts';
@@ -168,7 +169,9 @@ for (const name of fixtures) {
 				assert.equal(d.measure?.leaks.length, 0);
 			} else {
 				assert.equal(leak.leaked, true, JSON.stringify(leak));
-				assert.deepEqual(leak.source, expect.leak);
+				// the key names the leaking function by its place (no shape hash)
+				const s = leak.source!;
+				assert.deepEqual({ ...s, function: context_path(s.function) }, expect.leak);
 				assert.equal(d.measure?.leaks.length, 1);
 				assert.ok(md.includes('**Leaks**') && md.includes(`\`${expect.leak.variable}\``), md);
 			}

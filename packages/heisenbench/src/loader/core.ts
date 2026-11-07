@@ -19,8 +19,12 @@ export interface LoaderConfig {
 	/** Report paths are relative to this directory. */
 	root: string;
 	/**
-	 * Instrument dependencies too: true for every package in node_modules, or a list of package
-	 * names. Default false.
+	 * Which dependencies (packages in node_modules) are counted: true for every one, false for none,
+	 * or a list of package names. Default true: work a dependency does for the code is the code's
+	 * work, and an uncounted parser hides a quadratic one. Never counted, whatever this says:
+	 * Heisenbench's own modules (the runtime that counts), Node's built-ins (they are priced as
+	 * built-ins when counted code calls them), and CommonJS modules (the transform is for ES
+	 * modules; a CommonJS dependency runs as it is).
 	 */
 	deps?: boolean | string[];
 	/** Path substrings that are never instrumented. Default: bench files (`.bench.`). */
@@ -63,7 +67,7 @@ export class LoaderCore {
 		for (const x of this.config.exclude ?? ['.bench.']) if (path.includes(x)) return false;
 		const pkg = package_name(path);
 		if (pkg !== null) {
-			const deps = this.config.deps ?? false;
+			const deps = this.config.deps ?? true;
 			if (deps === false) return false;
 			if (Array.isArray(deps) && !deps.includes(pkg)) return false;
 		}

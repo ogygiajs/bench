@@ -2,6 +2,7 @@ import { package_matches } from '../app/vite.ts';
 import type { AppReport } from '../app/types.ts';
 import { is_app_case, unit_key } from '../app/types.ts';
 import { loaded_inventory } from './inventory.ts';
+import { unversioned_module } from '../identity.ts';
 import type { Inventory } from './inventory.ts';
 
 /*
@@ -54,7 +55,7 @@ export interface CoverageReport {
 }
 
 function package_of_id(id: string): string {
-	const parts = id.split('/');
+	const parts = unversioned_module(id).split('/');
 	return parts[0].startsWith('@') ? `${parts[0]}/${parts[1]}` : parts[0];
 }
 

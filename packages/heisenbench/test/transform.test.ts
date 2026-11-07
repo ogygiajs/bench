@@ -183,6 +183,67 @@ test('class fields, static blocks, getters, methods and callbacks get stable pat
 	assert.equal(fn_of(r, 'K > m').calls, 1);
 });
 
+function paths_of(code: string, filename = 'a.ts'): string[] {
+	const prices = load_prices();
+	return instrument(code, {
+		id: filename,
+		filename,
+		prices: prices.prices,
+		prices_hash: prices.hash,
+		module_specifier: 'heisenbench:none',
+		expose: false
+	}).meta.functions.map((f) => f.path);
+}
+
+test('a callback keeps its id when another callback is added before it', () => {
+	const before = paths_of(`function lower(rows) {
+	rows.sort((a, b) => a.line - b.line);
+	return rows.map((r) => r.id);
+}`);
+	const after = paths_of(`function lower(rows) {
+	rows.filter((r) => r.id > 0);
+	rows.sort((a, b) => a.name.localeCompare(b.name));
+	rows.sort((a, b) => a.line - b.line);
+	return rows.map((r) => r.id);
+}`);
+	for (const p of before) assert.ok(after.includes(p), `${p} in ${after.join(', ')}`);
+	assert.equal(after.length, before.length + 2);
+	// a slot is completed by six hex digits of the callback's syntax tree
+	assert.match(before[2], /^lower > sort:0~[0-9a-f]{6}$/);
+});
+
+test('ids of identical callbacks differ by order only; formatting, comments and types do not move them', () => {
+	const twins = paths_of(`function f(xs: number[]) {
+	xs.forEach((x) => use(x));
+	xs.forEach((x) => use(x));
+}`);
+	assert.match(twins[2], /^f > forEach:0~[0-9a-f]{6}$/);
+	assert.equal(twins[3], `${twins[2]}#2`);
+	assert.deepEqual(
+		twins,
+		paths_of(`function f(xs: number[]) {
+	xs.forEach((x) => use(x));
+	xs.forEach((x) => use(x));
+}`)
+	);
+	const reformatted = paths_of(`function f(xs) {
+	xs.forEach(
+		// each one
+		(x: number) => use((x as number)),
+	);
+	xs.forEach(x => use(x));
+}`);
+	assert.deepEqual(reformatted, twins);
+	// a named function keeps its plain name; a second one of that name in the scope gets its hash
+	const named = paths_of(`function g(k) {
+	if (k) { const on = () => 1; return on; }
+	const on = () => 2;
+	return on;
+}`);
+	assert.equal(named[2], 'g > on');
+	assert.match(named[3], /^g > on~[0-9a-f]{6}$/);
+});
+
 test('steps = sum(block count * block price)', async () => {
 	const m = await load_module(`export function p(a: number, b: number) {
 	return a + b * 2;

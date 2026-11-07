@@ -108,10 +108,13 @@ export class Measurer {
 	 * Steps of `c` on inputs from `make` (called before every run, outside the window): a recording
 	 * run, then two measured runs that must count exactly the same.
 	 */
-	async steps(c: BenchCase, make: () => unknown): Promise<{ steps: number; stable: boolean }> {
+	async steps(
+		c: BenchCase,
+		make: () => unknown
+	): Promise<{ steps: number; stable: boolean; snap: Snapshot }> {
 		await this.once(c, await make(), 'record');
 		const a = await this.once(c, await make(), 'replay');
 		const b = await this.once(c, await make(), 'replay');
-		return { steps: a.steps, stable: same_counts(a, b) };
+		return { steps: a.steps, stable: same_counts(a, b), snap: a };
 	}
 }
