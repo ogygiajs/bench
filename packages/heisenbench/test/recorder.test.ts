@@ -81,8 +81,12 @@ test('recording keeps inputs as they came in and outputs as they left', async ()
 	assert.deepEqual(recs.get('pair')!.samples[0], {
 		args: [1, 'x'],
 		this_value: undefined,
-		out: { a: 1, b: 'x' }
+		out: { a: 1, b: 'x' },
+		sizes: [1, 1]
 	});
+	// each argument's size at entry, and the sizes every call came with
+	assert.deepEqual(recs.get('sum_list')!.samples[0].sizes, [4], 'two elements, two numbers');
+	assert.deepEqual(add.sizes, { sized: 4, min: 1, max: 2 });
 	assert.deepEqual(recs.get('fails')!.samples[0].threw, { name: 'TypeError', message: 'bad y' });
 	// nested closures are recorded too
 	assert.equal(recs.get('outer > inner')!.calls, 2);
@@ -97,7 +101,8 @@ test('replay: reproduced, hidden state, not cloneable, not replayable', async ()
 	m.add(4, 5);
 	m.next();
 	m.next();
-	m.apply((x: number) => x + 1, 1);
+	const step = 1;
+	m.apply((x: number) => x + step, 1);
 	m.outer(2);
 	assert.throws(() => m.fails('z'));
 	m.sum_list([5]);
@@ -119,8 +124,10 @@ test('replay: reproduced, hidden state, not cloneable, not replayable', async ()
 	// next() reads module state its inputs do not carry
 	assert.equal(results.get('next')?.status, 'hidden state');
 	assert.equal(results.get('next')?.mismatches, 1);
-	// a function argument cannot be cloned
+	// a function argument that closes over state cannot be cloned (growth keeps a stand-in of it,
+	// which never stands for the output)
 	assert.equal(results.get('apply')?.status, 'not cloneable');
+	assert.equal(records.find((r) => r.id.endsWith('> apply'))?.samples[0].stand_ins, true);
 	// a nested closure has no handle for a replay
 	assert.equal(results.get('outer > inner')?.status, 'not replayable');
 	// a replay records nothing
@@ -181,4 +188,65 @@ test('a recorded function serializes as written (toString), and a native one sti
 	assert.equal(again(2, 3), 5);
 	assert.match(Function.prototype.toString.toString(), /\[native code\]/);
 	assert.match(Math.max.toString(), /\[native code\]/);
+});
+
+test('inputs with functions: a closed function and a Node module replay; one that closes over state does not', async () => {
+	recorder.reset();
+	const m = (await load()) as Record<string, (...a: unknown[]) => unknown>;
+	const path = process.getBuiltinModule('node:path');
+	m.apply((x: number) => x * 2 + Math.max(x, 1), 3);
+	m.apply(path.basename, 'a/b.txt');
+	m.pair({ join: path.join, posix: path }, (p: string) => `/@id/${p}`);
+	const records = recorder.records();
+	const apply = records.find((r) => r.id.endsWith('> apply'))!;
+	assert.equal(apply.samples.length, 2);
+	assert.equal(apply.uncloneable, 0, 'both kept as they were');
+	const fresh = await load();
+	const results = new Map(
+		replay(records, fresh.__heisenbench_rec_fns as Record<string, unknown>).map((r) => [
+			r.id.split(' > ').slice(1).join(' > '),
+			r
+		])
+	);
+	assert.equal(results.get('apply')?.status, 'reproduced');
+	assert.equal(results.get('pair')?.status, 'reproduced');
+});
+
+test('samples cover the sizes a function saw: one per half octave, besides the first five', async () => {
+	recorder.reset();
+	const m = (await load()) as Record<string, (...a: unknown[]) => unknown>;
+	for (let n = 1; n <= 4000; n = Math.ceil(n * 1.2))
+		m.sum_list(Array.from({ length: n }, (_, i) => i));
+	const r = recorder.records().find((x) => x.id.endsWith('> sum_list'))!;
+	const sizes = r.samples.map((s) => s.sizes![0]);
+	assert.ok(r.samples.length > 15, `${r.samples.length} samples`);
+	assert.ok(
+		Math.max(...sizes) >= r.sizes!.max / Math.SQRT2,
+		'a call of the largest half octave is kept'
+	);
+	assert.equal(r.sizes!.min, 2);
+});
+
+test('reading an input never records itself: a recorded getter read while sizing or cloning', async () => {
+	recorder.reset();
+	const dir = temp_dir('heisenbench-rec-getter-');
+	const source = `
+export function named(n) {
+	return { get name() { return 'x'.repeat(n); } };
+}
+export function name_of(o) {
+	return o.name;
+}
+`;
+	const r = record_transform(source, { filename: join(dir, 'g.js'), id: 'pkg/g.js' });
+	write_files(dir, { 'g.js': r.code });
+	const m = (await import(pathToFileURL(join(dir, 'g.js')).href)) as {
+		named: (n: number) => { name: string };
+		name_of: (o: { name: string }) => string;
+	};
+	assert.equal(m.name_of(m.named(3)), 'xxx');
+	const recs = new Map(recorder.records().map((x) => [x.id.split(' > ').slice(1).join(' > '), x]));
+	assert.equal(recs.get('name_of')?.calls, 1);
+	const getter = [...recs].find(([path]) => path.startsWith('named > '))?.[1];
+	assert.equal(getter?.calls, 1, 'only the call name_of made');
 });

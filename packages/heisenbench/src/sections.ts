@@ -22,7 +22,7 @@ import type { Report } from './report.ts';
  * renders an "Engine" and a "Growth" part under the step table.
  */
 
-type Section = 'engine' | 'growth' | 'search' | 'audit';
+type Section = 'engine' | 'growth' | 'recorded_growth' | 'search' | 'audit';
 
 function git(root: string, args: string[]): string | null {
 	try {
@@ -118,6 +118,11 @@ export function render_sections(d: SectionsDiff): string {
 			if (g.better.length > 0) {
 				lines.push('Better:', '');
 				for (const f of g.better) lines.push(`- ${f.text}`);
+				lines.push('');
+			}
+			if ((g.unclear ?? []).length > 0) {
+				lines.push('Steps that fell as the input grew (the scaled input may be invalid):', '');
+				for (const f of g.unclear) lines.push(`- ${f.text}`);
 				lines.push('');
 			}
 			if (g.same.length > 0) {

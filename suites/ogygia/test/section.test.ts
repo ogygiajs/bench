@@ -334,3 +334,35 @@ test('a full run audits every bench file together and shows Prices only when one
 	const quiet = merge_reports([b], 'f'.repeat(40))!;
 	assert.doesNotMatch(full(quiet), /Prices/);
 });
+
+test('growth from recorded calls: a full run lists its findings; a PR with none in its files says nothing', () => {
+	const recorded = (findings: number, scope: 'all' | 'changed', markdown: string) => ({
+		scope,
+		markdown,
+		error: null,
+		grown: 10,
+		decided: 9,
+		findings: Array.from({ length: findings }, () => ({}) as never),
+		seconds: { build: 1, record: 2, grow: 3 }
+	});
+	const grows = '#### Growth from recorded calls\n\n- `x.ts > f` grows n^2.00 (quadratic)\n';
+	const full = render_full_summary(
+		result({
+			meta: { ...result({}).meta, kind: 'main', pr: null, base: null, merge_base: null },
+			selection: select_all(['x.bench.ts'], 'a full run'),
+			recorded: recorded(1, 'all', grows)
+		})
+	);
+	assert.match(full, /#### Growth from recorded calls/);
+	assert.match(full, /`x\.ts > f` grows n\^2\.00/);
+	const quiet = render_pr_section(
+		result({ recorded: recorded(0, 'changed', '#### Growth from recorded calls\n\nNothing.\n') })
+	);
+	assert.doesNotMatch(quiet, /recorded calls/);
+	const pr = render_pr_section(result({ recorded: recorded(1, 'changed', grows) }));
+	assert.match(pr, /`x\.ts > f` grows/, 'shown even when no bench file reaches the change');
+	const failed = render_pr_section(
+		result({ recorded: { ...recorded(0, 'changed', ''), error: 'the packages did not build' } })
+	);
+	assert.match(failed, /\*\*Growth from recorded calls failed\*\*: `the packages did not build`/);
+});

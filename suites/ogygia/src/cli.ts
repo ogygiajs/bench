@@ -11,7 +11,9 @@
  * `none`; default none for a PR, all for a full run), --time on|off (a PR's time layer, default on),
  * --weights <app-weights.json> (a PR: rank the changed functions by main's real-app weights; a
  * missing file is said in one line), --search-budget <seconds> (a PR's worst-case search over the
- * changed cases that declare an input, both sides; default 240, 0 turns it off).
+ * changed cases that declare an input, both sides; default 240, 0 turns it off), --recorded
+ * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
+ * modules only, or none; default all for a full run, changed for a PR).
  *
  * A PR: both commits are checked out and installed, the PR is measured against the merge base of
  * the two, and only the bench files whose import graph reaches a changed file run: counted, health
@@ -45,6 +47,7 @@ import type { Meta, Result } from './section.ts';
 import { SEARCH_BUDGET_MS, cases_with_inputs, pick_cases, run_searches } from './search.ts';
 import { select_all, select_changed } from './select.ts';
 import { rank_by_weights } from './weights.ts';
+import { run_recorded, summarize } from './recorded.ts';
 
 const { values } = parseArgs({
 	options: {
@@ -59,9 +62,12 @@ const { values } = parseArgs({
 		measure: { type: 'string' },
 		time: { type: 'string', default: 'on' },
 		weights: { type: 'string' },
-		'search-budget': { type: 'string', default: String(SEARCH_BUDGET_MS / 1000) }
+		'search-budget': { type: 'string', default: String(SEARCH_BUDGET_MS / 1000) },
+		recorded: { type: 'string' }
 	}
 });
+if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.recorded))
+	throw new Error('--recorded takes all, changed or off');
 
 const LAYERS = /^(all|none|(time|bytes|leaks)(,(time|bytes|leaks))*)$/;
 
@@ -194,6 +200,27 @@ async function main(): Promise<void> {
 					base_cases
 				);
 			}
+		}
+	}
+
+	// Growth from recorded calls: a full run grows every recorded function; a PR only those of the
+	// source files it changed (docs/ci.md has the cost of each).
+	const recorded = values.recorded ?? (mb ? 'changed' : 'all');
+	if (recorded !== 'off') {
+		const changed = mb
+			? changed_files(repo, mb, sha).filter((f) => /^packages\/[^/]+\/src\//.test(f))
+			: null;
+		if (recorded === 'all' || (changed && changed.length > 0)) {
+			const run = await run_recorded(
+				head,
+				join(out, 'recorded'),
+				log,
+				recorded === 'all' ? null : changed
+			);
+			result.recorded = summarize(run, recorded === 'all' ? 'all' : 'changed');
+			log(
+				`growth from recorded calls: ${result.recorded.findings.length} findings of ${result.recorded.grown} grown (build ${run.seconds.build} s, record ${run.seconds.record} s, grow ${run.seconds.grow} s)${run.error ? `; ${run.error}` : ''}`
+			);
 		}
 	}
 

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fit_growth } from '../src/growth/fit.ts';
+import { fit_growth, fit_noisy } from '../src/growth/fit.ts';
 import { clone, input_size, scale_input } from '../src/growth/scale.ts';
 import { Rng, mutate } from '../src/search/mutate.ts';
 
@@ -31,7 +31,34 @@ test('curve classes are fitted from exact counts', () => {
 	);
 	assert.equal(
 		cls((k) => k * k * k + k),
-		'worse'
+		'cubic'
+	);
+	assert.equal(
+		cls((k) => k ** 4 + 10 * k),
+		'quartic'
+	);
+	const six = fit_growth(
+		KS,
+		KS.map((k) => k ** 6 + 10)
+	);
+	assert.equal(six.class, 'polynomial');
+	assert.equal(six.power, 6, 'a power past quartic is named by its fitted power');
+	const ladder = [1, 2, 4, 8];
+	assert.equal(
+		cls((k) => 20 * 2 ** (3 * k), ladder),
+		'exponential',
+		'local slopes that keep doubling: exponential'
+	);
+	assert.equal(
+		cls((k) => 1000 + k ** 8, ladder),
+		'polynomial',
+		'a high power with a constant part settles: not exponential'
+	);
+	assert.equal(fit_growth(KS, [4270184, 42654, 4231]).class, 'shrinks');
+	assert.equal(
+		fit_growth(KS, [4270184, 42654, 423051]).class,
+		'irregular',
+		'down then up: the scaled input may be invalid, never "worse"'
 	);
 	assert.equal(
 		cls((k) => 3 * (5 + 2 * k)),
@@ -44,6 +71,31 @@ test('curve classes are fitted from exact counts', () => {
 		'quadratic'
 	);
 	assert.ok(Math.abs(fit_growth(KS, [3, 300, 30000]).exponent - 2) < 1e-9);
+});
+
+test('noisy points: superlinear only when the power, the fit and the work per unit all say so', () => {
+	// steps of different inputs: a line with a constant part, a quadratic with noise, and a line
+	// made to look steep by one trivial call at the smallest size
+	const xs = [40, 60, 90, 130, 200, 300, 450, 700, 1000, 1500];
+	const noise = [1.1, 0.9, 1.2, 0.85, 1.05, 0.95, 1.15, 0.9, 1.1, 1];
+	const line = fit_noisy(
+		xs,
+		xs.map((x, i) => (500 + 20 * x) * noise[i])
+	);
+	assert.equal(line.superlinear, false);
+	assert.ok(line.class === 'linear' || line.class === 'log', line.class);
+	const quad = fit_noisy(
+		xs,
+		xs.map((x, i) => (200 + x * x) * noise[i])
+	);
+	assert.equal(quad.superlinear, true);
+	assert.equal(quad.class, 'quadratic');
+	assert.ok(quad.power > 1.7 && quad.power < 2.2, String(quad.power));
+	const one_trivial = fit_noisy(
+		[10, ...xs.slice(4)],
+		[5, ...xs.slice(4).map((x) => 3000 + 20 * x)]
+	);
+	assert.equal(one_trivial.superlinear, false, 'no single call decides');
 });
 
 test('the generic scaler grows every collection once, linearly', () => {

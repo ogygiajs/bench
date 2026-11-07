@@ -31,6 +31,16 @@ export type { EngineReport, EngineCase, EngineFunction, EngineSite } from './eng
 export { run_growth as runGrowth, diff_growth as diffGrowth } from './growth/index.ts';
 export type { GrowthReport, GrowthCase, GrowthOptions } from './growth/index.ts';
 export { scale_input as scaleInput } from './growth/scale.ts';
+export {
+	run_recorded_growth as runRecordedGrowth,
+	render_recorded_growth as renderRecordedGrowth,
+	recorded_findings as recordedFindings
+} from './growth/recorded.ts';
+export type {
+	RecordedGrowth,
+	RecordedGrowthReport,
+	RecordedGrowthOptions
+} from './growth/recorded.ts';
 export { run_search as runSearch, diff_search as diffSearch } from './search/index.ts';
 export {
 	run_audit as runAudit,

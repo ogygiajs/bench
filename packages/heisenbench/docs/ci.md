@@ -104,7 +104,21 @@ In this repository:
     at most 30 seconds, and the cases the budget does not reach are counted as skipped. A case is
     flagged by Heisenbench's own rule: its worst input costs at least 4 times its typical one, and at
     least twice the base's ratio.
-11. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
+11. **Growth from recorded calls** (`suites/ogygia/src/recorded.ts`), for the source files the PR
+    changed: the packages are built (`pnpm build:lib`; the node tests import `dist/`), the
+    functions of the changed files are the recorder's targets, together with their `dist/` twins
+    (the unbundled build keeps each file's functions and names, so a call through `dist/` is
+    recorded as its source's), every package's node tests run with `HEISENBENCH_RECORD`, every
+    bench case runs once with the recorder on (`heisenbench record`), and `heisenbench growth
+    --recorded --modules <changed files>` grows what they recorded. Only findings reach the
+    comment, and a PR whose changed files have none says nothing. On an M4 Max, for the one file
+    ogygia #186 changed (`packages/core/src/compiler/region/transform.ts`): 8 s to build (Turbo's
+    cache warm), 34 s to record (every package's node tests, then the bench cases) and 3 s to
+    grow its 25 recorded functions. Recording costs what the tests cost (5.7 s for core's node
+    tests with every function recorded, 4.5 s without), so a PR pays about a minute here, a few
+    on a CI runner: cheap enough to run on every PR, and only the changed files' functions are
+    grown, so the grow step stays seconds. `--recorded off` turns it off, `all` grows everything.
+12. **Store and post.** The measure job uploads `suites/ogygia/out` as an artifact. The `publish`
     job checks it (below), then `result.json` goes to the `results` branch and `section.md`
     becomes the `heisenbench` section of the PR's comment.
 
@@ -147,6 +161,13 @@ PRs do not run the audit. An ogygia PR cannot change a price (prices live in thi
 the audit took 480 to 504 s for ogygia's 11 bench files on an M4 Max (5 rounds at 1x, 10x and
 100x, with its own growth count), half of what a whole PR run takes on a 4-core runner (15 min),
 and a CI runner is slower. A price that new ogygia code exposes is found on the next main push.
+
+A full run then grows every function of every source file from recorded calls (step 11 above,
+with every source file a target), and the summary lists what grows quadratically or worse. On ogygia main
+`01dc5b9` (M4 Max): 4,868 functions recorded, 1,299 grown (the rest had fewer than two samples,
+are closures or class methods, or their module does not load outside Vite), 1,116 of them decided,
+in 60 s of recording and 152 s of growing (6.2×10⁹ counted steps). Two recordings gave the same
+findings, and growing the same records twice the same report.
 
 A main or nightly run also counts the real apps, in an `app-weights` job beside the full run
 (read-only like it, 60 minutes): it waits for the commit's pkg.pr.new build, builds the ogygia app

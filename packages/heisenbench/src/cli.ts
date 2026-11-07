@@ -15,6 +15,8 @@ import { engine_health } from './engine/health.ts';
 import { DEFAULT_SIZES, run_growth } from './growth/index.ts';
 import { locate_findings, reusable_growth, run_audit } from './audit/index.ts';
 import { render_audit } from './audit/markdown.ts';
+import { render_recorded_growth, run_recorded_growth } from './growth/recorded.ts';
+import { alias_records, read_record_dir } from './coverage/replay-run.ts';
 import { run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
 import { measure_command, measure_run, time_section } from './measure/cli.ts';
@@ -41,8 +43,12 @@ Layers (each writes its section into --out, default heisenbench-report.json)
   heisenbench health <bench files...>   V8 tiers, deopts and inline caches on the plain build
       [--warmup 20] [--runs 3] [--check on|off] [--root dir] [--filter text] [--out file]
   heisenbench growth <bench files...>   steps at 1x, 10x, 100x the input; the curve class
-      [--sizes 1,10,100] [--scaled on|off] [--deps all|none|a,b] [--root dir] [--filter text]
-      [--out file]
+      [--sizes 1,10,100] [--scaled on|off] [--cap 1e10] [--deps all|none|a,b] [--root dir]
+      [--filter text] [--out file]
+  heisenbench growth --recorded <dir>   growth from a test run's recorded calls (no bench files):
+                                 every recorded function's steps over its input sizes
+      [--modules a.ts,b.ts] [--alias built-to-source.json] [--cap 5e8] [--budget-steps n]
+      [--root dir] [--out file] [--md file]
   heisenbench search <bench files...>   the input of the same size that costs the most steps
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
   heisenbench audit <bench files...>    the prices checked against time at every growth size
@@ -57,6 +63,8 @@ Real apps and the measurement-source gate
       [--out coverage.json] [--md coverage.md]
   heisenbench inventory [files...] [--list files.txt] --root dir --out inventory.json
       [--reports a.json,b.json --targets targets.json]
+  heisenbench record <bench files...> --targets targets.json --root dir --out samples.bin
+                                 every case run once with the input recorder on (more samples)
   heisenbench replay --records dir --root dir --out replay.json
   heisenbench unmeasured --inventory inventory.json [--reports a.json,b.json] [--records dir]
       [--replay replay.json] [--skipped skipped.json] [--base-inventory base.json]
@@ -102,6 +110,47 @@ async function verify_command(flags: Map<string, string>): Promise<number> {
 	return rows.length > 0 && rows.every((r) => r.pass) ? 0 : 1;
 }
 
+/**
+ * `heisenbench growth --recorded <dir>`: growth from a test run's recorded calls (growth/recorded.ts),
+ * written as the report's `recorded_growth` section; `--md` writes the superlinear findings.
+ */
+async function recorded_growth_command(
+	common: { root: string; deps: boolean | string[]; log: (l: string) => void },
+	flags: Map<string, string>,
+	info: { root: string; sha: string | null },
+	out: string,
+	num: (k: string) => number | undefined
+): Promise<number> {
+	const dir = flags.get('recorded')!;
+	if (!(existsSync(dir) && statSync(dir).isDirectory()))
+		throw new UsageError(`--recorded ${dir} is not a directory`);
+	const modules = flags.get('modules');
+	const alias = flags.get('alias');
+	let records = read_record_dir(dir);
+	if (alias !== undefined) {
+		if (!existsSync(alias)) throw new UsageError(`--alias ${alias}: no such file`);
+		records = alias_records(
+			records,
+			JSON.parse(readFileSync(alias, 'utf8')) as Record<string, string>
+		);
+	}
+	const r = await run_recorded_growth({
+		root: common.root,
+		deps: common.deps,
+		log: common.log,
+		records,
+		modules: modules === undefined ? undefined : new Set(modules.split(',').filter(Boolean)),
+		cap: num('cap'),
+		budget_steps: num('budget-steps')
+	});
+	write_section(out, 'recorded_growth', r, info);
+	const md = render_recorded_growth(r);
+	const md_out = flags.get('md');
+	if (md_out) writeFileSync(md_out, md);
+	console.log(md);
+	return 0;
+}
+
 /** `--deps all|none|a,b`: which dependencies are counted (`fallback` when the flag is absent). */
 function deps_of(flag: string | undefined, fallback: boolean): boolean | string[] {
 	if (flag === undefined) return fallback;
@@ -140,10 +189,25 @@ const SPECS: Record<string, Spec> = {
 	},
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
 	health: { values: [...BENCH, 'warmup', 'runs', 'check'], args: [1, MANY], files: true },
-	growth: { values: [...BENCH, 'sizes', 'scaled'], args: [1, MANY], files: true },
 	audit: {
 		values: [...BENCH, 'sizes', 'scaled', 'repeats', 'time-ms', 'md'],
 		args: [1, MANY],
+		files: true
+	},
+	// bench files, or none with --recorded (a test run's sample files)
+	growth: {
+		values: [
+			...BENCH,
+			'sizes',
+			'scaled',
+			'cap',
+			'recorded',
+			'alias',
+			'modules',
+			'budget-steps',
+			'md'
+		],
+		args: [0, MANY],
 		files: true
 	},
 	search: {
@@ -159,6 +223,7 @@ const SPECS: Record<string, Spec> = {
 	coverage: { values: ['app', 'packages', 'out', 'md'], args: [1, MANY], files: true },
 	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
 	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
+	record: { values: ['targets', 'root', 'out'], args: [1, MANY], files: true },
 	unmeasured: {
 		values: [
 			'inventory',
@@ -208,6 +273,7 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	'budget-ms': 'positive',
 	seed: 'integer',
 	'size-factor': 'positive',
+	cap: 'positive',
 	repeats: 'count',
 	jobs: 'count',
 	tolerance: 'positive',
@@ -456,9 +522,19 @@ async function main(argv: string[]): Promise<number> {
 			if (md) writeFileSync(md, render_audit(r) + '\n');
 			return r.failed.length > 0 ? 1 : 0;
 		}
+		if (cmd === 'growth' && flags.has('recorded')) {
+			return recorded_growth_command(common, flags, info, out, num);
+		}
 		if (cmd === 'growth') {
+			if (positional.length === 0)
+				throw new UsageError('which files? (none given, and no --recorded)');
 			const sizes = flags.get('sizes')?.split(',').map(Number);
-			const r = await run_growth({ ...common, sizes, scaled: flags.get('scaled') === 'on' });
+			const r = await run_growth({
+				...common,
+				sizes,
+				cap: num('cap'),
+				scaled: flags.get('scaled') === 'on'
+			});
 			write_section(out, 'growth', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;
 		}
