@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { UsageError } from '../usage.ts';
 import { prove_candidate, read_candidate, samples_of, target_of } from './index.ts';
-import type { ProveOptions, ProveReport } from './index.ts';
+import type { ProveOptions, ProveReport, VerdictKind } from './index.ts';
 import {
 	DEFAULT_MODEL,
 	SETUP_MESSAGE,
@@ -15,8 +15,14 @@ import { prove_lines, render_prove } from './report.ts';
 
 /*
  * `heisenbench prove <module> <function> --candidate <file>` and `... --propose`. Exit 0 when the
- * candidate (or at least one proposal) is proven, 1 when none is, 2 when the command line is wrong.
+ * candidate (or a proposal) is proven, 3 when it is proven at scale only, 1 when it is rejected,
+ * 2 when the command line is wrong.
  */
+
+/** The exit code of a verdict. */
+function exit_of(kind: VerdictKind): number {
+	return kind === 'proven' ? 0 : kind === 'proven at scale' ? 3 : 1;
+}
 
 function list(v: string | undefined): string[] | undefined {
 	return v === undefined ? undefined : v.split(',').filter((x) => x !== '');
@@ -56,6 +62,7 @@ export async function prove_command(
 		setup_tolerance: flags.has('setup-tolerance')
 			? Number(flags.get('setup-tolerance')) / 100
 			: undefined,
+		weights: flags.get('weights'),
 		log: (l) => console.log(l)
 	};
 	if (!o.records && !o.bench)
@@ -76,7 +83,7 @@ export async function prove_command(
 		console.log(prove_lines(r));
 		writeFileSync(out, JSON.stringify(r, null, '\t') + '\n');
 		if (md) writeFileSync(md, render_prove(r));
-		return r.verdict.proven ? 0 : 1;
+		return exit_of(r.verdict.kind);
 	}
 	const p = provider ?? proposer!;
 	const outcomes = await run_proposals(o, t, samples, p, {
@@ -84,11 +91,20 @@ export async function prove_command(
 		send_inputs: flags.has('send-inputs'),
 		log: (l) => console.log(l)
 	});
+	// proven first, then proven at scale; a rejected one is never reported
+	const order = (r: ProveReport) => exit_of(r.verdict.kind);
 	const proven = outcomes
 		.map((x) => x.report)
-		.filter((r): r is ProveReport => r !== null && r.verdict.proven);
+		.filter(
+			(r): r is ProveReport =>
+				r !== null && (r.verdict.kind === 'proven' || r.verdict.kind === 'proven at scale')
+		)
+		.sort((a, b) => order(a) - order(b));
 	for (const r of proven) console.log(prove_lines(r));
-	console.log(`propose  ${proven.length} of ${outcomes.length} proposals proven`);
+	const strict = proven.filter((r) => r.verdict.kind === 'proven').length;
+	console.log(
+		`propose  ${strict} of ${outcomes.length} proposals proven, ${proven.length - strict} proven at scale`
+	);
 	writeFileSync(
 		out,
 		JSON.stringify(
@@ -108,5 +124,5 @@ export async function prove_command(
 			: `#### Proposals for \`${t.id}\`\n\nNone of ${outcomes.length} proposals was proven.\n`;
 		writeFileSync(md, text);
 	}
-	return proven.length > 0 ? 0 : 1;
+	return proven.length > 0 ? order(proven[0]) : 1;
 }

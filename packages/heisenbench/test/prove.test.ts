@@ -15,6 +15,7 @@ import { SpliceError, splice } from '../src/prove/splice.ts';
 import { unified_diff } from '../src/prove/diff.ts';
 import { code_of, run_proposals } from '../src/prove/propose.ts';
 import { prove_command } from '../src/prove/cli.ts';
+import { canonical_function } from '../src/weight/weights.ts';
 import type { ProposalRequest, Provider } from '../src/prove/propose.ts';
 import { temp_dir, write_files } from './helpers.ts';
 
@@ -118,6 +119,18 @@ const SLOWER = `export function equal_pairs(xs: number[]): number {
 }
 `;
 
+/** The same pairs, the same curve, fewer reads: cheaper on every input. */
+const HOISTED = `export function equal_pairs(xs: number[]): number {
+	let n = 0;
+	const len = xs.length;
+	for (let i = 0; i < len; i++) {
+		const x = xs[i];
+		for (let j = i + 1; j < len; j++) if (x === xs[j]) n++;
+	}
+	return n;
+}
+`;
+
 function samples(): Sample[] {
 	// every value twice; 0 among them
 	return [4, 6, 10, 16, 24, 40].map((n) => {
@@ -141,13 +154,19 @@ async function prove(source: string): Promise<ProveReport> {
 	return prove_candidate(o, t, samples(), source, 'candidate.ts');
 }
 
-test('prove: a correct linear candidate for a quadratic function is proven', async () => {
+test('prove: a correct linear candidate that costs more on the smallest inputs is proven at scale, not proven', async () => {
 	const r = await prove(LINEAR);
-	assert.equal(r.verdict.proven, true, r.verdict.reason);
+	assert.equal(r.verdict.kind, 'proven at scale', r.verdict.reason);
+	assert.equal(r.verdict.proven, false);
+	// the Map costs more than the double loop on 2 to 5 numbers; the headline says how much and where
 	assert.match(
 		r.headline,
-		/^proven: n\^2\.\d\d -> n\^1\.\d\d, .* steps at 100x, identical on [\d,]+ inputs/
+		/^proven at scale: n\^2\.\d\d -> n\^1\.\d\d, [\d.e]+ -> [\d,]+ steps at 100x, identical on [\d,]+ inputs; costs \+\d+% \(91 -> [\d,]+ steps\) on \d of the recorded inputs \(sizes 8\.\.\d+\), cheaper from 1x up on the steepest grown input \(from size 80\)$/
 	);
+	const s = r.verdict.steps.at_scale!;
+	assert.equal(s.recorded, s.inputs);
+	assert.equal(s.worst.label, 'recorded #1');
+	assert.equal(s.within_setup_tolerance, false);
 	const g = r.verdict.growth!;
 	assert.equal(g.original.class, 'quadratic');
 	assert.equal(g.candidate!.class, 'linear');
@@ -161,6 +180,73 @@ test('prove: a correct linear candidate for a quadratic function is proven', asy
 	assert.deepEqual(r.replaced, ['equal_pairs']);
 	assert.match(r.diff, /^--- a\/lib\.ts\n\+\+\+ b\/lib\.ts\n@@ /);
 	assert.ok(!r.diff.includes('unrelated'));
+});
+
+test('prove: a candidate cheaper on every input is proven', async () => {
+	const r = await prove(HOISTED);
+	assert.equal(r.verdict.kind, 'proven', r.verdict.reason);
+	assert.equal(r.verdict.proven, true);
+	assert.equal(r.verdict.steps.regressed, 0);
+	assert.equal(r.verdict.steps.at_scale, null);
+	assert.match(r.headline, /^proven: n\^2\.\d\d -> n\^2\.\d\d, .* identical on [\d,]+ inputs$/);
+});
+
+test('prove: --setup-tolerance is an opt-in that turns proven at scale into proven', async () => {
+	const { o } = setup();
+	const t = target_of(o.root, o.module, o.fn);
+	const tight = await prove_candidate({ ...o, setup_tolerance: 0.5 }, t, samples(), LINEAR, 'c');
+	// +326% on the smallest input is past 50%: still at scale
+	assert.equal(tight.verdict.kind, 'proven at scale');
+	const loose = await prove_candidate({ ...o, setup_tolerance: 4 }, t, samples(), LINEAR, 'c');
+	assert.equal(loose.verdict.kind, 'proven');
+	assert.equal(loose.verdict.steps.at_scale!.within_setup_tolerance, true);
+	assert.match(loose.headline, /^proven within the setup tolerance: .*; costs \+\d+% /);
+});
+
+test('prove --weights: the sizes app traffic calls the function at, read from its steps a call', async () => {
+	const { dir, o } = setup();
+	const t = target_of(o.root, o.module, o.fn);
+	const id = canonical_function('lib.ts', 'equal_pairs');
+	// one scenario calls it twice a request at the cost of the 16-number input (size 32), one not at all
+	const weights = {
+		schema: 'heisenbench-app-weights/1',
+		source: { sha: null, ogygia: {}, scenarios: ['docs', 'shop'] },
+		units: {
+			'docs server request': { steps: 1e5, units: 1, side: 'server' },
+			'shop server request': { steps: 1e5, units: 1, side: 'server' }
+		},
+		functions: {
+			[id]: { 'docs server request': { calls: 2, self_steps: 2 * 1117, inclusive_steps: 2 * 1117 } }
+		}
+	};
+	writeFileSync(join(dir, 'w.json'), JSON.stringify(weights));
+	const r = await prove_candidate(
+		{ ...o, weights: join(dir, 'w.json') },
+		t,
+		samples(),
+		LINEAR,
+		'c'
+	);
+	const tr = r.verdict.traffic!;
+	assert.equal(tr.of, 2);
+	assert.deepEqual(
+		tr.units.map((u) => [u.unit, u.calls, u.steps_per_call, u.size]),
+		[['docs server request', 2, 1117, 32]]
+	);
+	assert.match(
+		r.headline,
+		/; app traffic \(docs server request\): size ~32, where the candidate costs \d\.\d\dx the original's steps$/
+	);
+	const none = { ...weights, functions: {} };
+	writeFileSync(join(dir, 'none.json'), JSON.stringify(none));
+	const n = await prove_candidate(
+		{ ...o, weights: join(dir, 'none.json') },
+		t,
+		samples(),
+		LINEAR,
+		'c'
+	);
+	assert.match(n.headline, /; app traffic: not called in the 2 app scenarios$/);
 });
 
 test('prove: a candidate wrong only on a value seen three times is rejected with the minimal input', async () => {
@@ -199,10 +285,13 @@ test('prove: a candidate that changes its argument is rejected, though its resul
 test('prove: a correct but slower candidate is rejected on its steps', async () => {
 	const r = await prove(SLOWER);
 	assert.equal(r.verdict.inputs.differing, 0);
-	assert.equal(r.verdict.proven, false);
-	assert.match(r.verdict.reason, /^rejected: costs more steps on \d+ input/);
+	assert.equal(r.verdict.kind, 'rejected');
+	assert.match(
+		r.verdict.reason,
+		/^rejected: costs more steps on \d+ input\(s\) \(more than 5% \+ 256 steps\), and is not cheaper at scale$/
+	);
 	assert.ok(r.verdict.steps.regressed >= 6);
-	assert.equal(r.verdict.steps.setup, null);
+	assert.equal(r.verdict.steps.at_scale, null);
 });
 
 test('prove: candidate code that reaches outside the runtime is refused before it runs', () => {
@@ -364,7 +453,7 @@ test('prove --propose: every proposal is proven like a hand-written one; only pr
 	const p = stub([
 		WRONG_ON_DUPLICATES,
 		LINEAR.replace('let n = 0;', 'let n = globalThis.n ?? 0;'),
-		LINEAR
+		HOISTED
 	]);
 	const out = await run_proposals(o, t, samples(), p, { count: 3, send_inputs: false });
 	assert.match(out[0].outcome, /^rejected: behaves differently on \d+ of \d+ inputs$/);
@@ -406,33 +495,43 @@ function write_records(dir: string): void {
 test('heisenbench prove: the CLI proves from a records directory and writes JSON and markdown', async () => {
 	const { dir } = setup();
 	write_records(dir);
-	write_files(dir, { 'linear.ts': LINEAR, 'wrong.ts': WRONG_ON_DUPLICATES });
-	const ok = await run(
-		process.execPath,
-		[
-			CLI,
-			'prove',
-			'lib.ts',
-			'equal_pairs',
-			'--candidate',
-			'linear.ts',
-			'--records',
-			'records',
-			'--md',
-			'prove.md'
-		],
-		{ cwd: dir }
-	);
+	write_files(dir, { 'linear.ts': LINEAR, 'hoisted.ts': HOISTED, 'wrong.ts': WRONG_ON_DUPLICATES });
+	const prove_args = (file: string) => [
+		CLI,
+		'prove',
+		'lib.ts',
+		'equal_pairs',
+		'--candidate',
+		file,
+		'--records',
+		'records',
+		'--md',
+		'prove.md'
+	];
+	const ok = await run(process.execPath, prove_args('hoisted.ts'), { cwd: dir });
 	assert.match(
 		ok.stdout,
 		/^prove {4}lib\.ts > equal_pairs: 6 recorded inputs \(of 6 recorded calls\)\nPROVEN {3}lib\.ts > equal_pairs {2}proven: n\^2/
 	);
 	const json = JSON.parse(readFileSync(join(dir, 'heisenbench-prove.json'), 'utf8')) as ProveReport;
 	assert.equal(json.schema, 'heisenbench-prove/1');
-	assert.equal(json.verdict.proven, true);
+	assert.equal(json.verdict.kind, 'proven');
 	const md = readFileSync(join(dir, 'prove.md'), 'utf8');
 	assert.match(md, /^#### Proof: `lib\.ts > equal_pairs`\n\n\*\*proven: /);
 	assert.match(md, /```diff\n--- a\/lib\.ts\n/);
+	// proven at scale: its own label, the headline says where it costs more, exit 3
+	await assert.rejects(
+		run(process.execPath, prove_args('linear.ts'), { cwd: dir }),
+		(e: { code: number; stdout: string }) =>
+			e.code === 3 &&
+			/\nAT SCALE lib\.ts > equal_pairs {2}proven at scale: n\^2\.\d\d -> n\^1\.\d\d, .*; costs \+\d+% \(91 -> \d+ steps\) on \d of the recorded inputs/.test(
+				e.stdout
+			)
+	);
+	assert.match(
+		readFileSync(join(dir, 'prove.md'), 'utf8'),
+		/\nIt costs \+\d+% \(91 -> \d+ steps\) on /
+	);
 	await assert.rejects(
 		run(
 			process.execPath,
@@ -462,36 +561,45 @@ test('heisenbench prove --propose: with a provider, the command reports only the
 		['propose', ''],
 		['records', join(dir, 'records')],
 		['root', dir],
-		['proposals', '2'],
+		['proposals', '3'],
 		['out', out],
 		['md', md]
 	]);
 	const log = console.log;
 	console.log = () => {};
-	let code: number;
-	try {
-		code = await prove_command(
-			[join(dir, 'lib.ts'), 'equal_pairs'],
-			flags,
-			stub([MUTATES, LINEAR])
-		);
-	} finally {
-		console.log = log;
-	}
+	const run_with = async (cands: string[]): Promise<number> => {
+		console.log = () => {};
+		try {
+			return await prove_command([join(dir, 'lib.ts'), 'equal_pairs'], flags, stub(cands));
+		} finally {
+			console.log = log;
+		}
+	};
+	const code = await run_with([MUTATES, LINEAR, HOISTED]);
 	assert.equal(code, 0);
 	const r = JSON.parse(readFileSync(out, 'utf8')) as {
 		proposals: Array<{ n: number; outcome: string }>;
 		proven: ProveReport[];
 	};
-	assert.equal(r.proposals.length, 2);
+	assert.equal(r.proposals.length, 3);
 	assert.match(r.proposals[0].outcome, /^rejected: behaves differently/);
-	assert.equal(r.proposals[1].outcome, 'proven');
-	assert.equal(r.proven.length, 1);
-	assert.equal(r.proven[0].candidate, 'stub proposal 2');
+	assert.match(r.proposals[1].outcome, /^proven at scale: /);
+	assert.equal(r.proposals[2].outcome, 'proven');
+	// both kept, the proven one first, each under its own verdict
+	assert.deepEqual(
+		r.proven.map((x) => [x.candidate, x.verdict.kind]),
+		[
+			['stub proposal 3', 'proven'],
+			['stub proposal 2', 'proven at scale']
+		]
+	);
 	assert.match(
 		readFileSync(md, 'utf8'),
-		/^#### Proof: `lib\.ts > equal_pairs`\n\n\*\*proven: [\s\S]*```diff\n--- a\/lib\.ts/
+		/^#### Proof: `lib\.ts > equal_pairs`\n\n\*\*proven: [\s\S]*```diff\n--- a\/lib\.ts[\s\S]*\*\*proven at scale: /
 	);
+	// only proven at scale: exit 3
+	flags.set('proposals', '2');
+	assert.equal(await run_with([MUTATES, LINEAR]), 3);
 });
 
 test('heisenbench prove --propose: without a key it says how to set one and does nothing else', async () => {

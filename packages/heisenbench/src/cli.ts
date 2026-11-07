@@ -69,14 +69,17 @@ Layers (each writes its section into --out, default heisenbench-report.json)
 
 Proving a faster version (on demand, not in PR CI)
   heisenbench prove <module> <function> --candidate <file> --records dir[,dir] [--bench files]
-                                 the candidate is accepted only when it behaves the same on every
-                                 recorded, grown and edge-case input and costs fewer steps
+                                 proven (the same on every recorded, grown and edge-case input, no
+                                 input costlier), proven at scale (the same, cheaper at scale,
+                                 costlier on small inputs: exit 3) or rejected (exit 1)
       [--root dir] [--deps all|none|a,b] [--sizes 1,10,100] [--cap 1e10] [--variants 160]
-      [--edge shapes|all] [--seed 1] [--tolerance 5] [--tolerance-steps 256] [--setup-tolerance 200]
+      [--edge shapes|all] [--seed 1] [--tolerance 5] [--tolerance-steps 256]
+      [--setup-tolerance pct]   opt-in: proven at scale within it is proven
+      [--weights app-weights.json,...]   which input sizes the app scenarios call it at
       [--out heisenbench-prove.json] [--md file]
   heisenbench prove <module> <function> --propose [--proposals 3] [--model claude-opus-5-5] [--send-inputs]
                                  candidates proposed by a model (ANTHROPIC_API_KEY), each proven
-                                 the same way; only proven ones are reported, each with its diff
+                                 the same way; only proven and proven-at-scale ones are reported
 
 Real apps and the measurement-source gate
   heisenbench weights <app-report.json...> [--out app-weights.json]
@@ -340,6 +343,7 @@ const SPECS: Record<string, Spec> = {
 			'tolerance',
 			'tolerance-steps',
 			'setup-tolerance',
+			'weights',
 			'proposals',
 			'model'
 		],

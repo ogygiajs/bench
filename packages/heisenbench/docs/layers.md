@@ -779,26 +779,48 @@ One difference rejects the candidate. The input it differs on is shrunk (element
 strings halved, numbers made 0, while the two still differ) and reported.
 
 **Fewer steps.** The same runs are counted: steps, allocations and bytes per input, and the
-curve over the grown sizes, fitted as growth fits a case. A recorded or grown input may not
-cost more than the original's steps plus 5% plus 256 (`--tolerance`, `--tolerance-steps`), and
-the total must fall by 1% or the curve must be better (a lower class, or an exponent 0.25 lower).
+curve over the grown sizes, fitted as growth fits a case. The verdict is one of three:
+
+| Verdict           | Behavior  | Steps                                                                                                                                                                                        | Exit |
+| ----------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---: |
+| `proven`          | the same  | no recorded or grown input costs more than the original's steps + 5% + 256 (`--tolerance`, `--tolerance-steps`), and the total falls by 1% or the curve is better                            |    0 |
+| `proven at scale` | the same  | some inputs cost more than that, but it is cheaper at scale: a better curve (a lower class, or an exponent 0.25 lower) and cheaper at the largest grown size, or cheaper at every grown size |    3 |
+| `rejected`        | different | or it costs more and is not cheaper at scale                                                                                                                                                 |    1 |
+
 A fix that changes the curve usually builds something first (a Map of the list it used to
-search): on a short input that costs more than the loop did. When the candidate's curve is
-better and it is cheaper at every size of the steepest grown curve, an input may cost up to 3x
-the original's steps (`--setup-tolerance 200`); those inputs and the most they cost are in the
-headline. Edge cases decide behavior only: their steps are shown, never a regression.
+search): on a short input that costs more than the loop did. Such a fix is proven at scale, not
+proven, and its headline says how much more it costs, on which inputs and sizes, and from which
+grown size on it is cheaper. `--setup-tolerance <pct>` is an opt-in: a candidate proven at scale
+whose costlier inputs each cost at most that much more is `proven` ("proven within the setup
+tolerance"). Edge cases decide behavior only: their steps are shown, never a regression.
 
-The five functions ogygia PR #187 made linear, each proven on the parent commit (`01dc5b9`, the
-test recordings of `packages/core` and `packages/devtools` for these functions) against the
-fixed declarations from `b46798f`:
+With `--weights` (app weights, `heisenbench weights`), the report says which sizes app traffic
+calls the function at: each app scenario that calls it costs the original `inclusive_steps /
+calls` steps a call there, and the size at which the original costs that many steps on the
+measured inputs (log-log between the two nearest) is the size that scenario passes it. Then the
+candidate's ratio at the measured inputs nearest those sizes says whether traffic lands where it
+is cheaper or costlier. Weights of real traffic are timed, not counted, and are not used for it.
+
+The five functions ogygia PR #187 made linear, each on the parent commit (`01dc5b9`, the test
+recordings of `packages/core` and `packages/devtools` for these functions) against the fixed
+declarations from `b46798f`, with that commit's app weights:
+
+| Function             | Verdict         | Growth          | Steps at 100x   | Costs more on smaller inputs                                                                                            | Identical on |
+| -------------------- | --------------- | --------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------- | -----------: |
+| `collect_flag_sites` | proven          | n^1.55 → n^1.01 | 1.70e7 → 3.59e6 | none                                                                                                                    |   101 inputs |
+| `lcp_rivals`         | proven          | n^1.88 → n^0.98 | 2.73e6 → 83,484 | none                                                                                                                    |   780 inputs |
+| `attribute_gc`       | proven at scale | n^1.94 → n^1.21 | 3.61e8 → 2.19e7 | +162% at most (3,022 → 7,915), 16 recorded + 2 grown, sizes 5..35,250; cheaper from 10x                                 | 1,817 inputs |
+| `find_wait_patterns` | proven at scale | n^1.83 → n^1.17 | 8.47e6 → 1.08e6 | +37% at most (4,522 → 6,189), 6 recorded, sizes 112..261; cheaper from 10x                                              |   811 inputs |
+| `constant_work`      | proven at scale | n^1.72 → n^0.98 | 1.11e8 → 1.12e7 | +18% at most (6.27e6 → 7.37e6, a grown input), 3 recorded + 4 grown, sizes 231..55,900; cheaper from 1x on the steepest |    68 inputs |
 
 ```
-PROVEN   packages/core/src/compiler/flags.ts > collect_flag_sites  proven: n^1.55 -> n^1.01, 1.70e7 -> 3.59e6 steps at 100x, identical on 101 inputs
-PROVEN   packages/core/src/insights/page-insights.ts > lcp_rivals  proven: n^1.88 -> n^0.98, 2.73e6 -> 83,484 steps at 100x, identical on 777 inputs
-PROVEN   packages/devtools/src/profiler/gc.ts > attribute_gc  proven: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, identical on 2,238 inputs; up to +162% on 18 input(s) up to size 35,250
-PROVEN   packages/devtools/src/profiler/patterns.ts > find_wait_patterns  proven: n^1.83 -> n^1.17, 8.47e6 -> 1.08e6 steps at 100x, identical on 775 inputs; up to +37% on 6 input(s) up to size 261
-PROVEN   packages/devtools/src/profiler/source-scan.ts > constant_work  proven: n^1.72 -> n^0.98, 1.11e8 -> 1.12e7 steps at 100x, identical on 68 inputs; up to +18% on 7 input(s) up to size 55,900
+AT SCALE packages/devtools/src/profiler/gc.ts > attribute_gc  proven at scale: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, identical on 1,817 inputs; costs +162% (3,022 -> 7,915 steps) on 16 recorded and 2 grown inputs (sizes 5..35,250), cheaper from 10x up on the steepest grown input (from size 68,913); app traffic: not called in the 16 app scenarios
 ```
+
+None of the five is called in the 16 app scenarios (they compile pages and read profiles; the
+apps serve them), so the weights cannot say which sizes traffic hits. `constant_work`'s most
+costly input is a recorded input grown 100x, on a shape where both versions are linear: the
+fix is cheaper on the steepest curve and 18% costlier on that one.
 
 `line_at` changed its parameters (the newline offsets instead of the text), so its fix is proven
 through `collect_flag_sites`, the exported function that calls it; `running_at`, `batched` and
@@ -807,7 +829,7 @@ With `--edge all`, `attribute_gc` is rejected: the fix differs from the original
 segment without `t1`, which `t1: number` rules out:
 
 ```
-REJECTED packages/devtools/src/profiler/gc.ts > attribute_gc  rejected: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, differs on 2 of 1,942 inputs; up to +162% on 18 input(s) up to size 35,250
+REJECTED packages/devtools/src/profiler/gc.ts > attribute_gc  rejected: n^1.94 -> n^1.21, 3.61e8 -> 2.19e7 steps at 100x, differs on 2 of 1,942 inputs
            rejected: behaves differently on 2 of 1942 inputs
            differs on: [   { slices: [], events: [ { t: 38.73 } ], running: [ {}, { t1: 37.26 } ] } ]
            out.pauses[0].running: present vs missing
@@ -819,7 +841,7 @@ REJECTED packages/devtools/src/profiler/gc.ts > attribute_gc  rejected: n^1.94 -
 The JSON report goes to `--out` (default `heisenbench-prove.json`, schema `heisenbench-prove/1`):
 the verdict, the headline, every input's steps and outcome, the growth rows, the line blame of
 both sides at the largest input, and the patch. `--md` writes the section, the patch under it
-ready for `git apply`. Exit 0 when proven, 1 when not.
+ready for `git apply`. Exit 0 when proven, 3 when proven at scale, 1 when rejected.
 
 ### Where a candidate runs
 
@@ -839,8 +861,10 @@ permissions stop what it reaches (`test/prove.test.ts` plants one that tries to 
 ### Proposals
 
 `heisenbench prove <module> <function> --propose` asks a model for candidates and proves each
-one; only proven ones are reported, each with its patch. Up to `--proposals` (default 3), one at a
-time: each request says why the ones before it were not proven. It uses the Claude API through
+one; proven ones are reported first, then the ones proven at scale, each under its verdict and
+with its patch, and a rejected one never. Up to `--proposals` (default 3), one at a time: each
+request says what the ones before it came to (a difference, or what one proven at scale still
+costs on small inputs). It uses the Claude API through
 the Anthropic SDK, which the project installs (`npm i -D @anthropic-ai/sdk`; Heisenbench does not
 depend on it), with `ANTHROPIC_API_KEY` set; the model is `claude-opus-5-5` unless `--model` names
 another. Without a key it prints how to set one, sends nothing and runs nothing.

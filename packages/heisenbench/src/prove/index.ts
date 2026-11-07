@@ -15,6 +15,8 @@ import { merge_records, read_record_dir } from '../coverage/replay-run.ts';
 import { GROWTH_RANK } from '../growth/fit.ts';
 import { DEFAULT_SIZES, GROWTH_CAP } from '../growth/index.ts';
 import { OWN_DIR, PACKAGE_DIR, own_file } from '../own.ts';
+import { canonical_function, load_weights_list } from '../weight/weights.ts';
+import type { AppWeights } from '../weight/weights.ts';
 import { run_process } from '../proc.ts';
 import type { ProcessError } from '../proc.ts';
 import { unified_diff } from './diff.ts';
@@ -31,13 +33,19 @@ import type { Cost, InputKind, InputRow, ProveChildResult, ProveJob, RecordJob }
  *    grown (the generic scaler at 1x / 10x / 100x), and on seeded edge cases of their shapes
  *    (variants.ts). Results, errors and the arguments after the call must be the same (equal.ts).
  *    One difference rejects the candidate, with the smallest input it differs on.
- * 2. Fewer steps. Both are counted on the same inputs. No recorded or grown input may cost more
- *    than the original's steps plus a tolerance (5% + 256 steps), and the total, or the growth
- *    curve, must improve. A candidate that grows more slowly (a lower class, or an exponent 0.25
- *    lower) and is cheaper at every size of the steepest grown curve may cost up to the setup
- *    tolerance more (3x by default) on smaller inputs: the Map it builds once costs more than the
- *    loop it replaces on a short list. Those inputs are named in the report and its headline.
- *    Edge cases decide behavior only: their steps are shown, never a regression.
+ * 2. Fewer steps. Both are counted on the same inputs. Three verdicts:
+ *
+ *    proven           the same behavior; no recorded or grown input costs more than the
+ *                     original's steps plus the tolerance (5% + 256 steps); and the total, or the
+ *                     growth curve, improves
+ *    proven at scale  the same behavior and cheaper at scale (a better growth curve, or cheaper at
+ *                     every grown size), but some smaller inputs cost more: the Map it builds once
+ *                     costs more than the loop it replaced on a short list. The headline says how
+ *                     much, on which sizes, and from which grown size on it is cheaper
+ *    rejected         the behavior differs, or it costs more and is not cheaper at scale
+ *
+ *    `--setup-tolerance` is an opt-in: a "proven at scale" whose costlier inputs all stay within
+ *    it is "proven". Edge cases decide behavior only: their steps are shown, never a regression.
  *
  * The candidate's code runs only in a child process (child.ts) under Node's permission model: it
  * reads the project and Heisenbench, writes its one result file, and has no network, no child
@@ -71,10 +79,12 @@ export interface ProveOptions {
 	/** The share the total must fall by, when the growth curve does not improve. */
 	min_gain?: number;
 	/**
-	 * When the candidate grows more slowly and is cheaper at every grown size, a recorded input
-	 * may cost up to this share more than the original (the setup that the grown sizes pay back).
+	 * Opt-in, unset by default: a "proven at scale" candidate whose costlier inputs each cost at
+	 * most this share more than the original (plus `tolerance_steps`) is "proven".
 	 */
 	setup_tolerance?: number;
+	/** App weights files (`heisenbench weights`, comma-joined): which sizes app traffic calls it at. */
+	weights?: string;
 	timeout_ms?: number;
 	log?: (line: string) => void;
 }
@@ -88,7 +98,6 @@ export const DEFAULTS = {
 	tolerance: 0.05,
 	tolerance_steps: 256,
 	min_gain: 0.01,
-	setup_tolerance: 2,
 	timeout_ms: 30 * 60_000,
 	/** Growth exponents this far apart are a different curve. */
 	exponent_gain: 0.25
@@ -118,7 +127,37 @@ export function target_of(root: string, module: string, fn: string): Target {
 	return { id: `${id} > ${path}`, module: id, file, path };
 }
 
+export type VerdictKind = 'proven' | 'proven at scale' | 'rejected' | 'not proven';
+
+/** Where the candidate costs more than the strict tolerance, while it is cheaper at scale. */
+export interface AtScale {
+	/** The costlier recorded and grown inputs. */
+	inputs: number;
+	recorded: number;
+	/** The one that costs the most more, by ratio. */
+	worst: { label: string; size: number; original: number; candidate: number };
+	/** Smallest and largest size among them. */
+	sizes: [number, number];
+	/** The smallest factor of the steepest grown curve from which on the candidate is cheaper at every factor. */
+	cheaper_from: { k: number; size: number } | null;
+	/** `--setup-tolerance` was given and every costlier input stays within it. */
+	within_setup_tolerance: boolean;
+}
+
+/** The sizes app traffic calls the function at, read from app weights (steps per call -> input size). */
+export interface TrafficSizes {
+	/** Units (app scenarios) that call it, with the steps a call costs there and the size that costs that. */
+	units: Array<{ unit: string; calls: number; steps_per_call: number; size: number }>;
+	/** Units the weights have; none of them may call it. */
+	of: number;
+	sizes: [number, number] | null;
+	/** The candidate's steps over the original's at the measured inputs nearest those sizes. */
+	ratios: [number, number] | null;
+}
+
 export interface Verdict {
+	kind: VerdictKind;
+	/** `kind === 'proven'`. */
 	proven: boolean;
 	/** One line: what decided it. */
 	reason: string;
@@ -134,27 +173,18 @@ export interface Verdict {
 		/** Over the recorded and grown inputs both sides counted. */
 		original: Cost;
 		candidate: Cost;
-		/** Inputs whose candidate cost more than the tolerance allows (worst first, at most 5). */
+		/** Recorded and grown inputs whose candidate costs more than the tolerance (worst first, at most 5). */
 		regressions: Array<{ label: string; size: number; original: number; candidate: number | null }>;
 		regressed: number;
-		/**
-		 * Recorded inputs the candidate costs more on, within the setup tolerance, accepted because
-		 * its growth is better and it is cheaper at every grown size: the price of setting up (a Map
-		 * built once) that the grown sizes pay back. Null when there are none.
-		 */
-		setup: {
-			inputs: number;
-			worst: { label: string; size: number; original: number; candidate: number };
-			/** The largest input size among them. */
-			below: number;
-			/** The smallest grown size, where the candidate is cheaper. */
-			cheaper_from: number;
-		} | null;
+		/** For "proven at scale" (and a proven within --setup-tolerance): where it costs more. */
+		at_scale: AtScale | null;
 		improved: number;
 		/** Edge-case inputs whose candidate costs more (shown, not a regression: edge cases test behavior). */
 		edge_regressions: number;
 	};
 	growth: ProveChildResult['growth'];
+	/** With `--weights`: the sizes app traffic calls it at. */
+	traffic: TrafficSizes | null;
 }
 
 export interface ProveReport {
@@ -210,7 +240,6 @@ export function judge(
 	const gated = (r: InputRow) => r.kind !== 'edge';
 	const counted = rows.filter((r) => gated(r) && r.original.cost && r.candidate?.cost);
 	const regressions: Verdict['steps']['regressions'] = [];
-	const setup: Array<{ label: string; size: number; original: number; candidate: number }> = [];
 	let improved = 0;
 	let edge_regressions = 0;
 	const g = child.growth;
@@ -225,45 +254,59 @@ export function judge(
 	const orig_capped_only =
 		g?.original.capped_at != null && g.candidate?.capped_at == null && g.candidate?.class != null;
 	const growth_better = class_better || exponent_better || orig_capped_only;
-	// the candidate is cheaper at every grown size: what it costs more on small inputs, it pays back
+	// cheaper at every grown size of the steepest curve, or a better curve and cheaper at its largest
 	const grown = (g?.rows ?? []).filter((x) => x.k > 1);
-	const wins_grown =
-		grown.length > 0 &&
-		grown.every(
-			(x) => x.candidate !== null && (x.original === null || x.candidate.steps < x.original.steps)
-		);
-	const setup_tolerance = o.setup_tolerance ?? DEFAULTS.setup_tolerance;
+	const cheaper = (x: (typeof grown)[number]) =>
+		x.candidate !== null && (x.original === null || x.candidate.steps < x.original.steps);
+	const wins_grown = grown.length > 0 && grown.every(cheaper);
+	const wins_largest = grown.length > 0 && cheaper(grown[grown.length - 1]);
+	const at_scale_ok = wins_grown || (growth_better && wins_largest);
+	let went_past = 0;
 	for (const r of rows) {
 		const oc = r.original.cost;
 		const cc = r.candidate?.cost ?? null;
 		if (!oc) continue;
-		const went_past = r.candidate?.capped === true;
+		const past = r.candidate?.capped === true;
 		if (cc && cc.steps < oc.steps) improved++;
-		if (!(went_past || (cc && regresses(oc.steps, cc.steps, t)))) continue;
-		if (!gated(r)) edge_regressions++;
-		else if (
-			cc &&
-			growth_better &&
-			wins_grown &&
-			cc.steps <= oc.steps * (1 + setup_tolerance) + t.tolerance_steps
-		)
-			setup.push({ label: r.label, size: r.size, original: oc.steps, candidate: cc.steps });
-		else
-			regressions.push({
-				label: r.label,
-				size: r.size,
-				original: oc.steps,
-				candidate: cc?.steps ?? null
-			});
+		if (!(past || (cc && regresses(oc.steps, cc.steps, t)))) continue;
+		if (!gated(r)) {
+			edge_regressions++;
+			continue;
+		}
+		if (past) went_past++;
+		regressions.push({
+			label: r.label,
+			size: r.size,
+			original: oc.steps,
+			candidate: cc?.steps ?? null
+		});
 	}
-	const worst_first = (a: { original: number; candidate: number | null }, b: typeof a) =>
-		(b.candidate ?? Infinity) / b.original - (a.candidate ?? Infinity) / a.original;
-	regressions.sort(worst_first);
-	setup.sort(worst_first);
+	regressions.sort(
+		(a, b) => (b.candidate ?? Infinity) / b.original - (a.candidate ?? Infinity) / a.original
+	);
 	const original = sum_cost(counted.map((r) => r.original.cost!));
 	const candidate = sum_cost(counted.map((r) => r.candidate!.cost!));
 	const total_better = candidate.steps < original.steps * (1 - min_gain);
+	let at_scale: AtScale | null = null;
+	if (regressions.length > 0 && went_past === 0 && at_scale_ok) {
+		const worst = regressions[0] as AtScale['worst'];
+		const sizes = regressions.map((x) => x.size);
+		const st = o.setup_tolerance;
+		at_scale = {
+			inputs: regressions.length,
+			recorded: regressions.filter(
+				(x) => rows.find((r) => r.label === x.label)?.kind === 'recorded'
+			).length,
+			worst,
+			sizes: [Math.min(...sizes), Math.max(...sizes)],
+			cheaper_from: cheaper_from(g),
+			within_setup_tolerance:
+				st !== undefined &&
+				regressions.every((x) => x.candidate! <= x.original * (1 + st) + t.tolerance_steps)
+		};
+	}
 	const verdict: Verdict = {
+		kind: 'not proven',
 		proven: false,
 		reason: '',
 		inputs: { total: rows.length, by_kind, same, differing, undecided },
@@ -273,35 +316,129 @@ export function judge(
 			candidate,
 			regressions: regressions.slice(0, 5),
 			regressed: regressions.length,
-			setup:
-				setup.length === 0
-					? null
-					: {
-							inputs: setup.length,
-							worst: setup[0],
-							below: Math.max(...setup.map((s) => s.size)),
-							cheaper_from: Math.min(...(g?.rows ?? []).filter((x) => x.k > 1).map((x) => x.size))
-						},
+			at_scale,
 			improved,
 			edge_regressions
 		},
-		growth: g
+		growth: g,
+		traffic: null
 	};
-	if (child.errors.length > 0) verdict.reason = `not proven: ${child.errors[0]}`;
+	const tol = `${Math.round(t.tolerance * 100)}% + ${t.tolerance_steps} steps`;
+	const say = (kind: VerdictKind, reason: string) => {
+		verdict.kind = kind;
+		verdict.proven = kind === 'proven';
+		verdict.reason = reason;
+	};
+	if (child.errors.length > 0) say('not proven', `not proven: ${child.errors[0]}`);
 	else if (rows.length === 0)
-		verdict.reason = 'not proven: no recorded input of the function (give --records or --bench)';
+		say('not proven', 'not proven: no recorded input of the function (give --records or --bench)');
 	else if (differing > 0)
-		verdict.reason = `rejected: behaves differently on ${differing} of ${rows.length} inputs`;
+		say('rejected', `rejected: behaves differently on ${differing} of ${rows.length} inputs`);
+	else if (counted.length === 0) say('not proven', 'not proven: no input both sides counted');
+	else if (at_scale?.within_setup_tolerance)
+		say('proven', `proven: within the setup tolerance of ${Math.round(o.setup_tolerance! * 100)}%`);
+	else if (at_scale)
+		say(
+			'proven at scale',
+			`proven at scale: costs more than ${tol} on ${at_scale.inputs} smaller input(s), cheaper at scale`
+		);
 	else if (regressions.length > 0)
-		verdict.reason = `rejected: costs more steps on ${regressions.length} input(s) (more than ${Math.round(t.tolerance * 100)}% + ${t.tolerance_steps} steps)`;
-	else if (counted.length === 0) verdict.reason = 'not proven: no input both sides counted';
-	else if (!(total_better || class_better || exponent_better || orig_capped_only))
-		verdict.reason = `rejected: not cheaper (${fmt(original.steps)} -> ${fmt(candidate.steps)} steps over ${counted.length} inputs, the same growth)`;
-	else {
-		verdict.proven = true;
-		verdict.reason = 'proven';
-	}
+		say(
+			'rejected',
+			`rejected: costs more steps on ${regressions.length} input(s) (more than ${tol})${went_past > 0 ? `, ${went_past} past its step cap` : ''}, and is not cheaper at scale`
+		);
+	else if (!(total_better || growth_better))
+		say(
+			'rejected',
+			`rejected: not cheaper (${fmt(original.steps)} -> ${fmt(candidate.steps)} steps over ${counted.length} inputs, the same growth)`
+		);
+	else say('proven', 'proven');
+	// where it costs more matters to a candidate that stands; a rejection lists its regressions
+	if (verdict.kind === 'rejected' || verdict.kind === 'not proven') verdict.steps.at_scale = null;
 	return verdict;
+}
+
+/** The smallest factor of the curve from which on the candidate is cheaper at every factor. */
+function cheaper_from(g: ProveChildResult['growth']): AtScale['cheaper_from'] {
+	if (!g) return null;
+	let from: AtScale['cheaper_from'] = null;
+	for (let i = g.rows.length - 1; i >= 0; i--) {
+		const x = g.rows[i];
+		if (!(x.candidate && (x.original === null || x.candidate.steps < x.original.steps))) break;
+		from = { k: x.k, size: x.size };
+	}
+	return from;
+}
+
+function pct_more(o: number, c: number): string {
+	return `+${Math.round(((c - o) / o) * 100)}%`;
+}
+
+/**
+ * Which input sizes app traffic calls the function at: each weights unit (an app scenario) that
+ * calls it costs the original `inclusive_steps / calls` steps a call; the size at which the
+ * original costs that many steps on the measured inputs (log-log between the two nearest) is the
+ * size that unit passes it. Units of real traffic are timed, not counted, and are left out.
+ */
+export function traffic_sizes(w: AppWeights, t: Target, child: ProveChildResult): TrafficSizes {
+	const id = canonical_function(t.module, t.path);
+	const fw = w.functions[id] ?? {};
+	const counted = Object.entries(w.units).filter(([, u]) => !u.traffic);
+	const points = child.inputs
+		.filter((r) => r.kind !== 'edge' && r.original.cost && r.size > 0)
+		.map((r) => ({
+			size: r.size,
+			steps: r.original.cost!.steps,
+			cand: r.candidate?.cost?.steps ?? null
+		}))
+		.sort((a, b) => a.steps - b.steps || a.size - b.size);
+	const units: TrafficSizes['units'] = [];
+	for (const [unit] of counted) {
+		const f = fw[unit];
+		if (!f || !(f.calls > 0) || points.length === 0) continue;
+		const per = f.inclusive_steps / f.calls;
+		units.push({ unit, calls: f.calls, steps_per_call: per, size: size_for(points, per) });
+	}
+	const sizes = units.map((u) => u.size);
+	let ratios: TrafficSizes['ratios'] = null;
+	if (sizes.length > 0) {
+		const near = (s: number) =>
+			points
+				.filter((p) => p.cand !== null)
+				.reduce<(typeof points)[number] | null>(
+					(a, p) => (!a || Math.abs(Math.log(p.size / s)) < Math.abs(Math.log(a.size / s)) ? p : a),
+					null
+				);
+		const rs = sizes
+			.map(near)
+			.filter((p) => p !== null)
+			.map((p) => p!.cand! / p!.steps);
+		if (rs.length > 0) ratios = [Math.min(...rs), Math.max(...rs)];
+	}
+	return {
+		units,
+		of: counted.length,
+		sizes: sizes.length > 0 ? [Math.min(...sizes), Math.max(...sizes)] : null,
+		ratios
+	};
+}
+
+/** The size at which the original costs `steps`, log-log between the measured points around it. */
+function size_for(points: ReadonlyArray<{ size: number; steps: number }>, steps: number): number {
+	let lo = points[0];
+	let hi = points[points.length - 1];
+	if (steps <= lo.steps) return lo.size;
+	if (steps >= hi.steps) return hi.size;
+	for (const p of points) {
+		if (p.steps <= steps) lo = p;
+		if (p.steps >= steps) {
+			hi = p;
+			break;
+		}
+	}
+	if (hi.steps === lo.steps) return lo.size;
+	const f = Math.log(steps / lo.steps) / Math.log(hi.steps / lo.steps);
+	return Math.round(Math.exp(Math.log(lo.size) + f * Math.log(hi.size / lo.size)));
 }
 
 export function fmt(n: number): string {
@@ -333,11 +470,47 @@ export function headline(v: Verdict): string {
 		parts.push(
 			`differs on ${v.inputs.differing.toLocaleString('en-US')} of ${v.inputs.total.toLocaleString('en-US')} inputs`
 		);
-	const s = v.steps.setup;
-	const setup = s
-		? `; up to +${Math.round(((s.worst.candidate - s.worst.original) / s.worst.original) * 100)}% on ${s.inputs} input(s) up to size ${fmt(s.below)}`
+	const s = v.steps.at_scale;
+	const costs = s ? `; ${at_scale_words(s)}` : '';
+	const tr = v.traffic ? `; ${traffic_words(v.traffic)}` : '';
+	const kind = v.kind === 'proven' && s ? 'proven within the setup tolerance' : v.kind;
+	return `${kind}: ${parts.join(', ')}${costs}${tr}`;
+}
+
+/** `costs +162% (3,022 -> 7,915 steps) on 16 recorded and 2 grown inputs (sizes 5..35,250), cheaper from 10x up on the steepest grown input (from size 68,913)` */
+export function at_scale_words(s: AtScale): string {
+	const w = s.worst;
+	const grown = s.inputs - s.recorded;
+	const which =
+		grown === 0
+			? `${s.inputs} of the recorded inputs`
+			: s.recorded === 0
+				? `${s.inputs} grown inputs`
+				: `${s.recorded} recorded and ${grown} grown inputs`;
+	const sizes =
+		s.sizes[0] === s.sizes[1]
+			? `size ${fmt(s.sizes[0])}`
+			: `sizes ${fmt(s.sizes[0])}..${fmt(s.sizes[1])}`;
+	const from = s.cheaper_from
+		? `, cheaper from ${s.cheaper_from.k}x up on the steepest grown input (from size ${fmt(s.cheaper_from.size)})`
 		: '';
-	return `${v.reason.split(':')[0]}: ${parts.join(', ')}${setup}`;
+	return `costs ${pct_more(w.original, w.candidate)} (${fmt(w.original)} -> ${fmt(w.candidate)} steps) on ${which} (${sizes})${from}`;
+}
+
+/** `app traffic: not called in the 16 app scenarios` / `app traffic (docs, shop): sizes ~120..340, where the candidate costs 0.84x..1.20x` */
+export function traffic_words(tr: TrafficSizes): string {
+	if (tr.units.length === 0) return `app traffic: not called in the ${tr.of} app scenarios`;
+	const names = [...new Set(tr.units.map((u) => u.unit))];
+	const shown =
+		names.length > 3
+			? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more`
+			: names.join(', ');
+	const [a, b] = tr.sizes!;
+	const at = a === b ? `size ~${fmt(a)}` : `sizes ~${fmt(a)}..${fmt(b)}`;
+	const r = tr.ratios
+		? `, where the candidate costs ${tr.ratios[0].toFixed(2)}x${tr.ratios[1] !== tr.ratios[0] ? `..${tr.ratios[1].toFixed(2)}x` : ''} the original's steps`
+		: '';
+	return `app traffic (${shown}): ${at}${r}`;
 }
 
 /** The function's samples from the record directories and the bench files. */
@@ -504,6 +677,7 @@ export async function prove_candidate(
 	const file = candidate_path(t.file, n);
 	const result = await run_child_job(o, t, samples, { file, source: spliced.source });
 	const verdict = judge(result, o);
+	if (o.weights) verdict.traffic = traffic_sizes(load_weights_list(o.weights), t, result);
 	return {
 		schema: PROVE_SCHEMA,
 		function: t.id,

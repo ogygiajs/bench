@@ -10,7 +10,8 @@ import { declaration_text } from './splice.ts';
 
 /*
  * `heisenbench prove --propose`: a model proposes candidates for a flagged function, and each one
- * goes through the same proof as a hand-written candidate. Only proven ones are reported.
+ * goes through the same proof as a hand-written candidate. Only proven ones are reported, and
+ * the ones proven at scale, each under its own verdict; a rejected one never is.
  *
  * What the model is sent: the function's source, the lines with the most steps (line blame from
  * the original counted on its own inputs) and its growth. Recorded inputs are sent only with
@@ -236,8 +237,10 @@ export async function run_proposals(
 				`${provider.name} proposal ${n}`,
 				n
 			);
-			outcome = { n, outcome: report.verdict.proven ? 'proven' : report.verdict.reason, report };
-			let why = report.verdict.reason;
+			const kind = report.verdict.kind;
+			outcome = { n, outcome: kind === 'proven' ? 'proven' : report.verdict.reason, report };
+			// a later proposal is told what this one came to: costlier on small inputs is worth fixing too
+			let why = kind === 'proven at scale' ? report.headline : report.verdict.reason;
 			if (report.verdict.minimal) {
 				why += `; ${report.verdict.minimal.difference}`;
 				if (opts.send_inputs) why += ` on ${report.verdict.minimal.input}`;
