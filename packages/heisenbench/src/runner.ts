@@ -11,7 +11,7 @@ import type { Snapshot } from './runtime/index.ts';
 import { Builtins } from './runtime/builtins.ts';
 import { Determinism } from './runtime/determinism.ts';
 import type { IoMode } from './runtime/determinism.ts';
-import { REPORT_SCHEMA, build_case_report, environment, one_line } from './report.ts';
+import { REPORT_SCHEMA, build_case_report, environment, error_frames, one_line } from './report.ts';
 import type { LoadError } from './report.ts';
 import { SIZE_TERMS, load_prices } from './prices.ts';
 import { apply_estimates } from './calibrate/estimate.ts';
@@ -36,6 +36,15 @@ export interface RunOptions {
 	sha?: string | null;
 	out?: string;
 	log?: (line: string) => void;
+	/** Log every frame of a failure the report keeps, not only the first. */
+	debug?: boolean;
+}
+
+/** After a FAILED line: ` (at <first frame>)`, or with `all` every frame on a line of its own. */
+function where_lines(frames: readonly string[], all: boolean): string {
+	if (frames.length === 0) return '';
+	if (!all) return ` (at ${frames[0]})`;
+	return frames.map((f) => `\n           at ${f}`).join('');
 }
 
 let registered: { root: string } | null = null;
@@ -169,8 +178,9 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
 		} catch (e) {
 			const error = one_line(e);
-			load_errors.push({ file, error });
-			log(`FAILED   ${file}: ${error}`);
+			const frames = error_frames(e, root);
+			load_errors.push(frames.length > 0 ? { file, error, stack: frames } : { file, error });
+			log(`FAILED   ${file}: ${error}${where_lines(frames, opts.debug === true)}`);
 		}
 	}
 	let list = cases().slice(start);
@@ -202,6 +212,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			);
 		} catch (e) {
 			const msg = one_line(e);
+			const frames = error_frames(e, root);
 			results.push({
 				name: c.name,
 				file: c.file,
@@ -209,11 +220,12 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 				timers: 0,
 				runaway_timers: false,
 				error: msg,
+				...(frames.length > 0 ? { error_stack: frames } : {}),
 				totals: { steps: 0, allocations: 0, bytes: 0, calls: 0 },
 				functions: [],
 				edges: []
 			});
-			log(`FAILED   ${c.name}: ${msg}`);
+			log(`FAILED   ${c.name}: ${msg}${where_lines(frames, opts.debug === true)}`);
 		}
 	}
 

@@ -6,6 +6,7 @@ import { parseSync } from 'oxc-parser';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
 import { LoaderCore } from '../loader/core.ts';
+import { register_source_resolve } from '../loader/resolve.ts';
 import { watch_parent } from '../proc.ts';
 import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
@@ -105,6 +106,7 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 		modules.push({ url, path, id: module_id(path, config.root), code, map });
 		return code;
 	};
+	register_source_resolve();
 	registerHooks({
 		load(url, context, next) {
 			if (!core.should_instrument(url)) {

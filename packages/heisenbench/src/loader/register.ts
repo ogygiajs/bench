@@ -1,6 +1,7 @@
 import { registerHooks } from 'node:module';
 import { LoaderCore } from './core.ts';
 import type { LoaderConfig } from './core.ts';
+import { register_source_resolve } from './resolve.ts';
 
 export type { LoaderConfig } from './core.ts';
 
@@ -11,6 +12,8 @@ export type { LoaderConfig } from './core.ts';
  */
 export function register_heisenbench(config: LoaderConfig): LoaderCore {
 	const core = new LoaderCore(config);
+	// first, so the hooks below see `./x.js` already resolved to `./x.ts` (resolve.ts)
+	register_source_resolve();
 	registerHooks({
 		resolve(specifier, context, next) {
 			if (core.is_virtual(specifier)) return { url: specifier, shortCircuit: true };

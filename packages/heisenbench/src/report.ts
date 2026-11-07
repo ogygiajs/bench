@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
+import { isAbsolute, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { BUILTIN_SLOTS, BUILTIN_UNIT_SHIFT, EDGE_KEY_SHIFT } from './runtime/index.ts';
 import type { Runtime, Snapshot } from './runtime/index.ts';
 import { OP_KINDS, op_price_vector } from './prices.ts';
@@ -12,7 +14,7 @@ import type { RecordedGrowthReport } from './growth/recorded.ts';
 import type { SearchReport } from './search/index.ts';
 import type { AuditReport } from './audit/fit.ts';
 import type { ContractReport } from './contracts/index.ts';
-import { package_url } from './own.ts';
+import { OWN_DIR, package_url } from './own.ts';
 
 /*
  * The report (JSON, versioned). One entry per bench case; inside, every function the case ran.
@@ -109,6 +111,8 @@ export interface CaseReport {
 	timers: number;
 	runaway_timers: boolean;
 	error: string | null;
+	/** Where `error` was thrown: frames of the code under test (error_frames). */
+	error_stack?: string[];
 	totals: { steps: number; allocations: number; bytes: number; calls: number };
 	functions: FunctionReport[];
 	edges: EdgeReport[];
@@ -150,6 +154,8 @@ export interface Report {
 export interface LoadError {
 	file: string;
 	error: string;
+	/** Where it was thrown (error_frames), when the bench file's own code threw. */
+	stack?: string[];
 }
 
 export interface Environment {
@@ -204,6 +210,38 @@ export function one_line(e: unknown): string {
 	const msg = e instanceof Error ? e.message : String(e);
 	const first = msg.split('\n').find((l) => l.trim() !== '') ?? msg;
 	return first.trim().slice(0, 500);
+}
+
+/** Stack frames an error keeps: enough to find the line, few enough for a report. */
+export const STACK_FRAMES = 8;
+
+/**
+ * Where an error was thrown, as frames of the code under test: `helper (src/lib.ts:7:13)`, paths
+ * relative to `root`, the fresh-copy query dropped. Heisenbench's own frames and Node's are left
+ * out. Instrumenting keeps every line of the source, so the line is the source's (the column can
+ * be further right; a module compiled by TypeScript has its compiled line).
+ */
+export function error_frames(e: unknown, root: string, max = STACK_FRAMES): string[] {
+	const stack = e instanceof Error && typeof e.stack === 'string' ? e.stack : '';
+	const out: string[] = [];
+	for (const line of stack.split('\n')) {
+		const m = /^\s+at (?:(.+?) \()?(.+?):(\d+):(\d+)\)?$/.exec(line);
+		if (!m) continue;
+		let file = m[2];
+		if (file.startsWith('async ')) file = file.slice(6);
+		if (!file.startsWith('file:') && !isAbsolute(file)) continue;
+		try {
+			file = file.startsWith('file:') ? fileURLToPath(file) : file;
+		} catch {
+			continue;
+		}
+		if (file.startsWith(OWN_DIR)) continue;
+		const rel = relative(root, file).split(sep).join('/');
+		const where = `${rel}:${m[3]}:${m[4]}`;
+		out.push(m[1] ? `${m[1]} (${where})` : where);
+		if (out.length === max) break;
+	}
+	return out;
 }
 
 export const ROOT_ID = '<root>';
