@@ -10,6 +10,8 @@ import { build_history, run_of } from '../src/history/index.ts';
 import type { HistoryLine, HistoryResult, HistoryRun } from '../src/history/index.ts';
 import { render_history, render_history_text } from '../src/history/markdown.ts';
 import { load_prices } from '../src/prices.ts';
+import { recount_units } from '../src/recount.ts';
+import { price_units } from '../src/units.ts';
 import { REPORT_SCHEMA } from '../src/report.ts';
 import type { Report } from '../src/report.ts';
 import { temp_dir, write_files } from './helpers.ts';
@@ -99,6 +101,19 @@ test('parse_blame reads every line of --line-porcelain, its boundary commit, pat
 		{ commit: sha, path: 'src/old.ts', line: 8 },
 		{ commit: 'b'.repeat(40), path: 'src/new.ts', line: 3 }
 	]);
+});
+
+test('recount_units: a line prices again unless a built-in it calls charges a size term not kept', () => {
+	const { prices } = load_prices();
+	const ops = { call: 2, prop_read: 3 };
+	assert.equal(
+		recount_units(ops, prices, undefined),
+		2 * prices.ops.call! + 3 * prices.ops.prop_read!
+	);
+	const split = { call: 1, 'bi.String.prototype.split.calls': 2 };
+	assert.equal(recount_units(split, prices, undefined), null, 'split charges per part');
+	assert.equal(recount_units(split, prices, ['parts']), price_units(split, prices));
+	assert.equal(recount_units(undefined, prices, ['parts']), null, 'no units, nothing to price');
 });
 
 const BENCH = `import { bench } from ${BENCH_API};
