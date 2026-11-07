@@ -18,7 +18,7 @@ const EXT = HERE.slice(HERE.lastIndexOf('.'));
 /** src/ or dist/: Heisenbench's own modules (never counted). Ends with a separator. */
 export const OWN_DIR = fileURLToPath(new URL('./', HERE));
 
-/** The package directory: package.json, prices.json, weights.json. Ends with a separator. */
+/** The package directory: package.json, prices.json, weights.json, ranges.json. Ends with a separator. */
 export const PACKAGE_DIR = fileURLToPath(new URL('../', HERE));
 
 /** One of Heisenbench's modules, by its path under src/ without the extension (`runtime/index`). */

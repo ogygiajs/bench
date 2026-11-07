@@ -41,4 +41,6 @@ export interface Estimate {
 	ratio: number | null;
 	/** The estimate is not trusted for this case: read the time layer. */
 	time_led: boolean;
+	/** The range model's estimate (ranges/), ns per call with its 10-90% range. */
+	model?: { ns: number; range: [number, number]; version: number };
 }

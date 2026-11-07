@@ -16,6 +16,7 @@ import { agree_files } from '../calibrate/agree.ts';
 import { measure_points, read_points, write_points } from '../calibrate/points.ts';
 import { DEFAULT_WEIGHTS_PATH } from '../calibrate/weights.ts';
 import { needs_bench_repo } from '../own.ts';
+import { calibrate_ranges } from '../ranges/index.ts';
 
 /*
  * The CLI parts of the plain-build layers and calibration (cli.ts hands these over):
@@ -24,6 +25,7 @@ import { needs_bench_repo } from '../own.ts';
  *   heisenbench time <files> --base dir --pr dir [--repeats 5] [--time-ms 300] [--out time.json] [--md time.md]
  *   heisenbench diff <base.json> <pr.json> --time time.json    adds the time table to the section
  *   heisenbench calibrate prices|weights [...]                  see scripts/calibrate.ts
+ *   heisenbench calibrate ranges [...]                          the steps -> ns range model (ranges/)
  */
 
 export const MEASURE_USAGE = `heisenbench run <bench files...> --measure time,bytes,leaks|all
@@ -33,7 +35,8 @@ heisenbench calibrate prices [--keys a,b] [--sizes 16,64,256] [--out prices.json
 heisenbench calibrate weights [bench files...] [--root dir] [--out weights.json] [--time-ms 150] [--repeats 3]
 heisenbench calibrate weights --points a.json,b.json [--out weights.json]     fit points measured before
 heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
-heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]     two point sets or two price files`;
+heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]     two point sets or two price files
+heisenbench calibrate ranges [--data dir] [--data-version 1] [--out ranges.json] [--seed 1] [--md evaluation.md]`;
 
 type Flags = Map<string, string>;
 
@@ -157,8 +160,21 @@ export async function measure_command(
 			log(`weights v${weights.version}: R^2 ${weights.fit.r2} over ${weights.fit.points} points`);
 			return 0;
 		}
+		if (what === 'ranges') {
+			const r = calibrate_ranges({
+				data: flags.get('data'),
+				version: num(flags, 'data-version'),
+				out: flags.get('out'),
+				seed: num(flags, 'seed'),
+				evaluate: flags.has('md'),
+				log
+			});
+			const md = flags.get('md');
+			if (md) writeFileSync(md, r.markdown);
+			return 0;
+		}
 		throw new UsageError(
-			`calibrate takes prices, points, agree or weights, not ${JSON.stringify(what)}`
+			`calibrate takes prices, points, agree, weights or ranges, not ${JSON.stringify(what)}`
 		);
 	}
 	return null;

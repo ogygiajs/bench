@@ -147,6 +147,9 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
+  heisenbench calibrate ranges [--data dir] [--data-version 1] [--out ranges.json] [--seed 1] [--md evaluation.md]
+                                 train the steps -> ms range model on the training data; --md
+                                 also writes its held-out evaluation
   heisenbench verify [--layers steps,elision,leak,engine,growth,contract,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
   heisenbench feel train [--data-version 1] [--seed 1] [--out feel.json] [--md eval.md]
@@ -452,7 +455,11 @@ const SPECS: Record<string, Spec> = {
 			'repeats',
 			'points',
 			'tolerance',
-			'shift'
+			'shift',
+			'data',
+			'data-version',
+			'seed',
+			'md'
 		],
 		args: [1, MANY],
 		files: true

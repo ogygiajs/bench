@@ -20,7 +20,13 @@ import {
 	rank_findings,
 	traffic_unit
 } from '@bench/heisenbench/weight';
-import type { AppWeights, Basis, RankedChange, RealCost } from '@bench/heisenbench/weight';
+import type {
+	AppWeights,
+	Basis,
+	RangeValue,
+	RankedChange,
+	RealCost
+} from '@bench/heisenbench/weight';
 import type { AppReport } from '@bench/heisenbench/app';
 
 /** Weights as the main run stores them: Heisenbench's file plus where they were counted. */
@@ -37,6 +43,8 @@ export interface RankedRow {
 	line: number;
 	delta_per_call: number;
 	ns_per_call: number | null;
+	/** The range model's estimate of one call's change, with its 10-90% range. */
+	ns_model?: RangeValue;
 	heat: RankedChange['judgement']['heat'];
 	show: boolean;
 	/** The unit the change costs most, or null on a cold path. */
@@ -76,6 +84,7 @@ function row(r: RankedChange): RankedRow {
 		line: r.line,
 		delta_per_call: r.delta_per_call,
 		ns_per_call: r.ns_per_call,
+		...(r.ns_model ? { ns_model: r.ns_model } : {}),
 		heat: r.judgement.heat,
 		show: r.judgement.show,
 		top: r.judgement.top && {
