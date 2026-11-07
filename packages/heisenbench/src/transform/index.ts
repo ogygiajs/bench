@@ -1,8 +1,8 @@
 import '../warnings.ts';
 import { createHash } from 'node:crypto';
-import { stripTypeScriptTypes } from 'node:module';
-import { readFileSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
+import { createRequire, stripTypeScriptTypes } from 'node:module';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, sep } from 'node:path';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import remapping from '@jridgewell/remapping';
 import { instrument } from './instrument.ts';
@@ -205,16 +205,69 @@ export function compile_svelte(
 	generate: 'server' | 'client' = 'server'
 ): { code: string; map: SourceMapInput } {
 	const c = svelte_compiler(filename);
+	// the project's own compiler options (its svelte.config.js): a component written for
+	// `experimental.async` (a top-level `await`) does not compile without them
+	const project = svelte_compiler_options(filename);
 	if (filename.endsWith('.svelte')) {
-		const out = c.compile(source, { filename, generate, dev: false });
+		const out = c.compile(source, { ...project, filename, generate, dev: false });
 		return { code: out.js.code, map: out.js.map };
 	}
 	const ts = is_ts(filename) ? ts_to_js(source, filename) : { code: source, map: null };
-	const out = c.compileModule(ts.code, { filename, generate, dev: false });
+	const out = c.compileModule(ts.code, {
+		...(project?.experimental ? { experimental: project.experimental } : {}),
+		filename,
+		generate,
+		dev: false
+	});
 	if (ts.map === null) return { code: out.js.code, map: out.js.map };
 	// Svelte's map points at the compiled TypeScript; TypeScript's points at the source.
 	const map = remapping([out.js.map, ts.map] as Parameters<typeof remapping>[0], () => null);
 	return { code: out.js.code, map: map as unknown as SourceMapInput };
+}
+
+const SVELTE_CONFIGS = ['svelte.config.js', 'svelte.config.mjs'];
+/** Each directory's nearest svelte.config `compilerOptions` (null: none above it). */
+const svelte_options_of = new Map<string, Record<string, unknown> | null>();
+
+/**
+ * The `compilerOptions` of the nearest svelte.config.js above `filename`, the options the project
+ * compiles its components with (null when there is none). Read synchronously, inside the load hook:
+ * Node requires an ES module that has no top-level `await`, and a config never needs one. Required
+ * from Heisenbench's own code, so the config and what it imports are its tools, never counted.
+ */
+export function svelte_compiler_options(filename: string): Record<string, unknown> | null {
+	const walked: string[] = [];
+	let dir = dirname(filename);
+	let found: Record<string, unknown> | null | undefined;
+	while (found === undefined) {
+		const known = svelte_options_of.get(dir);
+		if (known !== undefined) {
+			found = known;
+			break;
+		}
+		walked.push(dir);
+		const config = SVELTE_CONFIGS.map((f) => join(dir, f)).find((f) => existsSync(f));
+		if (config) found = read_svelte_config(config);
+		else if (dirname(dir) === dir) found = null;
+		else dir = dirname(dir);
+	}
+	for (const d of walked) svelte_options_of.set(d, found);
+	return found;
+}
+
+function read_svelte_config(file: string): Record<string, unknown> | null {
+	let mod: { default?: unknown; compilerOptions?: unknown };
+	try {
+		mod = createRequire(import.meta.url)(file) as typeof mod;
+	} catch (e) {
+		throw new Error(
+			`heisenbench: could not load ${file} for its Svelte compiler options (a config with a ` +
+				`top-level await cannot load inside the module loader): ${(e as Error).message}`
+		);
+	}
+	const config = (mod.default ?? mod) as { compilerOptions?: unknown };
+	const options = config?.compilerOptions;
+	return options && typeof options === 'object' ? (options as Record<string, unknown>) : null;
 }
 
 export function is_svelte_module(filename: string): boolean {
