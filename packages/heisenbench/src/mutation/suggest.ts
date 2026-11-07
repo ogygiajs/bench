@@ -95,9 +95,9 @@ function args_of(f: PlannedFunction): string {
 function source_of(coll: string, f: PlannedFunction): string {
 	const head = coll.split(/[.[]/)[0];
 	const i = f.params.findIndex((p) => p.replace(/^\.\.\./, '') === head);
-	if (i !== -1) return `it comes in argument ${i + 1} (\`${f.params[i]}\`)`;
-	if (head === 'this') return 'it is on the object it is called on';
-	return `it is \`${head}\`, which it reads from outside`;
+	if (i !== -1) return `argument ${i + 1} of \`${f.path}\`, \`${f.params[i]}\``;
+	if (head === 'this') return `on the object \`${f.path}\` is called on`;
+	return `state \`${f.path}\` reads from outside it`;
 }
 
 const name_of = (key: string) => key.slice(key.indexOf(' > ') + 3);
@@ -133,11 +133,11 @@ export function suggest(
 			'',
 			head,
 			top
-				? `\tsetup: () => ({ ${names.map((p) => `${p}: /* ... */ undefined`).join(', ')} })${loop ? ',' : ''}`
+				? `\tsetup: () => (${names.length > 0 ? `{ ${names.map((p) => `${p}: /* ... */ undefined`).join(', ')} }` : '{ /* the state it reads */ }'})${loop ? ',' : ''}`
 				: `\tsetup: () => ({ /* what ${outer} needs */ })${loop ? ',' : ''}`,
 			...(loop
 				? [
-						`\t// grow \`${loop.coll}\`, the collection its loop at line ${loop.line} walks: ${source_of(loop.coll!, f)}`,
+						`\t// grow \`${loop.coll}\` (${source_of(loop.coll!, f)}), what its loop at line ${loop.line} walks`,
 						`\tscale: (ctx, k) => ({ ...ctx /* with ${loop.coll} k times longer */ })`
 					]
 				: []),
@@ -190,7 +190,7 @@ export function suggest(
 				`// ${file_of(fr.cases.find((k) => name_of(k) === hot) ?? fr.cases[0])}`,
 				`bench('${hot}', fn, {`,
 				'\tsetup,',
-				`\t// grow \`${coll}\` k times: ${source_of(coll, f)} of \`${name}\``,
+				`\t// grow \`${coll}\` (${source_of(coll, f)}) k times`,
 				`\tscale: (ctx, k) => ({ ...ctx /* ${coll} k times longer */ })`,
 				'});',
 				'```'

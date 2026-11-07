@@ -8,7 +8,8 @@
  *
  * The nightly run mutates every function a case runs (`--mutate all`); a main push and a PR do not
  * (docs/ci.md has the cost). The functions no case runs miss every mutant without a recount, so
- * the cost is in the ones a case runs: on an M4 Max about 3 s each with 4 copies side by side.
+ * the cost is in the ones a case runs: on ogygia main, 632 of them took 18 minutes on an M4 Max with
+4 copies side by side (2,434 recounts, 90 CPU-minutes).
  *
  * It reads the tree's merged head report (which case runs which function), the recorded calls of
  * the same run when there are any (`growth --recorded`'s samples: a quadratic mutant that growth
@@ -24,6 +25,7 @@ import {
 	rmSync,
 	writeFileSync
 } from 'node:fs';
+import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import type { Report } from '@bench/heisenbench';
 import type { Tree } from './checkout.ts';
@@ -92,6 +94,9 @@ export async function run_mutation(
 		String(o.sample),
 		'--budget-ms',
 		String(budget_ms),
+		// the last layer of the run: nothing else wants the cores, and every child is one thread
+		'--jobs',
+		String(Math.max(1, availableParallelism())),
 		'--work',
 		o.work,
 		'--out',
