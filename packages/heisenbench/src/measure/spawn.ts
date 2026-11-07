@@ -26,8 +26,16 @@ const FLAGS: Record<string, string[]> = {
 	audit_time: [],
 	// Inlining moves a callee's allocations into its caller's frame in the heap profile; without it
 	// every sampled allocation is charged to the function that made it (escape analysis inside one
-	// function still runs, which is what the elision check looks for).
-	bytes: ['--expose-gc', '--no-turbo-inlining', '--no-maglev-inlining'],
+	// function still runs, which is what the elision check looks for). Optimized code compiles on
+	// the main thread, where the warm-up triggers it: compiled on a helper thread, it could come
+	// in after the warm-up on a busy machine, and the measured calls ran unoptimized (an escaping
+	// object read as 450 B a call instead of 0, beside 48 busy processes on 16 cores).
+	bytes: [
+		'--expose-gc',
+		'--no-turbo-inlining',
+		'--no-maglev-inlining',
+		'--no-concurrent-recompilation'
+	],
 	leaks: ['--expose-gc'],
 	calibrate_prices: [],
 	calibrate_time: []

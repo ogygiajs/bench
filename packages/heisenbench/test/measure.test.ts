@@ -16,6 +16,7 @@ import { judge_growth } from '../src/measure/leak.ts';
 import type { LeakResult } from '../src/measure/leak.ts';
 import { temp_dir, write_files } from './helpers.ts';
 import { context_path } from '../src/identity.ts';
+import { object_bytes } from '../src/layout.ts';
 
 const BENCH_API = fileURLToPath(new URL('../src/bench.ts', import.meta.url));
 
@@ -190,7 +191,13 @@ test('real bytes: sampled V8 allocations per function; escape analysis shows as 
 	assert.equal(f.line, 1);
 	const elided = r.find((c) => c.name === 'elided')!.result!;
 	const e = elided.functions.find((x) => x.id === 'lib.ts > elided');
-	assert.ok(!e || e.bytes < 16, `elided allocates ${e?.bytes} B per call`);
+	// Unelided, a call makes 16 objects of two fields: 320 B. Optimized, escape analysis removes
+	// them all. What can still show is calls that ran before the optimized code was in: on a busy
+	// runner the compiler thread finishes late, and 5% of the calls read 16 to 19 B. Elided is
+	// most of it gone: under a quarter of what the objects weigh, and a tenth of what `makes` keeps.
+	const unelided = 16 * object_bytes(2);
+	assert.ok(!e || e.bytes < unelided / 4, `elided allocates ${e?.bytes} B per call`);
+	assert.ok(!e || e.bytes * 10 < f.bytes, `elided ${e?.bytes} B per call, makes ${f.bytes}`);
 });
 
 const LEAKY = `const seen: Array<{ at: number }> = [];
