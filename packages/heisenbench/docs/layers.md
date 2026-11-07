@@ -169,7 +169,11 @@ comment lists time-led cases under the step table: for them, trust the time laye
 What V8 allocates. On the plain build the case is warmed until its code is optimized, then run in
 batches under V8's sampling heap profiler, with objects later collected kept in the profile, so
 every allocation counts, not only what survives. The child runs without inlining, so a function's
-frame holds its own bytes.
+frame holds its own bytes, and compiles optimized code on the main thread
+(`--no-concurrent-recompilation`), so the code the warm-up asked for is in before the first
+sample however busy the machine is. Compiled on a helper thread, it came in late beside 48 busy
+processes on 16 cores, and a function whose objects escape analysis removes read 450 B a call
+instead of 0.
 
 The interval starts small (32 B between samples) and doubles until a batch stays under 200,000
 samples, judged from a first coarse look at what one call allocates. Without that, a case that
