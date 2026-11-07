@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { Report } from '../src/report.ts';
 import { elide_unused_imports } from '../src/transform/elide.ts';
 import { source_candidates } from '../src/loader/resolve.ts';
+import { conditions_for, parse_conditions } from '../src/loader/conditions.ts';
 import { ts_to_js } from '../src/transform/index.ts';
 import { temp_dir, write_files } from './helpers.ts';
 
@@ -49,11 +50,83 @@ test('source_candidates: what a relative import may name instead', () => {
 	assert.deepEqual(source_candidates('./data.json', from), [], 'an extension it names stays');
 	assert.deepEqual(source_candidates('./x.svelte', from), []);
 	assert.deepEqual(source_candidates('pkg/sub', from), [], 'not a relative import');
+	const pkg = 'file:///p/node_modules/lib/index.js';
+	assert.deepEqual(source_candidates('./x.js', pkg), [], "a package's x.js stays x.js");
 	assert.deepEqual(
-		source_candidates('./x.js', 'file:///p/node_modules/lib/index.js'),
-		[],
-		'a package resolves the way it ships'
+		source_candidates('./helpers', pkg),
+		['./helpers.js', './helpers.mjs', './helpers/index.js'],
+		'no extension in a package: what a bundler tries'
 	);
+	assert.deepEqual(source_candidates('./blocks/', pkg), ['./blocks/index.js']);
+});
+
+test('conditions_for: added for the code under test, never for Heisenbench and its packages', () => {
+	const node = ['node', 'import'];
+	const own = new Set(['file:///p/node_modules/oxc-parser/index.js']);
+	const add = (parent: string | undefined) => conditions_for(parent, node, ['svelte'], own);
+	assert.deepEqual(add('file:///p/bench/a.bench.ts'), ['node', 'import', 'svelte']);
+	assert.deepEqual(add('file:///p/node_modules/lib/index.js?heisenbench_gen=2'), [
+		'node',
+		'import',
+		'svelte'
+	]);
+	assert.equal(
+		add(pathToFileURL(fileURLToPath(new URL('../src/cli.ts', import.meta.url))).href),
+		node
+	);
+	assert.equal(
+		add('file:///p/node_modules/oxc-parser/index.js'),
+		node,
+		'a package Heisenbench loaded'
+	);
+	assert.equal(add(undefined), node, 'the entry point');
+	assert.deepEqual(parse_conditions(' svelte, browser,svelte,'), ['svelte', 'browser']);
+});
+
+test('--conditions picks the build a bundler would, and package imports with no extension load', () => {
+	const dir = temp_dir('heisenbench-sources-');
+	const build = (which: string) =>
+		`import { label } from './helpers';\nexport function name() { return label('${which}'); }\n`;
+	write_files(dir, {
+		'package.json': '{ "type": "module" }',
+		// a package built for bundlers: exports by condition, and `./helpers` with no extension
+		'node_modules/lib/package.json': JSON.stringify({
+			name: 'lib',
+			version: '1.2.3',
+			type: 'module',
+			exports: {
+				'.': {
+					svelte: './svelte/index.js',
+					browser: './browser/index.js',
+					default: './node/index.js'
+				}
+			}
+		}),
+		'node_modules/lib/svelte/index.js': build('svelte'),
+		'node_modules/lib/svelte/helpers.js': 'export const label = (s) => s + "!";\n',
+		'node_modules/lib/browser/index.js': build('browser'),
+		'node_modules/lib/browser/helpers.js': 'export const label = (s) => s + "!";\n',
+		'node_modules/lib/node/index.js': build('node'),
+		'node_modules/lib/node/helpers.js': 'export const label = (s) => s + "!";\n',
+		'bench/lib.bench.ts': `import { bench } from ${API};
+import { name } from 'lib';
+bench('name ' + name(), () => name());
+`
+	});
+	const names = (args: string[]) => {
+		const r = heisenbench(['run', 'bench/lib.bench.ts', '--out', 'r.json', ...args], dir);
+		assert.equal(r.code, 0, r.out);
+		const report = JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')) as Report;
+		return report.cases.map((c) => c.name);
+	};
+	assert.deepEqual(names([]), ['name node!']);
+	assert.deepEqual(names(['--conditions', 'svelte']), ['name svelte!']);
+	// `browser` for the code under test only: Heisenbench's own parser has a browser build too
+	assert.deepEqual(names(['--conditions', 'browser', '--measure', 'time', '--time-ms', '20']), [
+		'name browser!'
+	]);
+	const bad = heisenbench(['run', 'bench/lib.bench.ts', '--conditions', ','], dir);
+	assert.equal(bad.code, 2, bad.out);
 });
 
 test('elide_unused_imports: names nothing reads go, offsets stay', () => {
