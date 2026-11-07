@@ -110,11 +110,12 @@ export class Measurer {
 	 */
 	async steps(
 		c: BenchCase,
-		make: () => unknown
+		make: () => unknown,
+		cap = Infinity
 	): Promise<{ steps: number; stable: boolean; snap: Snapshot }> {
-		await this.once(c, await make(), 'record');
-		const a = await this.once(c, await make(), 'replay');
-		const b = await this.once(c, await make(), 'replay');
+		await this.once(c, await make(), 'record', cap);
+		const a = await this.once(c, await make(), 'replay', cap);
+		const b = await this.once(c, await make(), 'replay', cap);
 		return { steps: a.steps, stable: same_counts(a, b), snap: a };
 	}
 }
