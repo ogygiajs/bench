@@ -207,7 +207,11 @@ measuring window:
   window keeps its target, so `deref()` never changes during a run.
 - **Module state.** Each run imports a fresh copy of the bench file and everything it imports
   (`?heisenbench_gen=N`; CommonJS files are dropped from `require.cache`), so a cache or counter
-  in module scope starts empty every time. `--state shared` turns this off.
+  in module scope starts empty every time. `--state shared` turns this off. Growth does the same
+  for every run of every size, so a case's curve does not depend on the cases grown before it
+  (on shared state, 4 of ogygia's 34 grown cases counted less: their own earlier runs had already
+  built what they build lazily), and its count at 1x is its `heisenbench run` count. Growth from
+  recorded calls gives each module a copy of its own.
 
 Each case runs three times: a warm-up that records IO, then two measured runs. If the two
 measured counts differ in any function, the case is reported **unstable**. That is a finding: the
@@ -345,3 +349,73 @@ allocations and bytes did not change produces nothing, however far its lines mov
 change, unchanged lines are mapped through `git diff` and compared one to one; lines inside a
 changed hunk are compared as a whole, so a reformatted line costs nothing, and the hunk's new
 lines are reported as "new code".
+
+## Counting only what changed
+
+Counts are deterministic, so a case's report is a function of what it runs and what it reads.
+`heisenbench run --cache <dir>` (and `heisenbench growth --cache <dir>`) does not count a case
+again when none of that changed. Its counts come from the cache, moved onto the lines its code
+sits on now, and the case is marked `reused`. Code: `src/cache/`.
+
+**The key** of a case is a hash of:
+
+| Part    | What                                                                                                                                                                                                                                                                                                                  |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| engine  | Heisenbench's own source, `package.json`, the weights and the versions of its dependencies (oxc-parser decides what the transform sees).                                                                                                                                                                              |
+| prices  | The prices file's hash (`HEISENBENCH_PRICES` included).                                                                                                                                                                                                                                                               |
+| node    | Node, V8, platform and arch. A report records the Node that counted it, and Node's built-in modules are code counted code calls.                                                                                                                                                                                      |
+| options | `--deps`, `--state`, Svelte output; for growth also the sizes, the cap and `--scaled`.                                                                                                                                                                                                                                |
+| flags   | Node's flags (`NODE_OPTIONS`, `execArgv`), with the bytes of every preload they name, and `NODE_ENV`.                                                                                                                                                                                                                 |
+| root    | The length of the run root's path: code that slices a path made from `import.meta.url` counts per character.                                                                                                                                                                                                          |
+| modules | Every module the case loaded. A counted module of the project: its text normalized, with the body of every function the case did not run left out. A bench file: its whole text, normalized. Anything else (a dependency, a `.svelte` file, JSON): its bytes. Each with its id, which carries a dependency's version. |
+| files   | Every file the case read, statted or listed through `node:fs`, in the window or in `setup`: its bytes, its kind and size, its listing. The real path of every module Node resolved, and the `package.json` nearest to each module (its `exports` and `imports` decide what a specifier resolves to).                  |
+
+"Normalized" drops comments and turns every run of whitespace between two tokens into one space,
+or one newline when the run breaks a line (a newline is never a space: automatic semicolon
+insertion reads it). Strings, template text, regular expressions and JSX text keep their bytes.
+TypeScript is keyed with its types stripped, the way it runs.
+
+**Why a body can be left out.** Which functions a case ran comes from the counters themselves:
+every block that ran, while the bench file loaded, in `setup`, in the three runs and in
+`teardown`. A function is only entered through code that ran. If all of that code is the same and
+reads the same input, the case takes the same path and enters no function it did not enter
+before, so the bodies it never entered cannot change its count. A changed function that some case
+runs changes that case's key, and only that case's: on ogygia, three lines planted in
+`match_one` (the [README example](../README.md#an-example)) count the 2 cases that run it again
+and reuse the other 60.
+
+**The manifest.** A key is computed from an earlier run's manifest: the modules it loaded, the
+functions it ran in each, the files it read. The cache keeps the newest few runs of each bench
+file. When a manifest of every case of a file still matches, the file is not even loaded; its
+report comes whole from the cache. A file with one changed case loads, and counts that case alone.
+A counted case says why it was not reused: `counting match_path: ...: packages/router/src/match.ts
+changed`.
+
+**Lines.** A comment line above a function moves its lines but not its count. The cache keeps
+where each line of the report starts in the normalized text, and a reused report is moved onto
+the lines that text sits on now. A comment-only change to ogygia's compiler (a three-line header,
+a comment line and an end-of-line comment inside `#analyze`) counted nothing again, and every
+reused case, moved, equalled a recount of it line for line.
+
+**The check.** `--cache-verify n` counts n reused cases again. A recount that differs from the
+cache is a cache bug: the case fails with the first difference (`totals.steps: 4 vs 3`), the run
+exits 1, and the recount replaces the entry.
+
+**Where it lives.** A directory, content-addressed (`v1/values/<key>`, `v1/files/<bench file>/`),
+so many trees, commits and runs can share one, and two processes can write to it at once. Values
+are gzipped report sections: ogygia's 62 cases take 1.7 MB. `pruneCache(dir, days)` drops what
+no run used for that long.
+
+What the key does not see, and so assumes:
+
+- **A case does not read what an earlier case left in global state.** Every run starts from fresh
+  module state, so module scope cannot carry anything from case to case; `globalThis` can. Each
+  case keys the modules and files of its own runs. `test/order.test.ts` checks that a case counts
+  the same in either order and alone, for `run` and `growth`.
+- **`Function.prototype.toString` and `error.stack`.** Code that reads its own source text or line
+  numbers sees comments and lines the key leaves out.
+- **Environment variables** other than `NODE_ENV`, and the contents of the root's path beyond its
+  length. Counts that depend on them already differ between two machines and two checkouts.
+- **CommonJS resolution.** `require` finds files by trying extensions in Node's own code, which the
+  watch does not see; the files it loads, and their bytes, are keyed.
+- **Engine health and the time layers are measurements, not counts.** They are never cached.

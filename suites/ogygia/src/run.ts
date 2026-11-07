@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { REPORT_SCHEMA, locateAuditFindings, mergeAudits, renderTime } from '@bench/heisenbench';
 import type {
 	AuditReport,
+	CacheSummary,
 	CaseReport,
 	EngineReport,
 	GrowthReport,
@@ -153,20 +154,26 @@ async function heisenbench(
 	out: string,
 	log_file: string,
 	measure: string | null,
-	check: boolean
+	check: boolean,
+	cache: { dir: string; verify: number } | null = null
 ): Promise<string | null> {
 	// Counting, growth and the search count every dependency (Heisenbench's default), blamed as
 	// name@version; engine health stays on ogygia's own functions (its default too).
+	// Counting and growth are exact: with a cache, a case whose code and inputs did not change is
+	// not counted again (`--cache`), and a picked file counts one reused case again as a check.
+	const cached = cache
+		? ['--cache', cache.dir, ...(cache.verify > 0 ? ['--cache-verify', String(cache.verify)] : [])]
+		: [];
 	const extra =
-		command === 'growth' || command === 'audit'
-			? ['--scaled', 'on']
-			: command === 'run'
-				? measure
-					? ['--measure', measure]
-					: []
-				: command === 'health' && !check
-					? ['--check', 'off']
-					: [];
+		command === 'growth'
+			? ['--scaled', 'on', ...cached]
+			: command === 'audit'
+				? ['--scaled', 'on']
+				: command === 'run'
+					? [...(measure ? ['--measure', measure] : []), ...cached]
+					: command === 'health' && !check
+						? ['--check', 'off']
+						: [];
 	const r = await spawn_heisenbench(
 		tree,
 		[command, file, '--root', tree.dir, '--out', out, '--sha', tree.sha, ...extra],
@@ -187,6 +194,22 @@ export async function pool(tasks: Array<() => Promise<void>>, jobs: number): Pro
 	await Promise.all(Array.from({ length: Math.max(1, Math.min(jobs, tasks.length)) }, lane));
 }
 
+/** Two bench files' cache summaries as one (undefined when neither ran with a cache). */
+export function merge_cache(
+	a: CacheSummary | undefined,
+	b: CacheSummary | undefined
+): CacheSummary | undefined {
+	if (!b) return a;
+	if (!a) return { ...b, mismatches: [...b.mismatches], why: [...(b.why ?? [])] };
+	return {
+		reused: a.reused + b.reused,
+		counted: a.counted + b.counted,
+		verified: a.verified + b.verified,
+		mismatches: [...a.mismatches, ...b.mismatches],
+		why: [...a.why, ...(b.why ?? [])]
+	};
+}
+
 /**
  * One report from the per-file reports: their cases, engine cases, growth cases and the bench
  * files that did not load, together; the environment of the first (one job counts them all).
@@ -198,8 +221,10 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 	let engine: EngineReport | undefined;
 	let growth: GrowthReport | undefined;
 	const audits: AuditReport[] = [];
+	let cache: Report['cache'];
 	for (const p of parts) {
 		if (p.audit) audits.push(p.audit);
+		cache = merge_cache(cache, p.cache);
 		cases.push(...p.cases);
 		if (p.load_errors) load_errors.push(...p.load_errors);
 		if (p.engine) {
@@ -207,8 +232,10 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 			else engine = { ...p.engine, cases: [...p.engine.cases] };
 		}
 		if (p.growth) {
-			if (growth) growth.cases.push(...p.growth.cases);
-			else growth = { ...p.growth, cases: [...p.growth.cases] };
+			if (growth) {
+				growth.cases.push(...p.growth.cases);
+				growth.cache = merge_cache(growth.cache, p.growth.cache);
+			} else growth = { ...p.growth, cases: [...p.growth.cases] };
 		}
 	}
 	const { schema, prices, node, env } = parts[0];
@@ -217,6 +244,7 @@ export function merge_reports(parts: Report[], sha: string): Report | null {
 	if (load_errors.length > 0) report.load_errors = load_errors;
 	if (engine) report.engine = engine;
 	if (growth) report.growth = growth;
+	if (cache) report.cache = cache;
 	// The audit is judged over every bench file's cases together; its findings name the lines.
 	const audit = mergeAudits(audits);
 	if (audit) {
@@ -247,6 +275,30 @@ export interface TreeOptions {
 	jobs?: number;
 	/** Engine health runs every case twice to check V8 did the same thing (default true). */
 	check?: boolean;
+	/**
+	 * Incremental counting: `heisenbench run --cache dir` reuses the counts of every case whose
+	 * key did not change. `verify` bench files, picked at random, count one reused case again
+	 * each (`--cache-verify 1`): a difference fails that case as a cache bug.
+	 */
+	cache?: { dir: string; verify: number } | null;
+}
+
+/**
+ * Bench files per tree that count one reused case again (`--cache-verify`): 2 a run. A PR that
+ * reaches two bench files would check every one of them with more, recounting what was reused.
+ */
+export const CACHE_VERIFY = 1;
+/** Cache entries no run used for this long are pruned. */
+export const CACHE_DAYS = 14;
+
+/** `n` of `xs` at random. */
+export function sample<T>(xs: readonly T[], n: number, random = Math.random): T[] {
+	const a = [...xs];
+	for (let i = a.length - 1; i > 0; i--) {
+		const j = Math.floor(random() * (i + 1));
+		[a[i], a[j]] = [a[j], a[i]];
+	}
+	return a.slice(0, Math.max(0, Math.min(n, a.length)));
 }
 
 /**
@@ -267,6 +319,7 @@ export async function run_tree(
 	const jobs = timed ? 1 : (o.jobs ?? availableParallelism());
 	const parts: Array<Report | null> = files.map(() => null);
 	const errors: LoadError[][] = files.map(() => []);
+	const checked = new Set(o.cache ? sample(files, o.cache.verify) : []);
 	await pool(
 		files.map((file, i) => async () => {
 			const out = join(out_dir, `${i}.json`);
@@ -282,7 +335,8 @@ export async function run_tree(
 					out,
 					log_file,
 					measure,
-					o.check ?? true
+					o.check ?? true,
+					o.cache ? { dir: o.cache.dir, verify: checked.has(file) ? 1 : 0 } : null
 				);
 				if (error !== null) {
 					errors[i].push({ file, command, error });

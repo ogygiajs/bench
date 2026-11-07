@@ -19,6 +19,8 @@ import { fresh_copy, next_generation, positions } from './fresh.ts';
 import { GENERATION } from './loader/core.ts';
 import type { CaseReport, Report } from './report.ts';
 import { package_shares } from './identity.ts';
+import { CaseCache, RUN_LAYER, run_incremental } from './cache/index.ts';
+import type { CaseWatch } from './cache/index.ts';
 
 export interface RunOptions {
 	files: string[];
@@ -44,6 +46,12 @@ export interface RunOptions {
 	 * (LoaderConfig `source_from`). The report is that commit's.
 	 */
 	source_from?: string;
+	/**
+	 * Incremental counting (cache/): reuse the counts of every case whose key is in `dir`, count
+	 * the rest and add them. `verify`: how many reused cases to count again as a check. Not with
+	 * `source_from`: the key hashes the files on disk.
+	 */
+	cache?: { dir: string; verify?: number };
 }
 
 /** The commit `rev` names in the git repository around `root`, and that repository's top level. */
@@ -118,7 +126,9 @@ export async function run_case(
 	det: Determinism,
 	builtins: Builtins,
 	/** A fresh copy of the case (fresh.ts), taken before each run; none: one copy for all runs. */
-	fresh?: () => Promise<BenchCase>
+	fresh?: () => Promise<BenchCase>,
+	/** Incremental counting watches what the case runs (cache/capture.ts). */
+	watch?: CaseWatch
 ): Promise<{
 	a: RunResult;
 	/** The second measured run (the self-check compares it with `a`). */
@@ -129,6 +139,7 @@ export async function run_case(
 	const once = async (mode: IoMode): Promise<RunResult> => {
 		const c = fresh ? await within(fresh(), 'loading a fresh copy of the bench file') : case_;
 		const ctx = c.setup ? await within(Promise.resolve(c.setup()), 'setup') : undefined;
+		watch?.before_window();
 		rt.reset();
 		det.open(mode);
 		builtins.install();
@@ -154,6 +165,7 @@ export async function run_case(
 			det.close();
 		}
 		const snap = rt.snapshot();
+		watch?.after_window(snap);
 		if (c.teardown) await within(Promise.resolve(c.teardown(ctx)), 'teardown');
 		det.drain_finalizers();
 		if (failure) throw failure;
@@ -178,42 +190,61 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	const rt = get_runtime();
 	const builtins = new Builtins(rt);
 	const det = new Determinism({ root });
+	if (opts.cache && source_from)
+		throw new Error(
+			'heisenbench: --cache keys the files on disk; it does not go with --source-from'
+		);
+	// Before any bench file loads: the cache watches every module that does.
+	const cache = opts.cache
+		? new CaseCache(
+				opts.cache.dir,
+				{
+					root,
+					deps: opts.deps ?? true,
+					svelte: opts.svelte ?? 'server',
+					fresh: opts.fresh !== false
+				},
+				rt,
+				RUN_LAYER
+			)
+		: null;
 
-	const start = cases().length;
 	// Each call imports its own copy of the bench files (and what they import): a second call in
 	// the same process finds its cases again and starts from fresh module state. A file that does
 	// not load is reported and costs only its own cases.
 	const gen = `?${GENERATION}${next_generation()}`;
 	const load_errors: LoadError[] = [];
-	for (const f of opts.files) {
-		const abs = resolve(f);
-		const file = relative(root, abs).split(sep).join('/');
-		set_current_file(file);
-		const before = cases().length;
-		try {
-			await import(pathToFileURL(abs).href + gen);
-			if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
-		} catch (e) {
-			const error = one_line(e);
-			const frames = error_frames(e, root);
-			load_errors.push(frames.length > 0 ? { file, error, stack: frames } : { file, error });
-			log(`FAILED   ${file}: ${error}${where_lines(frames, opts.debug === true)}`);
+	const position = new Map<BenchCase, number>();
+	const load = async (files: readonly string[]): Promise<BenchCase[]> => {
+		const start = cases().length;
+		for (const f of files) {
+			const abs = resolve(root, f);
+			const file = relative(root, abs).split(sep).join('/');
+			set_current_file(file);
+			const before = cases().length;
+			try {
+				await import(pathToFileURL(abs).href + gen);
+				if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
+			} catch (e) {
+				const error = one_line(e);
+				const frames = error_frames(e, root);
+				load_errors.push(frames.length > 0 ? { file, error, stack: frames } : { file, error });
+				log(`FAILED   ${file}: ${error}${where_lines(frames, opts.debug === true)}`);
+			}
 		}
-	}
-	let list = cases().slice(start);
-	const position = positions(list);
-	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));
-	if (opts.names) {
-		const wanted = new Set(opts.names);
-		list = list.filter((c) => wanted.has(c.name));
-	}
+		const added = cases().slice(start);
+		for (const [c, n] of positions(added)) position.set(c, n);
+		return added;
+	};
+	const named = opts.names ? new Set(opts.names) : null;
+	const wanted = (name: string): boolean =>
+		(!opts.filter || name.includes(opts.filter)) && (named === null || named.has(name));
 
-	const results: CaseReport[] = [];
-	for (const c of list) {
+	const count = async (c: BenchCase, watch?: CaseWatch): Promise<CaseReport> => {
 		try {
 			const fresh =
 				opts.fresh === false ? undefined : () => fresh_copy(c, root, position.get(c) ?? 0);
-			const { a, stable } = await run_case(c, det, builtins, fresh);
+			const { a, stable } = await run_case(c, det, builtins, fresh, watch);
 			const r = build_case_report(rt, a.snap, {
 				name: c.name,
 				file: c.file,
@@ -222,15 +253,16 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 				runaway: a.runaway,
 				error: null
 			});
-			results.push(r);
 			const shares = package_shares(r.functions);
 			log(
 				`${stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${Math.round(a.snap.steps)} steps${shares ? ` (${shares})` : ''}`
 			);
+			return r;
 		} catch (e) {
 			const msg = one_line(e);
 			const frames = error_frames(e, root);
-			results.push({
+			log(`FAILED   ${c.name}: ${msg}${where_lines(frames, opts.debug === true)}`);
+			return {
 				name: c.name,
 				file: c.file,
 				stable: false,
@@ -241,9 +273,30 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 				totals: { steps: 0, allocations: 0, bytes: 0, calls: 0 },
 				functions: [],
 				edges: []
-			});
-			log(`FAILED   ${c.name}: ${msg}${where_lines(frames, opts.debug === true)}`);
+			};
 		}
+	};
+
+	const results: CaseReport[] = [];
+	let summary: Report['cache'];
+	if (cache) {
+		const files = opts.files.map((f) => relative(root, resolve(f)).split(sep).join('/'));
+		const run = await run_incremental(cache, {
+			files,
+			complete: !opts.filter && !opts.names,
+			wanted,
+			verify: opts.cache?.verify ?? 0,
+			load,
+			failed: (file) => load_errors.some((e) => e.file === file),
+			count,
+			label: (r) => `${Math.round(r.totals.steps)} steps`,
+			log
+		});
+		results.push(...run.results);
+		summary = run.summary;
+	} else {
+		for (const c of (await load(opts.files.map((f) => resolve(f)))).filter((c) => wanted(c.name)))
+			results.push(await count(c));
 	}
 
 	const toplevel = git(root, ['rev-parse', '--show-toplevel']);
@@ -260,6 +313,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 		unit_terms: [...SIZE_TERMS]
 	};
 	if (load_errors.length > 0) report.load_errors = load_errors;
+	if (summary) report.cache = summary;
 	apply_estimates(report);
 	if (opts.out) writeFileSync(opts.out, JSON.stringify(report, null, '\t') + '\n');
 	return report;

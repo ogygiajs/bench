@@ -26,6 +26,8 @@ import { close_call, odds_superlinear, odds_words, path_from } from './odds.ts';
 import type { GrowthOdds, OddsOptions } from './odds.ts';
 import { Measurer, load_cases } from './measure.ts';
 import type { LoadOptions } from './measure.ts';
+import { next_generation } from '../fresh.ts';
+import { GENERATION } from '../loader/core.ts';
 import { arg_sizes, scale_input, size_kind } from './scale.ts';
 
 /*
@@ -658,10 +660,11 @@ export async function run_recorded_growth(o: RecordedGrowthOptions): Promise<Rec
 		const mod_id = module_of(r.id);
 		if (!modules.has(mod_id)) {
 			try {
-				modules.set(
-					mod_id,
-					(await import(pathToFileURL(join(root, mod_id)).href)) as Record<string, unknown>
-				);
+				// a copy of its own (fresh.ts): what another module's functions left in a shared
+				// module's state does not reach these, so a module grows the same alone
+				// (`--modules`) as with every other
+				const url = `${pathToFileURL(join(root, mod_id)).href}?${GENERATION}${next_generation()}`;
+				modules.set(mod_id, (await import(url)) as Record<string, unknown>);
 			} catch (e) {
 				log(`recorded growth: ${mod_id} does not load: ${(e as Error).message.split('\n')[0]}`);
 				modules.set(mod_id, null);
