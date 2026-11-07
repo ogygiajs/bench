@@ -11,6 +11,8 @@ import type { SearchFinding } from './search/index.ts';
 import { load_prices } from './prices.ts';
 import { REPORT_SCHEMA, environment } from './report.ts';
 import { code } from './md.ts';
+import { render_audit } from './audit/markdown.ts';
+import type { AuditReport } from './audit/fit.ts';
 import type { Report } from './report.ts';
 
 /*
@@ -20,7 +22,7 @@ import type { Report } from './report.ts';
  * renders an "Engine" and a "Growth" part under the step table.
  */
 
-type Section = 'engine' | 'growth' | 'search';
+type Section = 'engine' | 'growth' | 'search' | 'audit';
 
 function git(root: string, args: string[]): string | null {
 	try {
@@ -77,6 +79,8 @@ export interface SectionsDiff {
 	engine: EngineDiff | null;
 	growth: GrowthDiff | null;
 	search: SearchFinding[] | null;
+	/** The PR side's price audit (a property of the prices, not a change): shown when suspect. */
+	audit?: AuditReport | null;
 }
 
 export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null): SectionsDiff {
@@ -92,7 +96,8 @@ export function diff_sections(base: Report, pr: Report, files: FileDiff[] | null
 					})
 				: null,
 		growth: base.growth && pr.growth ? diff_growth(base.growth, pr.growth) : null,
-		search: base.search && pr.search ? diff_search(base.search, pr.search) : null
+		search: base.search && pr.search ? diff_search(base.search, pr.search) : null,
+		audit: pr.audit ?? null
 	};
 }
 
@@ -136,5 +141,7 @@ export function render_sections(d: SectionsDiff): string {
 		}
 		parts.push(lines.join('\n'));
 	}
+	const prices = d.audit ? render_audit(d.audit, { quiet: true }) : '';
+	if (prices) parts.push(prices);
 	return parts.join('\n');
 }

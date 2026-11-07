@@ -12,7 +12,9 @@ import { git_diff } from './diff/git.ts';
 import { write_private_dts } from './dts.ts';
 import type { Report } from './report.ts';
 import { engine_health } from './engine/health.ts';
-import { run_growth } from './growth/index.ts';
+import { DEFAULT_SIZES, run_growth } from './growth/index.ts';
+import { locate_findings, reusable_growth, run_audit } from './audit/index.ts';
+import { render_audit } from './audit/markdown.ts';
 import { run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
 import { measure_command, measure_run, time_section } from './measure/cli.ts';
@@ -43,6 +45,9 @@ Layers (each writes its section into --out, default heisenbench-report.json)
       [--out file]
   heisenbench search <bench files...>   the input of the same size that costs the most steps
       [--evals 300] [--budget-steps 2e8] [--budget-ms 30000] [--seed 1] [--size-factor 1]
+  heisenbench audit <bench files...>    the prices checked against time at every growth size
+      [--sizes 1,10,100] [--scaled on|off] [--repeats 5] [--time-ms 200] [--root dir]
+      [--filter text] [--out file] [--md audit.md]
   heisenbench time <bench files...> --base dir --pr dir   both trees timed in one process, in turns
       [--repeats 5] [--time-ms 300] [--filter text] [--out heisenbench-time.json] [--md time.md]
 
@@ -136,6 +141,11 @@ const SPECS: Record<string, Spec> = {
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
 	health: { values: [...BENCH, 'warmup', 'runs', 'check'], args: [1, MANY], files: true },
 	growth: { values: [...BENCH, 'sizes', 'scaled'], args: [1, MANY], files: true },
+	audit: {
+		values: [...BENCH, 'sizes', 'scaled', 'repeats', 'time-ms', 'md'],
+		args: [1, MANY],
+		files: true
+	},
 	search: {
 		values: [...BENCH, 'evals', 'budget-steps', 'budget-ms', 'seed', 'size-factor'],
 		args: [1, MANY],
@@ -402,7 +412,7 @@ async function main(argv: string[]): Promise<number> {
 		if (json) writeFileSync(json, JSON.stringify({ ...result, ...sections }, null, '\t') + '\n');
 		return 0;
 	}
-	if (cmd === 'health' || cmd === 'growth' || cmd === 'search') {
+	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
 		const common = {
@@ -426,6 +436,25 @@ async function main(argv: string[]): Promise<number> {
 			});
 			write_section(out, 'engine', r, info);
 			return r.cases.some((c) => c.error !== null) ? 1 : 0;
+		}
+		if (cmd === 'audit') {
+			const sizes = flags.get('sizes')?.split(',').map(Number) ?? DEFAULT_SIZES;
+			const existing = existsSync(out) ? read_report(out) : null;
+			const growth = reusable_growth(existing, sizes);
+			if (growth) console.log(`audit   steps at every size from the growth section of ${out}`);
+			const r = await run_audit({
+				...common,
+				sizes,
+				scaled: flags.get('scaled') === 'on',
+				repeats: num('repeats'),
+				time_ms: num('time-ms'),
+				growth
+			});
+			locate_findings(r, existing);
+			write_section(out, 'audit', r, info);
+			const md = flags.get('md');
+			if (md) writeFileSync(md, render_audit(r) + '\n');
+			return r.failed.length > 0 ? 1 : 0;
 		}
 		if (cmd === 'growth') {
 			const sizes = flags.get('sizes')?.split(',').map(Number);

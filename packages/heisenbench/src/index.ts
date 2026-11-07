@@ -32,6 +32,15 @@ export { run_growth as runGrowth, diff_growth as diffGrowth } from './growth/ind
 export type { GrowthReport, GrowthCase, GrowthOptions } from './growth/index.ts';
 export { scale_input as scaleInput } from './growth/scale.ts';
 export { run_search as runSearch, diff_search as diffSearch } from './search/index.ts';
+export {
+	run_audit as runAudit,
+	merge_audits as mergeAudits,
+	locate_findings as locateAuditFindings
+} from './audit/index.ts';
+export type { AuditOptions } from './audit/index.ts';
+export { analyze_audit as analyzeAudit } from './audit/fit.ts';
+export type { AuditReport, AuditCase, AuditFinding, AuditInput } from './audit/fit.ts';
+export { render_audit as renderAudit } from './audit/markdown.ts';
 export type { SearchReport, SearchCase, SearchOptions } from './search/index.ts';
 export { diff_sections as diffSections, render_sections as renderSections } from './sections.ts';
 export { measure_layers as measureLayers } from './measure/index.ts';

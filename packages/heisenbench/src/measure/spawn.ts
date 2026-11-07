@@ -23,6 +23,7 @@ const CHILD = own_file('measure/child');
 const FLAGS: Record<string, string[]> = {
 	time: [],
 	time_ab: [],
+	audit_time: [],
 	// Inlining moves a callee's allocations into its caller's frame in the heap profile; without it
 	// every sampled allocation is charged to the function that made it (escape analysis inside one
 	// function still runs, which is what the elision check looks for).
