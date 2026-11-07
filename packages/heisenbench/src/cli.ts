@@ -40,6 +40,8 @@ Counting (the counting build)
       [--out heisenbench-report.json] [--root dir] [--filter text] [--sha sha]
       [--deps all|none|a,b]   dependencies counted (default all), blamed as name@version
       [--state fresh|shared] [--measure time,bytes,leaks|all] [--time-ms 300]
+      [--source-from sha]   these bench files on that commit's code: a repo's first PR, whose
+                            base has no bench files yet (files the commit lacks come from disk)
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
       [--time time.json] [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]
@@ -262,7 +264,7 @@ const MANY = Number.POSITIVE_INFINITY;
 
 const SPECS: Record<string, Spec> = {
 	run: {
-		values: [...BENCH, 'state', 'measure', 'time-ms'],
+		values: [...BENCH, 'state', 'measure', 'time-ms', 'source-from'],
 		args: [1, MANY],
 		files: true
 	},
@@ -603,6 +605,10 @@ async function main(argv: string[]): Promise<number> {
 	await preload(flags.get('import'));
 	if (cmd === 'run') {
 		const deps = deps_of(flags.get('deps'), true);
+		const source_from = flags.get('source-from');
+		// the plain-build layers load the working tree's files, not the commit's
+		if (source_from !== undefined && flags.has('measure'))
+			throw new UsageError('--source-from counts only: it takes no --measure');
 		const report = await run_benches({
 			files: positional,
 			root: flags.get('root'),
@@ -612,7 +618,8 @@ async function main(argv: string[]): Promise<number> {
 			sha: flags.get('sha') ?? null,
 			fresh: flags.get('state') !== 'shared',
 			log: (l) => console.log(l),
-			debug: flags.has('debug') || process.env.HEISENBENCH_DEBUG === '1'
+			debug: flags.has('debug') || process.env.HEISENBENCH_DEBUG === '1',
+			source_from
 		});
 		await measure_run(report, positional, flags);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)

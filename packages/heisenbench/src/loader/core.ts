@@ -1,7 +1,8 @@
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import {
 	VIRTUAL_PREFIX,
 	compile_svelte,
@@ -36,6 +37,23 @@ export interface LoaderConfig {
 	svelte?: 'server' | 'client';
 	/** Append the `__heisenbench` export of private bindings. Default true. */
 	expose?: boolean;
+	/**
+	 * Count another commit's code with these bench files (`heisenbench run --source-from <sha>`):
+	 * every counted file outside node_modules that is in that commit is read as it is there; bench
+	 * files (`exclude`) and files the commit does not have (bench helpers the PR added) are read
+	 * from the working tree. `top` is the git top level the paths are relative to.
+	 */
+	source_from?: { sha: string; top: string };
+}
+
+/** `git ...` in `cwd`, its stdout; throws what git says. */
+function git_out(cwd: string, args: string[]): string {
+	return execFileSync('git', args, {
+		cwd,
+		encoding: 'utf8',
+		maxBuffer: 1 << 28,
+		stdio: ['ignore', 'pipe', 'pipe']
+	});
 }
 
 const HEISENBENCH_DIR = OWN_DIR;
@@ -215,7 +233,35 @@ export class LoaderCore {
 	}
 
 	read(url: string): string {
-		return readFileSync(fileURLToPath(url), 'utf8');
+		return this.source_override(url) ?? readFileSync(fileURLToPath(url), 'utf8');
+	}
+
+	/** Files of the `source_from` commit (paths from the git top level), listed once. */
+	#tree: Set<string> | null = null;
+	#tree_text = new Map<string, string>();
+
+	/**
+	 * With `source_from`, the text a counted file has in that commit; null when it is read from
+	 * disk (no `source_from`, a bench file, a dependency, or a file the commit does not have).
+	 */
+	source_override(url: string): string | null {
+		const from = this.config.source_from;
+		if (!from || !url.startsWith('file:')) return null;
+		const path = fileURLToPath(url);
+		if (path.startsWith(HEISENBENCH_DIR) || package_name(path) !== null) return null;
+		for (const x of this.config.exclude ?? ['.bench.']) if (path.includes(x)) return null;
+		const rel = relative(from.top, path).split(sep).join('/');
+		if (rel.startsWith('../') || rel === '..') return null;
+		this.#tree ??= new Set(
+			git_out(from.top, ['ls-tree', '-r', '--name-only', '-z', from.sha]).split('\0')
+		);
+		if (!this.#tree.has(rel)) return null;
+		let text = this.#tree_text.get(rel);
+		if (text === undefined) {
+			text = git_out(from.top, ['show', `${from.sha}:${rel}`]);
+			this.#tree_text.set(rel, text);
+		}
+		return text;
 	}
 
 	/**

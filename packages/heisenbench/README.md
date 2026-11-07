@@ -186,6 +186,12 @@ npx heisenbench diff base.json pr.json --repo .
 
 **1** function changed in 1 case(s). Steps are exact counts, not timings.
 
+| Case | Steps | Δ |
+| --- | ---: | ---: |
+| rank: twenty rows | 897 → 1,417 | +520 (+58.0%) |
+
+By function:
+
 | Case | Function | Self steps | Δ | Δ allocs | Δ bytes | Δ inclusive |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | rank: twenty rows | `src/rank.ts > score` | 620 → 1,140 | +520 (+83.9%) ≈ +21 ns | 0 | 0 | +520 |
@@ -203,6 +209,23 @@ npx heisenbench diff base.json pr.json --repo .
 `--repo .` lets the diff read `git diff` between the two reports' commits, so unchanged lines are
 matched even when they moved, and changed lines are marked "new code". Without it, lines are
 compared by number.
+
+The first table is the case as a whole (58% more steps); the second is each changed function's
+own steps (84% more in `score`). When no function changed, the section says so and then shows the
+PR's own counts: the ten heaviest cases, the function and line with the most steps in each, their
+growth class when the report has a growth section, and every case that grows faster than linear.
+A bench file that did not load on one side is listed under "Did not run" with its error, and its
+cases are left out of "New cases" and "Removed cases".
+
+A repository's first PR, the one that adds the bench files, has a base with none. Count the PR's
+bench files on the base's code for it:
+
+```bash
+npx heisenbench run bench/*.bench.ts --source-from "$(git merge-base origin/main HEAD)" --out base.json
+```
+
+Every counted file the base commit has is read as it is there (from git; the working tree is not
+touched), and what only the PR has, like the bench files, from disk.
 
 ## Bench files
 
@@ -390,6 +413,10 @@ of this repository under `heisenbench/`. [docs/ci.md](docs/ci.md) has the detail
 
 The step table shows any change, down to one step: counts do not need a noise floor. The time table
 uses one.
+
+Another repository gets the same comparison on its PRs from one workflow file:
+[docs/ci-any-repo.md](docs/ci-any-repo.md) has it, about 80 lines, with the first PR and the
+read-only and comment jobs handled.
 
 ## Reading the numbers
 
@@ -606,4 +633,6 @@ handles, and 369 corpus files. What it found is fixed, each with a test in
 - [Layers](docs/layers.md): engine health, time, real bytes, leaks, growth, search, proofs of a
   faster version, app weights, coverage and the gate.
 - [CI](docs/ci.md): the ogygia suite, the workflows, the comment, the results branch.
+- [CI for any repo](docs/ci-any-repo.md): one workflow that counts a PR and its base and posts
+  the diff.
 - [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.
