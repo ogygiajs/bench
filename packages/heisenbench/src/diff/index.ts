@@ -6,7 +6,10 @@ import type { CaseReport, FunctionReport, LineReport, Report } from '../report.t
 import { align_prices } from '../recount.ts';
 import { measure_diff } from '../measure/diff.ts';
 import type { MeasureDiff } from '../measure/diff.ts';
+import { load_prices } from '../prices.ts';
 import type { Prices } from '../prices.ts';
+import { feel_input, feel_probability, load_feel_model } from '../models/feel.ts';
+import type { FeelModel } from '../models/feel.ts';
 import { OWN_CODE, context_path, package_of, unversioned_module } from '../identity.ts';
 
 /*
@@ -98,8 +101,22 @@ export interface DiffResult {
 	recounted?: { version: number; hash: string } | null;
 	/** Leaks, elided allocations, time-led cases, estimated ns (measure/diff.ts). */
 	measure?: MeasureDiff;
+	/**
+	 * The odds each case's step change shows up on the clock (models/feel.ts), keyed by case
+	 * name: words next to the exact numbers, never pass or fail. Absent: no model, the prices did
+	 * not match, or a diff from before it was kept.
+	 */
+	feel?: FeelOdds;
 	/** How the two reports' environments differ (Node, V8, platform, weights): empty when alike. */
 	env?: string[];
+}
+
+export interface FeelOdds {
+	/** The dataset the model was fitted on: its version and its timed pairs. */
+	dataset: number;
+	pairs: number;
+	/** Case name -> odds (0..1), for the cases whose steps changed. */
+	odds: Record<string, number>;
 }
 
 export interface NotRun {
@@ -205,6 +222,8 @@ export interface DiffOptions {
 	rename_threshold?: number;
 	/** Prices a recount uses when the two sides differ (default: the current prices.json). */
 	prices?: { prices: Prices; hash: string };
+	/** The odds model (default: the committed feel.json); null leaves the odds out. */
+	feel?: FeelModel | null;
 }
 
 const ZERO: Stats = { steps: 0, allocations: 0, bytes: 0 };
@@ -641,5 +660,32 @@ export function diff_reports(
 	}
 	for (const c of result.changes) result.findings.push(...c.findings);
 	result.measure = measure_diff(result, base, pr);
+	const feel = case_odds(paired.pairs, result, opts);
+	if (feel) result.feel = feel;
 	return result;
+}
+
+/** The odds model's guess for each compared case whose steps changed (null: no model, no prices). */
+function case_odds(
+	pairs: Array<[CaseReport, CaseReport]>,
+	result: DiffResult,
+	opts: DiffOptions
+): FeelOdds | null {
+	let model: FeelModel | null;
+	try {
+		model = opts.feel === undefined ? load_feel_model() : opts.feel;
+	} catch {
+		// the odds are extra words: a model file that does not load leaves them out, never the diff
+		model = null;
+	}
+	if (!model || !result.prices_match) return null;
+	const prices = (opts.prices ?? load_prices()).prices;
+	const odds: Record<string, number> = {};
+	for (const [bc, pc] of pairs) {
+		if (bc.error || pc.error || bc.totals.steps === pc.totals.steps) continue;
+		const input = feel_input(bc, pc, prices);
+		const p = input ? feel_probability(model, input) : null;
+		if (p !== null) odds[bc.name] = Math.round(p * 1000) / 1000;
+	}
+	return { dataset: model.dataset.version, pairs: model.dataset.pairs, odds };
 }

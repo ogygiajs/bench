@@ -14,7 +14,7 @@ export type { LoaderConfig } from './loader/register.ts';
 export { run_benches as runBenches } from './runner.ts';
 export type { RunOptions } from './runner.ts';
 export { diff_reports as diffReports } from './diff/index.ts';
-export type { DiffResult, Finding, FunctionChange } from './diff/index.ts';
+export type { DiffResult, FeelOdds, Finding, FunctionChange } from './diff/index.ts';
 export { render_markdown as renderMarkdown, SECTION_MARKER } from './diff/markdown.ts';
 export {
 	blame_regressions as blameRegressions,

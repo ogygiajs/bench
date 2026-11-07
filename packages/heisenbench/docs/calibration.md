@@ -252,3 +252,7 @@ beyond noise) are in `calibration/data/training-counts-<v>.json` (exact, the sam
 run) and `training-times-<v>.json` (every sample and the machine's load while it was timed).
 [calibration/data/training.md](../calibration/data/training.md) has the fields and the command
 that regenerates them. Nothing in a count or the gate reads them.
+
+The odds next to a changed case in the PR comment ("57%: odds it shows on the clock") are a model
+fitted on them: [feel-odds.md](feel-odds.md). `heisenbench feel train` fits it again from a
+dataset version.

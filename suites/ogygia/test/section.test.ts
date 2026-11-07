@@ -495,3 +495,54 @@ test('complexity contracts: a PR shows the ones it changes or breaks, a full run
 	);
 	assert.match(failed, /\*\*Complexity contracts failed\*\*: `it crashed`/);
 });
+
+/** A case of one function whose steps are all arithmetic, with the units a recount reads. */
+function counted_case(name: string, steps: number): CaseReport {
+	return {
+		...case_of(name, steps),
+		functions: [
+			{
+				id: 'src/walk.ts > walk',
+				module: 'src/walk.ts',
+				path: 'walk',
+				kind: 'function',
+				line: 1,
+				end_line: 4,
+				calls: 1,
+				self_steps: steps,
+				inclusive_steps: steps,
+				allocations: 0,
+				bytes: 0,
+				shape: [1],
+				blocks: [],
+				sites: [],
+				builtins: [],
+				lines: [{ line: 2, steps, allocations: 0, bytes: 0, units: { arith: steps } }],
+				units: { arith: steps }
+			}
+		]
+	};
+}
+
+test('each changed case shows the odds it shows on the clock, next to its steps', () => {
+	const prices = loadPrices();
+	const priced = (r: Report): Report => ({
+		...r,
+		prices: { version: prices.prices.version, hash: prices.hash }
+	});
+	const base = priced(report('c', [counted_case('walk', 1_000_000), counted_case('tiny', 50_000)]));
+	const head = priced(report('a', [counted_case('walk', 2_000_000), counted_case('tiny', 50_500)]));
+	const diff = {
+		...diffReports(base, head, { files: null }),
+		engine: null,
+		growth: null,
+		search: null
+	};
+	const md = render_pr_section(result({ selection: sel_one(), head, base, diff }));
+	assert.match(md, /\| Case \| Steps \| Δ \| Odds it shows on the clock \|/);
+	const odds = (name: string) =>
+		Number(md.match(new RegExp(`\\| ${name} \\|[^\\n]*\\| (\\d+)% \\|\\n`))![1]);
+	assert.ok(odds('walk') > 80, `twice the steps: ${odds('walk')}%`);
+	assert.ok(odds('tiny') < 20, `+1%: ${odds('tiny')}%`);
+	assert.match(md, /Pass or fail never uses them/);
+});
