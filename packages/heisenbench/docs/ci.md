@@ -144,7 +144,7 @@ cases that declare `scale` at those sizes, and the suite judges every file's cas
 ([layers.md](layers.md#price-audit)).
 
 PRs do not run the audit. An ogygia PR cannot change a price (prices live in this repository), and
-the audit took 459 to 475 s for ogygia's 11 bench files on an M4 Max (5 rounds at 1x, 10x and
+the audit took 480 to 504 s for ogygia's 11 bench files on an M4 Max (5 rounds at 1x, 10x and
 100x, with its own growth count), half of what a whole PR run takes on a 4-core runner (15 min),
 and a CI runner is slower. A price that new ogygia code exposes is found on the next main push.
 

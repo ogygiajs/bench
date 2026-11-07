@@ -344,29 +344,46 @@ the curve its steps grow on against the curve time grows on, between the two lar
 the factor that would make them agree.
 
 With the old join pricing put back (a price file with `"cons_min": null`, through
-`HEISENBENCH_PRICES`), on ogygia `01dc5b9`, all 11 bench files (29 cases with a scaler), M4 Max,
-Node 26.4.0, it finds the three cases a person had found by reading code, and nothing else:
+`HEISENBENCH_PRICES`), on ogygia `01dc5b9`, all 11 bench files (29 cases with a scaler, every
+dependency counted), M4 Max, Node 26.4.0, it finds the three cases a person had found by reading
+code:
 
 ```
-SUSPECT  liftRegions + restoreRegions: the round trip around a foreign renderer  steps 1.419, time 1.011 (misfit 0.463; dyn.string_char at 0.0194x)
-SUSPECT  esi_rewrite: edge holes into ESI includes  steps 1.973, time 1.004 (misfit 0.763; dyn.string_char at 0.000205x)
-SUSPECT  stitch_html: splice fifty rendered holes into the page  steps 1.986, time 1.002 (misfit 0.766; dyn.string_char at 0.000105x)
-price suspect: dyn.string_char: steps grow quadratic in stitch_html: splice fifty rendered holes into the page (exponent 2.00), time grows linear (1.00) (and 2 more case(s)); the price likely charges work the engine does not do (time matches at 0.00020x its steps)
+SUSPECT  liftRegions + restoreRegions: the round trip around a foreign renderer  steps 1.419, time 1.008 (misfit 0.464; dyn.string_char at 0.0183x)
+SUSPECT  esi_rewrite: edge holes into ESI includes  steps 1.973, time 1.014 (misfit 0.761; dyn.string_char at 0.000668x)
+SUSPECT  stitch_html: splice fifty rendered holes into the page  steps 1.986, time 1.009 (misfit 0.765; dyn.string_char at 0.000242x)
+price suspect: dyn.string_char: steps grow quadratic in stitch_html: splice fifty rendered holes into the page (exponent 2.00), time grows linear (1.01) (and 2 more case(s)); the price likely charges work the engine does not do (time matches at 0.00067x its steps)
 ```
 
-With the prices in this repository it finds nothing on the same 29 cases, in four runs of the
-whole suite one after the other (and the old pricing run twice flags the same three cases both
-times). 22 cases miss time by less than 15%. The other seven, every run:
+With the prices in this repository it finds one price, the same in every run, and it is real:
+
+```
+SUSPECT  transformHost: a route page as its island count grows  steps 1.907, time 1.698 (misfit 0.427; bi.String.prototype.split at 0.109x)
+price suspect: bi.String.prototype.split: steps grow quadratic in transformHost: a route page as its island count grows (exponent 1.99), time grows quadratic (1.70); the price likely charges work the engine does not do (time matches at 0.11x its steps)
+```
+
+The split is acorn's (counted since dependencies are counted by default):
+`this.input.slice(0, this.lineStart).split(lineBreak).length`, once per expression Svelte parses,
+on a prefix of the template that grows with it. `split` is priced per character (366 + 18.5 n),
+but what it costs follows the parts it makes. Timed on its own on 40,000 characters of code with a
+line break every 23, it took 0.45x its price; on 48,000 characters with a separator every 4, 2.3x.
+The audit saw acorn's long lines at 0.1x. A price per part would fix it; that is a calibration
+change and is left for one.
+
+The old pricing flags these four cases in both of its runs, and today's prices flag only
+`split` in both of theirs (and nothing at all in four earlier runs that counted only devalue,
+Svelte and magic-string). 22 cases miss time by less than 15%. Of the other seven, none is a
+suspect in any run:
 
 | Case                                     | Steps exponent | Time exponent | Why no suspect                                   |
 | ---------------------------------------- | -------------: | ------------: | ------------------------------------------------ |
-| `match_path` (300-route table)           |           1.00 |   1.35 – 1.49 | engine: time per step grows with the table       |
-| `decode_mappings`                        |           1.00 |   1.20 – 1.22 | engine                                           |
-| `page seed: the devalue lane`            |           1.01 |   1.17 – 1.20 | engine, or too little of it is one kind's        |
-| `seed refs: ... its own blocks`          |           1.00 |   1.09 – 1.11 | engine, or below the bar                         |
-| `signed hop`                             |           1.00 |   0.83 – 0.85 | constant: a fixed cost per call steps do not see |
-| `document tail`                          |           0.97 |   1.00 – 1.01 | ambiguous: 25 kinds would explain it equally     |
-| `flags: six flags read for 500 visitors` |           1.01 |   0.84 – 0.89 | no single price explains it                      |
+| `match_path` (300-route table)           |           1.00 |   1.35 – 1.51 | engine: time per step grows with the table       |
+| `decode_mappings`                        |           1.00 |   1.17 – 1.25 | engine                                           |
+| `page seed: the devalue lane`            |           1.01 |   1.16 – 1.20 | engine, or too little of it is one kind's        |
+| `seed refs: ... its own blocks`          |           1.00 |   1.09 – 1.15 | engine, or below the bar                         |
+| `signed hop`                             |           1.00 |   0.83 – 0.87 | constant: a fixed cost per call steps do not see |
+| `document tail`                          |           0.97 |   0.99 – 1.04 | ambiguous (25 kinds explain it), or engine       |
+| `flags: six flags read for 500 visitors` |           1.01 |   0.76 – 1.18 | no single price explains it                      |
 
 A case whose time follows a per-call constant (an `await` that costs microseconds) or grows a
 little faster than its steps (a working set that leaves the cache at 100x) is reported as
@@ -390,7 +407,7 @@ Steps and time disagree on how these prices grow (3 case(s) audited at 1, 10, 10
   - most of it at `packages/postrender/src/stitch.ts:139`, `packages/postrender/src/stitch.ts:82`, `packages/postrender/src/stitch.ts:79`
 ```
 
-The whole suite took 459 to 475 s per audit on the M4 Max, counting the three sizes itself; in CI
+The whole suite took 480 to 504 s per audit on the M4 Max, counting the three sizes itself; in CI
 `growth` has counted them already.
 
 It runs on main and nightly, not on PRs ([ci.md](ci.md#full-runs)).
