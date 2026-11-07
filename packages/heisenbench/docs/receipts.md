@@ -85,9 +85,9 @@ then growth curve by curve, and prints the first difference by its place in the 
 
 ```
 heisenbench verify-receipt: heisenbench@0.0.0
-  ok   receipt  whole (sha256-f3fd7bbbc474…)
+  ok   receipt  whole (sha256-86f85db4f06e…)
   NO   tarball  heisenbench@0.0.0 is not the receipt's tarball: sha512-jwcW3frPQeRo… vs sha512-DxwMyVMsy2GU… (counted anyway)
-  ok   engine   heisenbench 0.0.0, checkout 184eee3262f3 (1d90a1c4e658), the receipt's
+  ok   engine   heisenbench 0.0.0, checkout 09601291aa33 (009c0041409d), the receipt's
   ok   node     v26.4.0, the receipt's
   NO   counts   2 of 2 case(s) count differently
   NO   growth   1 of 1 growth curve(s) differ
