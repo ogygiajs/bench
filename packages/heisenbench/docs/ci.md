@@ -298,6 +298,32 @@ not guess which moves were the counter's; each step and creep says when the coun
 it. A run that was not given a history (`--history`) says nothing; a history that is not there,
 or a single run so far, is one line.
 
+### History blame
+
+Creep says when a case's total moved; `heisenbench history` says which line and which commit
+([layers.md](layers.md#history-blame)). It reads the same full runs of main from the `results`
+branch (`--reports <results checkout>/heisenbench`). Those were counted by whichever Heisenbench
+was pinned then, with each commit's own bench files, so most of their changes come out marked
+"counter changed", and a case a later PR added has no history before it. The commits they lack,
+or all of them counted again with one Heisenbench and one set of bench files, come from
+`suites/ogygia/src/history.ts`:
+
+```bash
+node suites/ogygia/src/history.ts --repo <ogygia clone> [--to main] [--max 20] [--bench <rev>] \
+  --cache <dir> --out <runs> [--history <results branch>] [--work dir]
+```
+
+It counts the newest `--max` first-parent commits up to `--to` with the bench files of `--bench`
+(default `--to`) laid over each tree, `heisenbench run` only, with `--cache`: a commit that changed
+nothing a case runs reuses every case. Each commit writes `<runs>/<sha>.json` in the results
+branch's shape (`meta`, `head`); one counted by the same Heisenbench with the same bench files is
+not counted again, nor one the results branch holds from the same Heisenbench. On an M4 Max, 20
+commits of ogygia took 179 s, 887 of 1,083 cases reused. Then:
+
+```bash
+heisenbench history packages/core/src/compiler/flags.ts:line_at --reports <runs> --repo <ogygia clone>
+```
+
 Every main push has its own concurrency group, and the nightly run has another, so no full run
 cancels or replaces another (GitHub keeps only one waiting run per group, so a shared group would
 drop pushes). Full runs can overlap; `heisenbench/main/latest.json` and `heisenbench/main/app-weights.json` move

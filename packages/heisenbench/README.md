@@ -60,6 +60,7 @@ code as it ships, nothing counted) next to the count:
 | Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
 | Upgrades          | What does a dependency upgrade cost, on which of the package's lines?              |
 | Upstream draft    | The upgrade's slowdown as an issue for the package: a repro, the counts, the line. |
+| History blame     | Which commit last made each line cost more or less, and by how much?               |
 
 [docs/layers.md](docs/layers.md) explains each one.
 
@@ -348,6 +349,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.                               |
 | `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.                                 |
 | `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.                              |
+| `heisenbench history <file>[:<function>] --reports <dir>`                              | `git blame` for steps: the commit that last changed each line's cost, by how much; a timeline per function.                                    |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                                                     |
 | `heisenbench receipt <bench files> --package <tarball \| name@version>`                | A release's receipt: the published tarball counted in a scratch tree, each case in a process of its own, with everything the counts depend on. |
 | `heisenbench verify-receipt <receipt.json> <tarball>`                                  | Counts the tarball again the way the receipt was made: `matches`, or the first case that differs.                                              |
@@ -395,6 +397,24 @@ router's `match_one` (the 2 cases that run it counted again). A comment-only cha
 nothing. `--cache-verify n` counts n reused cases again and fails the case, as a cache bug, if
 the recount differs. [How counting works](docs/how-counting-works.md#counting-only-what-changed)
 has the key, part by part, and what it assumes.
+
+### History blame
+
+With one report per commit of main, `heisenbench history <file>[:<function>] --reports <dir>`
+prints the file the way `git blame` does, with each line's steps per call today, the commit that
+last changed its cost and by how much in front, then each function's timeline. A line is followed
+back through moves (`git blame -M -C`), renames of its function and edits that keep it
+recognisable. On ogygia's compiler, the walk lines of `transform.ts` name #186:
+
+```
+steps/call  last change      Δ steps                   line
+    111.56  01dc5b99 (#186)  -89% (-3,096,628.23)      1048  			for (const k of Object.keys(node)) {
+     30.28  01dc5b99 (#186)  -89% (-840,828)           1049  				if (k === 'start' || k === 'end' || k === 'loc') continue;
+```
+
+Slow creep (the nightly trend) says when a case's total moved; history says which line and which
+commit. [layers.md](docs/layers.md#history-blame) has how lines are followed and what a change
+leaves out.
 
 `calibrate`, `verify` and `feel` run only in a clone of this repository. The npm package does not
 ship the calibration corpus, the training dataset or the planted cases, and from npm these
