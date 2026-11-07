@@ -18,7 +18,9 @@
  * run), --search-budget <seconds> (the whole search layer; default 240 for a PR, 1800 for a full
  * run, 0 turns it off), --recorded
  * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
- * modules only, or none; default all for a full run, changed for a PR).
+ * modules only, or none; default all for a full run, changed for a PR), --blame-budget <seconds>
+ * (a PR: which hunks made the regressed cases slower, recounted on scratch copies of the head
+ * tree; default 300, 0 turns it off).
  *
  * A PR: both commits are checked out and installed, the PR is measured against the merge base of
  * the two, and only the bench files whose import graph reaches a changed file run: counted, health
@@ -58,7 +60,8 @@ import {
 	run_searches
 } from './search.ts';
 import { select_all, select_changed } from './select.ts';
-import { rank_by_weights } from './weights.ts';
+import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
+import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
 
 const { values } = parseArgs({
@@ -78,7 +81,8 @@ const { values } = parseArgs({
 		'requests-per-day': { type: 'string' },
 		search: { type: 'string' },
 		'search-budget': { type: 'string' },
-		recorded: { type: 'string' }
+		recorded: { type: 'string' },
+		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) }
 	}
 });
 if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.recorded))
@@ -126,6 +130,9 @@ async function main(): Promise<void> {
 	);
 	if (!(Number.isFinite(search_s) && search_s >= 0)) throw new Error('bad --search-budget');
 	const search_ms = search === 'off' ? 0 : Math.round(search_s * 1000);
+	const blame_s = Number(values['blame-budget']);
+	if (!(Number.isFinite(blame_s) && blame_s >= 0)) throw new Error('bad --blame-budget');
+	const blame_ms = Math.round(blame_s * 1000);
 	const meta: Meta = {
 		kind,
 		pr,
@@ -225,6 +232,34 @@ async function main(): Promise<void> {
 					log,
 					search_ms,
 					base_cases
+				);
+			}
+			if (result.diff && result.head && blame_ms > 0) {
+				// the weights the ranking used: the blamed change gets the same real cost
+				const weights =
+					values.weights === undefined
+						? null
+						: ranking_weights(
+								resolve(values.weights),
+								result.head,
+								values['real-weights'] && resolve(values['real-weights'])
+							).weights;
+				result.blame = await run_blame(
+					repo,
+					head,
+					mb,
+					result.diff,
+					result.head,
+					selection,
+					work,
+					log,
+					blame_ms,
+					{
+						weights,
+						requests_per_day: values['requests-per-day']
+							? Number(values['requests-per-day'])
+							: undefined
+					}
 				);
 			}
 		}

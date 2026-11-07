@@ -16,6 +16,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
 | Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | nightly: every case  |
+| Blame             | `heisenbench blame`                                  | counting | regressed cases, 60 recounts or 5 min      | no                   |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
 | Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
 | Coverage          | `heisenbench coverage`                               | counting | no                                         | no                   |
@@ -628,6 +629,113 @@ draws new key pairs on each run. Four findings:
 A case whose input holds class instances (a `Request`, a `URL`) gets them shared between tries,
 never copied: a function that caches by such an object (the flags bench memoizes per request)
 runs warm on every try after the first, and the search finds nothing there.
+
+## Blame
+
+Which part of a PR made a case slower? The step table says which functions and lines cost more,
+but a PR of ten hunks can make a function slower from a hunk somewhere else: a flag flipped in
+one file, a caller that now calls twice, a helper that lost its cache. `heisenbench blame` answers
+with the hunks themselves. Counts are exact, so a tree made of the base plus some of the PR's
+hunks counts the same on every run, and comparing such trees decides with one count each. Timers
+could not do this: a 2% change sits inside their noise, and every candidate tree would need many
+runs.
+
+```bash
+heisenbench blame base.json pr.json --root <the PR's checkout, installed> [--repo <git dir>]
+```
+
+1. **Cases.** The cases whose steps grew by at least 1% and 1,000 steps (`regressed_cases`;
+   `--min-ratio` moves the first), not unstable on either side.
+2. **Hunks.** `git diff base head` at zero context, cut into the hunks a PR shows: two edits with
+   at most 6 unchanged lines between them are one hunk, as `git diff` prints them with its 3 lines
+   of context. A file the PR added, deleted or renamed, or a binary one, is one hunk. Only files
+   the regressed cases' bench files reach count (`--paths`; the ogygia suite passes the selection's
+   import graphs). A file the PR deleted is in no graph of the head, and is kept on disk, as the
+   base has it, in every tree, so an importer the search puts back still finds it.
+3. **Trees.** A tree is the base with a set of hunks applied. The hunks come from one diff and
+   never overlap, so every set makes a tree: each zero-context hunk is its base lines or its head
+   lines. Trees are written into scratch copies of the root, never into it: the project's files
+   are copied (a copy-on-write clone where the file system has one) and dependencies are linked
+   (in each `node_modules` a link stays a link, so pnpm's links to workspace packages reach the
+   copy's packages, and anything else links to the original). A preload in the root moves with it.
+4. **Recounts.** Each tree is counted in a child of its own with the runner every `heisenbench run`
+   uses, only the regressed cases, all of them at once. Its counts are cached by the sha256 of the
+   tree's content, so a tree reached from both searches or from another case is never counted
+   twice. The base and head trees are counted first: the regression is judged on those two
+   recounts (`E`, the extra steps), and when they count alike the cost is outside the hunks (a
+   dependency, the lockfile, a file no bench file imports) and the case says so.
+5. **Two searches.** Delta debugging (Zeller and Hildebrandt's ddmin) over the hunks, both ways:
+   - **revert**: the smallest set of hunks whose undoing, from the PR, leaves at most 10% of `E`;
+   - **apply**: the smallest set that, applied alone on the base, reproduces at least 90% of it.
+
+   A hunk that saves a few steps, or costs a few of its own, is needed in neither. A tree that does
+   not load or whose case throws (a hunk that needs another one to parse) is _unresolved_, the
+   standard handling: the search goes on with finer sets, and hunks that only load together stay
+   together. A second regressed case starts from the sets the first one ended with when they hold
+   for it too, and cases with the same answer are reported as one cause.
+
+6. **Interaction.** The two searches name the same hunks when the hunks add up. They differ when
+   hunks interact: a flag and the branch that reads it cost nothing alone, so applying needs both,
+   while undoing either one removes the cost. Each named hunk is then counted alone both ways,
+   for its share of `E`; when the two sets differ, or the shares do not add up to the set's
+   effect, the case is marked `interacts` and the comment says so with the numbers.
+7. **Where.** The head against the head with the revert set undone, through `heisenbench diff`: the
+   functions and lines whose steps changed, each line marked with the hunk it is in. With
+   `--weights app-weights.json,real-weights.json` (and `--requests-per-day`), the same weights
+   `heisenbench diff` ranks by, every one of those functions goes through `rank_changes` and so
+   through the [real-traffic cost function](#real-traffic): its CPU time per day with its range,
+   the same estimate the ranked findings give it. The costs add up per hunk (a function goes to the
+   hunk that holds most of its changed steps) and for the whole change, estimates and the ends of
+   their ranges alike (`sum_costs`). A function the traffic does not run is said to be outside it.
+8. **Budget.** At most 60 recounts and 10 minutes (`--max-recounts`, `--budget-ms`; the ogygia
+   suite gives it 5 minutes), counted side by side in up to 4 scratch copies (`--jobs`; half the
+   cores by default). When either runs out, each search stops with the smallest set it has proven,
+   and the comment says "narrowed to these 3 changes" instead of naming one.
+
+The answer does not depend on how many trees count side by side: the search asks for a round's
+candidates in the order the one-at-a-time algorithm would try them and takes the first that holds.
+
+From the planted cases in `test/blame.test.ts` (6 hunks over 2 files, one adding a loop that
+doubles a sum, one cosmetic, one a renamed variable, one an unused function, one slightly faster
+code, one a comment):
+
+```md
+**+33.8%** in `sums a scaled list` (+1233 steps) comes from this change in `lib/work.ts` L4
+(+1408 steps by itself; the rest of the PR saves 175 steps).
+```
+
+8 recounts. The interaction fixture (a mode flag in one file, a branch on it in another, and a
+cosmetic hunk) names both hunks: applied alone, each costs 0% of the extra steps, both together
+100%, and undoing the flag alone removes all of it.
+
+On ogygia, the reverse of PR #186 (base `01dc5b9`, head the same commit with the per-import
+`#ast_refs_local` walk restored and four harmless edits in `packages/core/src`: a comment, a
+renamed variable, an unused function, a comment in the same file): 7 hunks in 4 files, 2 cases
+over the threshold (`transformHost: a route page with twenty islands`, client and server leg,
++10.5%). Blame names the three hunks of `transform.ts` that restore the walk, L1035–1049,
+L1058–1073 and L2143–2153, and none of the harmless ones, for both cases as one cause. The three
+only load together (the walk's method is renamed across them), so 20 of the 28 trees counted did
+not load. 28 recounts, 46 reused, 21 s on an M4 Max with 4 side by side (2.1 s per tree that
+loads, 0.65 s per tree that does not). The whole PR flow of the ogygia suite on the same two
+commits found the same answer in the same 28 recounts. With main's app weights and the palaestra
+traffic of [On ogygia](#on-ogygia) the blame says "not in the imported traffic: it runs none of the
+6 functions this change moves": the compiler runs when a page is built, not when it is served.
+
+A change on the served path is priced. On `01dc5b9` with `locate` lowercasing the whole document
+(the plant of [On ogygia](#on-ogygia)), plus a comment in the same file, a renamed variable in
+`hole-urls.ts` and an unused function in `html-scan.ts` (4 hunks, `markup.bench.ts`), at 1M
+requests per day:
+
+```md
+**+3706.2%** in `assemble: inject the head and the tail into a document` (+137.3K steps) comes from
+this change in `packages/core/src/server/document-assembly.ts` L29–30 (+137.3K steps by itself).
+
+**Real cost** of this change on the imported traffic: ≈ 3 CPU-minutes/day at 1M requests/day
+(range 3.6 CPU-seconds to 3.2 CPU-hours).
+```
+
+with `locate` in the table at "1 call/request (app scenarios) or 201 µs/request of real time × 37:
+1756x apart", the same row the ranked findings show for it. 8 recounts, 3 s.
 
 ## Real-app weight
 

@@ -30,6 +30,8 @@ export interface RunOptions {
 	fresh?: boolean;
 	/** Only cases whose name contains this. */
 	filter?: string;
+	/** Only the cases with exactly these names (blame/ recounts the regressed cases alone). */
+	names?: readonly string[];
 	/** Commit the code was measured at (default: `git rev-parse HEAD` in root, if any). */
 	sha?: string | null;
 	out?: string;
@@ -174,6 +176,10 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	let list = cases().slice(start);
 	const position = positions(list);
 	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));
+	if (opts.names) {
+		const wanted = new Set(opts.names);
+		list = list.filter((c) => wanted.has(c.name));
+	}
 
 	const results: CaseReport[] = [];
 	for (const c of list) {

@@ -11,11 +11,13 @@ import {
 	markdownCell,
 	markdownCode,
 	renderAudit,
+	renderBlame,
 	renderMarkdown,
 	renderSections
 } from '@bench/heisenbench';
 import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
 import { calls_text, cost_text } from '@bench/heisenbench/weight';
+import type { BlameRun } from './blame.ts';
 import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { FullSearchRun, SearchRun } from './search.ts';
@@ -81,6 +83,8 @@ export interface Result {
 	 * (recorded/recorded.json); this keeps the findings.
 	 */
 	recorded?: RecordedSummary | null;
+	/** A PR: the hunks that made each regressed case slower (absent or null: none regressed, or off). */
+	blame?: BlameRun | null;
 }
 
 export interface RecordedSummary {
@@ -473,6 +477,8 @@ export function render_pr_section(r: Result): string {
 	if (r.weights) lines.push(...weight_lines(r.weights));
 	if (r.diff) {
 		lines.push(step_body(r.diff));
+		if (r.blame?.error) lines.push('', `**Blame failed**: ${code(one_line(r.blame.error))}`);
+		else if (r.blame?.result) lines.push('', renderBlame(r.blame.result).trimEnd());
 		const extra = capped_sections(r.diff);
 		if (extra) lines.push('', extra);
 	}

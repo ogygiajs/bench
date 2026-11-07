@@ -116,14 +116,19 @@ export interface RankInputs {
 	requests_per_day?: number;
 }
 
-/** The weights for result.json and the section, from the main weights file at `path`. */
-export function rank_by_weights(
-	path: string,
-	diff: DiffResult,
-	head: Report,
-	o: RankInputs = {}
-): WeightRun {
-	const { w: real_w, real } = read_real(o.real_path);
+export interface RankingWeights {
+	/** Main's app weights (when they read and match the PR's environment) and the real traffic, merged; null: neither. */
+	weights: AppWeights | null;
+	/** Why the app weights were not used (they are still merged in when real traffic is there). */
+	fail: WeightRun | null;
+	real: WeightRun['real'];
+	sha: string | null;
+	app: StoredWeights | null;
+}
+
+/** The weights a PR ranks by: main's app weights at `path`, checked, and the real traffic at `real_path`. */
+export function ranking_weights(path: string, head: Report, real_path?: string): RankingWeights {
+	const { w: real_w, real } = read_real(real_path);
 	const none = (status: WeightRun['status'], note: string, sha: string | null = null) => ({
 		status,
 		sha,
@@ -162,8 +167,20 @@ export function rank_by_weights(
 		}
 	}
 	// real traffic ranks on its own when the app weights cannot be used
-	if (fail && !real_w) return fail;
+	if (fail && !real_w) return { weights: null, fail, real, sha, app: null };
 	const weights = merge_weights([app, real_w].filter((x): x is AppWeights => x !== null));
+	return { weights, fail, real, sha, app };
+}
+
+/** The weights for result.json and the section, from the main weights file at `path`. */
+export function rank_by_weights(
+	path: string,
+	diff: DiffResult,
+	head: Report,
+	o: RankInputs = {}
+): WeightRun {
+	const { weights, fail, real, sha, app } = ranking_weights(path, head, o.real_path);
+	if (!weights) return fail!;
 	const recorded_report = o.recorded?.length
 		? ({
 				...head,
