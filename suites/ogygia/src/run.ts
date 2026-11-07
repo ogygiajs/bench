@@ -19,12 +19,20 @@ import { availableParallelism } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REPORT_SCHEMA, renderTime } from '@bench/heisenbench';
-import type { CaseReport, EngineReport, GrowthReport, Report, TimeComparison } from '@bench/heisenbench';
+import type {
+	CaseReport,
+	EngineReport,
+	GrowthReport,
+	Report,
+	TimeComparison
+} from '@bench/heisenbench';
 import type { Tree } from './checkout.ts';
 import { spawn_group } from './spawn.ts';
 import type { GroupResult } from './spawn.ts';
 
-export const HEISENBENCH_DIR = fileURLToPath(new URL('../../../packages/heisenbench/', import.meta.url));
+export const HEISENBENCH_DIR = fileURLToPath(
+	new URL('../../../packages/heisenbench/', import.meta.url)
+);
 export const HEISENBENCH_CLI = join(HEISENBENCH_DIR, 'src', 'cli.ts');
 
 /**
@@ -249,7 +257,15 @@ export async function run_tree(
 			rmSync(out, { force: true });
 			for (const command of commands) {
 				log(`${tree.sha.slice(0, 12)} heisenbench ${command} ${file}`);
-				const error = await heisenbench(tree, command, file, out, log_file, measure, o.check ?? true);
+				const error = await heisenbench(
+					tree,
+					command,
+					file,
+					out,
+					log_file,
+					measure,
+					o.check ?? true
+				);
 				if (error !== null) {
 					errors[i].push({ file, command, error });
 					if (command === 'run') break;

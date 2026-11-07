@@ -240,7 +240,10 @@ export async function run_searches(
 			head: h.found,
 			base: b?.found ?? null,
 			error:
-				h.error ?? (h.found ? null : 'heisenbench search wrote no result for the case') ?? b?.error ?? null
+				h.error ??
+				(h.found ? null : 'heisenbench search wrote no result for the case') ??
+				b?.error ??
+				null
 		});
 	}
 	run.spent_ms = Date.now() - started;

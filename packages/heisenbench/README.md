@@ -270,19 +270,19 @@ public callers.
 `heisenbench --help` prints every command with its flags. Each command reads bench files or reports and
 writes JSON; `diff` and a few others also write markdown.
 
-| Command                                                                  | What it does                                                                                                       |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ |
-| `heisenbench run <bench files>`                                                 | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
-| `heisenbench diff <base.json> <pr.json>`                                        | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
-| `heisenbench dts <source files> --out <file>`                                   | Types for `__heisenbench`.                                                                                                |
-| `heisenbench health <bench files>`                                              | Engine health section: tiers, deopts, inline-cache states.                                                         |
-| `heisenbench growth <bench files>`                                              | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
-| `heisenbench search <bench files>`                                              | Mutates the input and keeps what costs more steps; reports the worst input found.                                  |
-| `heisenbench time <bench files> --base <dir> --pr <dir>`                        | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
+| Command                                                                                | What it does                                                                                                       |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
+| `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
+| `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
+| `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
+| `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
+| `heisenbench search <bench files>`                                                     | Mutates the input and keeps what costs more steps; reports the worst input found.                                  |
+| `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
 | `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
-| `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                       | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
-| `heisenbench calibrate prices\|points\|agree\|weights`                          | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
-| `heisenbench verify`                                                            | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                               |
+| `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
+| `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
+| `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
 
 `health`, `growth` and `search` write their section into the report given by `--out`, so one JSON
 file per commit holds everything `diff` needs.

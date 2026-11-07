@@ -52,7 +52,10 @@ export async function measure_run(report: Report, files: string[], flags: Flags)
 		time: { time_ms: num(flags, 'time-ms') },
 		log: (l) => console.log(l)
 	});
-	writeFileSync(flags.get('out') ?? 'heisenbench-report.json', JSON.stringify(report, null, '\t') + '\n');
+	writeFileSync(
+		flags.get('out') ?? 'heisenbench-report.json',
+		JSON.stringify(report, null, '\t') + '\n'
+	);
 }
 
 /** `--time time.json` on `heisenbench diff`: the time table to append, or ''. */
@@ -84,7 +87,10 @@ export async function measure_command(
 			filter: flags.get('filter') ?? null,
 			options: { repeats: num(flags, 'repeats'), time_ms: num(flags, 'time-ms') }
 		});
-		writeFileSync(flags.get('out') ?? 'heisenbench-time.json', JSON.stringify(t, null, '\t') + '\n');
+		writeFileSync(
+			flags.get('out') ?? 'heisenbench-time.json',
+			JSON.stringify(t, null, '\t') + '\n'
+		);
 		const md = render_time(t);
 		const md_out = flags.get('md');
 		if (md_out) writeFileSync(md_out, md + '\n');

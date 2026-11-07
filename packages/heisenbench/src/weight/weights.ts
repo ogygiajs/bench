@@ -135,7 +135,8 @@ export function build_weights(reports: readonly AppReport[]): AppWeights {
 
 export function load_app_weights(path: string): AppWeights {
 	const w = JSON.parse(readFileSync(path, 'utf8')) as AppWeights;
-	if (w.schema !== WEIGHTS_SCHEMA) throw new Error(`heisenbench: ${path} is not an app weights file`);
+	if (w.schema !== WEIGHTS_SCHEMA)
+		throw new Error(`heisenbench: ${path} is not an app weights file`);
 	return w;
 }
 

@@ -5,18 +5,18 @@ cannot see, or turns the count into an answer to a different question. Engine he
 bytes and leaks run on the **plain build**: the code as it ships, nothing counted. The plain build
 still compiles `.svelte` files and appends the `__heisenbench` export, so the same bench files run on it.
 
-| Layer             | Command                                | Build    | On PRs                                     | On main and nightly  |
-| ----------------- | -------------------------------------- | -------- | ------------------------------------------ | -------------------- |
-| Steps             | `heisenbench run`                             | counting | yes                                        | yes                  |
-| Engine health     | `heisenbench health`                          | plain    | yes                                        | yes                  |
-| Growth            | `heisenbench growth`                          | counting | cases with `scale`                         | cases with `scale`   |
+| Layer             | Command                                              | Build    | On PRs                                     | On main and nightly  |
+| ----------------- | ---------------------------------------------------- | -------- | ------------------------------------------ | -------------------- |
+| Steps             | `heisenbench run`                                    | counting | yes                                        | yes                  |
+| Engine health     | `heisenbench health`                                 | plain    | yes                                        | yes                  |
+| Growth            | `heisenbench growth`                                 | counting | cases with `scale`                         | cases with `scale`   |
 | Time              | `heisenbench time`, `heisenbench run --measure time` | plain    | yes                                        | yes                  |
-| Real bytes        | `heisenbench run --measure bytes`             | plain    | no                                         | yes                  |
-| Leaks             | `heisenbench run --measure leaks`             | plain    | no                                         | yes                  |
-| Worst-case search | `heisenbench search`                          | counting | changed cases with a `setup`, 4 min budget | no                   |
+| Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
+| Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
+| Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | no                   |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
-| Coverage          | `heisenbench coverage`                        | counting | no                                         | no                   |
-| Gate              | `heisenbench unmeasured`                      | counting | in ogygia's CI                             | no                   |
+| Coverage          | `heisenbench coverage`                               | counting | no                                         | no                   |
+| Gate              | `heisenbench unmeasured`                             | counting | in ogygia's CI                             | no                   |
 
 The examples on this page come from runs on an M4 Max with Node 26.4.0 at Heisenbench `7b3d7a5`: the
 quick-start project in the [README](../README.md), the planted cases of `heisenbench verify`, the planted

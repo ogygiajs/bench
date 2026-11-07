@@ -262,7 +262,9 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 				skipped.push({ id, reason: 'not found' });
 		}
 	}
-	s.prepend(`import { recorder as __heisenbench_rec } from ${JSON.stringify(o.runtime ?? RECORDER)};\n`);
+	s.prepend(
+		`import { recorder as __heisenbench_rec } from ${JSON.stringify(o.runtime ?? RECORDER)};\n`
+	);
 	const fns = [...top_level]
 		.filter(([path]) => wrapped.includes(`${o.id} > ${path}`))
 		.map(([path, name]) => `${JSON.stringify(`${o.id} > ${path}`)}:${name}`);

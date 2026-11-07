@@ -50,7 +50,9 @@ export async function run_child<T>(
 		} catch (e) {
 			const err = e as ProcessError;
 			const tail = (err.stderr ?? '').trim().split('\n').slice(-6).join('\n');
-			throw new Error(`heisenbench: the ${job.kind} child ${err.message}${tail ? `: ${tail}` : ''}`);
+			throw new Error(
+				`heisenbench: the ${job.kind} child ${err.message}${tail ? `: ${tail}` : ''}`
+			);
 		}
 		return JSON.parse(readFileSync(out, 'utf8')) as T;
 	} finally {

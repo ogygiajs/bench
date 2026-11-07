@@ -64,7 +64,10 @@ function within<T>(p: Promise<T>, what: string): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const limit = new Promise<never>((_, reject) => {
 		timer = real_set_timeout(
-			() => reject(new Error(`heisenbench: ${what} did not finish within ${OUTSIDE_LIMIT_MS / 1000} s`)),
+			() =>
+				reject(
+					new Error(`heisenbench: ${what} did not finish within ${OUTSIDE_LIMIT_MS / 1000} s`)
+				),
 			OUTSIDE_LIMIT_MS
 		);
 		timer.unref?.();
@@ -113,7 +116,8 @@ export async function run_case(
 				});
 			work.catch(() => {});
 			settled = await det.settle(() => finished);
-			if (settled.stuck) throw new Error('heisenbench: the case never finished (waits on real IO?)');
+			if (settled.stuck)
+				throw new Error('heisenbench: the case never finished (waits on real IO?)');
 			await work;
 		} catch (e) {
 			failure = e;

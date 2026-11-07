@@ -143,7 +143,8 @@ export function write_points(path: string, set: PointSet): void {
 
 export function read_points(path: string): PointSet {
 	const set = JSON.parse(readFileSync(path, 'utf8')) as PointSet;
-	if (set.schema !== POINTS_SCHEMA) throw new Error(`heisenbench: ${path} is not a calibration point set`);
+	if (set.schema !== POINTS_SCHEMA)
+		throw new Error(`heisenbench: ${path} is not a calibration point set`);
 	return set;
 }
 

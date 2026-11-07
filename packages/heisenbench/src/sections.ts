@@ -44,7 +44,8 @@ export function write_section<K extends Section>(
 	let report: Report;
 	if (existsSync(out)) {
 		report = JSON.parse(readFileSync(out, 'utf8')) as Report;
-		if (report.schema !== REPORT_SCHEMA) throw new Error(`heisenbench: ${out} is not an heisenbench report`);
+		if (report.schema !== REPORT_SCHEMA)
+			throw new Error(`heisenbench: ${out} is not an heisenbench report`);
 		// One report holds one environment: its layers must not mix Node versions.
 		if (report.node !== process.version) {
 			throw new Error(

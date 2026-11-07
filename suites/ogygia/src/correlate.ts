@@ -147,7 +147,11 @@ function overlay(repo: string, rev: string, tree: Tree, packages: string[]): Tre
 				.map((f) => `packages/${p}/bench/${f}`)
 		)
 		.sort();
-	return { ...tree, benches, preload: join(tree.dir, 'internal', 'heisenbench', 'src', 'preload.ts') };
+	return {
+		...tree,
+		benches,
+		preload: join(tree.dir, 'internal', 'heisenbench', 'src', 'preload.ts')
+	};
 }
 
 interface PairMeta {

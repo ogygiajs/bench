@@ -7,28 +7,28 @@ next to the code they measure; this repository holds the engine and the job that
 
 In [ogygiajs/ogygia](https://github.com/ogygiajs/ogygia):
 
-| Path                              | What                                                                                                   |
-| --------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `packages/<pkg>/bench/*.bench.ts` | The bench files. 11 files, 57 cases today.                                                             |
-| `internal/heisenbench/package.json`      | The Heisenbench commit ogygia is pinned to (`"heisenbench": { "repo", "ref" }`).                                     |
-| `internal/heisenbench/src/heisenbench.ts`       | Links `node_modules/@bench/heisenbench` to `HEISENBENCH_DIR` when set, else to a clone of the pinned commit.         |
-| `internal/heisenbench/src/types.ts`      | `pnpm bench:types`: writes `packages/<pkg>/bench/__heisenbench.d.ts` (gitignored) with `heisenbench dts`.            |
-| `internal/heisenbench/src/check.ts`      | `pnpm check:bench`: writes the types, then type-checks every bench directory.                          |
-| `internal/heisenbench/src/preload.ts`    | Maps `virtual:ogygia/*` and `$app/*` to the unit-test stubs, so modules written for Vite load in Node. |
-| `internal/heisenbench/src/unmeasured.ts` | `pnpm bench:unmeasured`: the measurement-source gate.                                                  |
-| `internal/heisenbench/unmeasured.json`   | Exemptions for the gate.                                                                               |
-| `.github/workflows/heisenbench.yml`      | Asks this repository for a run on every PR, and runs the gate.                                         |
+| Path                                      | What                                                                                                         |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `packages/<pkg>/bench/*.bench.ts`         | The bench files. 11 files, 57 cases today.                                                                   |
+| `internal/heisenbench/package.json`       | The Heisenbench commit ogygia is pinned to (`"heisenbench": { "repo", "ref" }`).                             |
+| `internal/heisenbench/src/heisenbench.ts` | Links `node_modules/@bench/heisenbench` to `HEISENBENCH_DIR` when set, else to a clone of the pinned commit. |
+| `internal/heisenbench/src/types.ts`       | `pnpm bench:types`: writes `packages/<pkg>/bench/__heisenbench.d.ts` (gitignored) with `heisenbench dts`.    |
+| `internal/heisenbench/src/check.ts`       | `pnpm check:bench`: writes the types, then type-checks every bench directory.                                |
+| `internal/heisenbench/src/preload.ts`     | Maps `virtual:ogygia/*` and `$app/*` to the unit-test stubs, so modules written for Vite load in Node.       |
+| `internal/heisenbench/src/unmeasured.ts`  | `pnpm bench:unmeasured`: the measurement-source gate.                                                        |
+| `internal/heisenbench/unmeasured.json`    | Exemptions for the gate.                                                                                     |
+| `.github/workflows/heisenbench.yml`       | Asks this repository for a run on every PR, and runs the gate.                                               |
 
 In this repository:
 
-| Path                          | What                                                                                                                 |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `packages/heisenbench`               | The engine.                                                                                                          |
-| `packages/compare`            | The no-overlap noise rule and the one PR comment with sections.                                                      |
-| `suites/ogygia`               | Checks out ogygia commits, picks bench files, runs Heisenbench, writes the section and JSON.                                |
-| `.github/workflows/heisenbench.yml`  | The job.                                                                                                             |
-| `.github/workflows/check.yml` | Tests, lint, format, `heisenbench verify` and 60 fuzzed programs on fixed seeds, on every PR and push to main of this repo. |
-| `.github/workflows/fuzz.yml`  | The fuzzer every night at 02:23 UTC on new seeds; repros kept as an artifact.                                        |
+| Path                                | What                                                                                                                        |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `packages/heisenbench`              | The engine.                                                                                                                 |
+| `packages/compare`                  | The no-overlap noise rule and the one PR comment with sections.                                                             |
+| `suites/ogygia`                     | Checks out ogygia commits, picks bench files, runs Heisenbench, writes the section and JSON.                                |
+| `.github/workflows/heisenbench.yml` | The job.                                                                                                                    |
+| `.github/workflows/check.yml`       | Tests, lint, format, `heisenbench verify` and 60 fuzzed programs on fixed seeds, on every PR and push to main of this repo. |
+| `.github/workflows/fuzz.yml`        | The fuzzer every night at 02:23 UTC on new seeds; repros kept as an artifact.                                               |
 
 ## A PR, step by step
 
@@ -211,8 +211,8 @@ tables.
 Every run is kept on the orphan `results` branch of this repository, next to the app benchmark's
 files, under `heisenbench/`:
 
-| Path                               | What                                                       |
-| ---------------------------------- | ---------------------------------------------------------- |
+| Path                                      | What                                                       |
+| ----------------------------------------- | ---------------------------------------------------------- |
 | `heisenbench/pr/<number>.json`            | The newest run of that PR.                                 |
 | `heisenbench/commit/<sha>.json`           | The newest run of that ogygia commit, PR or main.          |
 | `heisenbench/main/<sha>.json`             | A full run of a main commit.                               |

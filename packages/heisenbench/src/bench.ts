@@ -58,8 +58,10 @@ export function bench<T = undefined>(
 	options: BenchOptions<T> = {}
 ): void {
 	const file = ((globalThis as unknown as Global)[CURRENT] as string | undefined) ?? '';
-	if (typeof name !== 'string' || name === '') throw new TypeError('heisenbench: bench() needs a name');
-	if (typeof fn !== 'function') throw new TypeError(`heisenbench: bench('${name}') needs a function`);
+	if (typeof name !== 'string' || name === '')
+		throw new TypeError('heisenbench: bench() needs a name');
+	if (typeof fn !== 'function')
+		throw new TypeError(`heisenbench: bench('${name}') needs a function`);
 	// Reports pair cases by file and name: two cases of one file must not share a name.
 	const g = globalThis as unknown as Global;
 	let names = g[NAMES] as Set<string> | undefined;

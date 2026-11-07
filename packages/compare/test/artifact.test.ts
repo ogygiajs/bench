@@ -29,7 +29,10 @@ const pr_meta = { kind: 'pr', sha: SHA, base: BASE, pr: 12 };
 test('an Heisenbench artifact that matches the plan passes, as uploaded', () => {
 	const result = heisenbench_result(pr_meta);
 	const dir = dir_with({ 'result.json': result, 'section.md': '#### Heisenbench\n\nok' });
-	assert.deepEqual(validate_heisenbench(dir, pr_plan), { result, section: '#### Heisenbench\n\nok' });
+	assert.deepEqual(validate_heisenbench(dir, pr_plan), {
+		result,
+		section: '#### Heisenbench\n\nok'
+	});
 });
 
 test('an Heisenbench artifact for another commit, PR, base or kind is rejected', () => {
@@ -59,7 +62,10 @@ test('bad JSON, a wrong schema, a missing file or section markers are rejected',
 		],
 		[{ 'result.json': heisenbench_result(pr_meta) }, /section\.md is missing/],
 		[
-			{ 'result.json': heisenbench_result(pr_meta), 'section.md': 'a <!-- /section:heisenbench --> b' },
+			{
+				'result.json': heisenbench_result(pr_meta),
+				'section.md': 'a <!-- /section:heisenbench --> b'
+			},
 			/section markers/
 		]
 	];
@@ -106,7 +112,12 @@ test('an app run is kept under its sha, or the weekly run under its validated ve
 
 test('weights must be app weights counted on the plan’s commit', () => {
 	const w = (sha: string) =>
-		JSON.stringify({ schema: 'heisenbench-app-weights/1', source: { sha }, units: {}, functions: {} });
+		JSON.stringify({
+			schema: 'heisenbench-app-weights/1',
+			source: { sha },
+			units: {},
+			functions: {}
+		});
 	assert.ok(validate_weights(dir_with({ 'app-weights.json': w(SHA) }), { kind: 'main', sha: SHA }));
 	assert.throws(
 		() => validate_weights(dir_with({ 'app-weights.json': w(BASE) }), { kind: 'main', sha: SHA }),

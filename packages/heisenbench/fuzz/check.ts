@@ -102,7 +102,10 @@ export async function check_program(lab: Lab, l: Loaded, o: CheckOptions = {}): 
 		else {
 			const model = diff_maps(mine, ref.model_edges);
 			if (model)
-				failures.push({ oracle: 'callgraph', detail: `edge ${model} (heisenbench vs frame model)` });
+				failures.push({
+					oracle: 'callgraph',
+					detail: `edge ${model} (heisenbench vs frame model)`
+				});
 			const m = lab.module_of(l);
 			for (let i = 0; i < m.meta.functions.length; i++) {
 				const fid = m.f + i;
@@ -176,7 +179,10 @@ export async function check_program(lab: Lab, l: Loaded, o: CheckOptions = {}): 
 			}
 			const calls = a.snap.calls[m.f + i];
 			if (v8 !== calls) {
-				failures.push({ oracle: 'counts', detail: `${f.path}: calls heisenbench ${calls}, V8 ${v8}` });
+				failures.push({
+					oracle: 'counts',
+					detail: `${f.path}: calls heisenbench ${calls}, V8 ${v8}`
+				});
 				break;
 			}
 		}

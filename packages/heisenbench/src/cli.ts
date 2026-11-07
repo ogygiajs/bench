@@ -75,7 +75,9 @@ async function verify_command(flags: Map<string, string>): Promise<number> {
 	const layers = flags.get('layers')?.split(',') as VerifyLayer[] | undefined;
 	const bad = layers?.filter((l) => !VERIFY_LAYERS.includes(l));
 	if (bad && bad.length > 0) {
-		console.error(`heisenbench verify: unknown layer ${bad.join(', ')} (${VERIFY_LAYERS.join(', ')})`);
+		console.error(
+			`heisenbench verify: unknown layer ${bad.join(', ')} (${VERIFY_LAYERS.join(', ')})`
+		);
 		return 2;
 	}
 	const rows = await run_verify({
@@ -349,7 +351,9 @@ async function main(argv: string[]): Promise<number> {
 		});
 		await measure_run(report, positional, flags);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
-			console.error('heisenbench run: no bench cases (no file calls bench(), or --filter matched none)');
+			console.error(
+				'heisenbench run: no bench cases (no file calls bench(), or --filter matched none)'
+			);
 		const bad =
 			report.cases.length === 0 ||
 			(report.load_errors ?? []).length > 0 ||
@@ -499,7 +503,9 @@ try {
 	code = await main(argv);
 } catch (e) {
 	if (e instanceof UsageError) {
-		console.error(`${prefix}: ${e.message}\nRun \`heisenbench --help\` for every command and option.`);
+		console.error(
+			`${prefix}: ${e.message}\nRun \`heisenbench --help\` for every command and option.`
+		);
 		code = 2;
 	} else {
 		// Heisenbench's own errors say what to fix; anything else may need the stack.

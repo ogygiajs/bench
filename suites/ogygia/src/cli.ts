@@ -70,7 +70,10 @@ const log = (line: string): void => console.log(`[heisenbench] ${line}`);
 
 function bench_repo_sha(): string | null {
 	try {
-		return execFileSync('git', ['rev-parse', 'HEAD'], { cwd: HEISENBENCH_DIR, encoding: 'utf8' }).trim();
+		return execFileSync('git', ['rev-parse', 'HEAD'], {
+			cwd: HEISENBENCH_DIR,
+			encoding: 'utf8'
+		}).trim();
 	} catch {
 		return null;
 	}

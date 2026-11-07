@@ -88,7 +88,12 @@ const base = { repo: 'o/r', issue: 7, token: 't', api: 'https://api.test', settl
 
 test('no comment yet: one is created with the section', async () => {
 	const gh = fake_github([by(1, 'unrelated', 'someone')]);
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'fast' });
+	const r = await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'heisenbench',
+		content: 'fast'
+	});
 	assert.equal(r.created, true);
 	assert.equal(gh.comments.length, 2);
 	assert.deepEqual(parseComment(gh.comments[1].body), [{ name: 'heisenbench', content: 'fast' }]);
@@ -114,7 +119,12 @@ test('the existing comment is edited in place and keeps the other section', asyn
 test('an old single-body comment is migrated: its body becomes the apps section', async () => {
 	const legacy = `${MARKER}\n${HEADING}\n\nold app numbers\n`;
 	const gh = fake_github([by(5, legacy)]);
-	await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'heisenbench numbers' });
+	await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'heisenbench',
+		content: 'heisenbench numbers'
+	});
 	assert.deepEqual(parseComment(gh.comments[0].body), [
 		{ name: 'heisenbench', content: 'heisenbench numbers' },
 		{ name: 'apps', content: 'old app numbers' }
@@ -183,7 +193,12 @@ test('a failed request is an error', async () => {
 test('a marker planted by someone else is neither edited nor adopted', async () => {
 	const planted = upsertSection(null, 'heisenbench', 'fake numbers');
 	const gh = fake_github([by(1, planted, 'mallory'), by(2, `${MARKER}\nme too`, 'mallory')]);
-	const r = await upsertComment({ ...base, fetch: gh.fetch, section: 'heisenbench', content: 'real' });
+	const r = await upsertComment({
+		...base,
+		fetch: gh.fetch,
+		section: 'heisenbench',
+		content: 'real'
+	});
 	assert.equal(r.created, true);
 	assert.equal(gh.comments.length, 3);
 	assert.equal(gh.comments[0].body, planted);
@@ -276,5 +291,8 @@ test('a section too long for GitHub is cut with a note, and the other section is
 		/Cut here: .* \[The run\]\(https:\/\/example\.test\/run\/9\) has the full text\.$/
 	);
 	// the <details> the cut left open is closed before the note
-	assert.equal((heisenbench.match(/<details>/g) ?? []).length, (heisenbench.match(/<\/details>/g) ?? []).length);
+	assert.equal(
+		(heisenbench.match(/<details>/g) ?? []).length,
+		(heisenbench.match(/<\/details>/g) ?? []).length
+	);
 });

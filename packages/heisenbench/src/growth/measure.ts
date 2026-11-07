@@ -87,7 +87,8 @@ export class Measurer {
 				});
 			work.catch(() => {});
 			const settled = await det.settle(() => finished);
-			if (settled.stuck) throw new Error('heisenbench: the case never finished (waits on real IO?)');
+			if (settled.stuck)
+				throw new Error('heisenbench: the case never finished (waits on real IO?)');
 			await work;
 		} catch (e) {
 			failure = e;

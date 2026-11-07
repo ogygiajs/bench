@@ -25,7 +25,9 @@ import { ROOT, count_apps, parse_args } from './count.ts';
 
 const MODULE = '@ogygia/core/dist/server/endpoint.js';
 const args = parse_args(process.argv.slice(2));
-const out = resolve(args.get('out')?.at(-1) ?? join(ROOT, 'results/scratch/heisenbench/answer-key'));
+const out = resolve(
+	args.get('out')?.at(-1) ?? join(ROOT, 'results/scratch/heisenbench/answer-key')
+);
 mkdirSync(out, { recursive: true });
 const failures: string[] = [];
 const check = (ok: boolean, what: string) => {

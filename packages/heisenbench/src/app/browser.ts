@@ -258,7 +258,8 @@ class Driver {
 		await this.quiet();
 		await this.page
 			.evaluate(() => {
-				const t = (globalThis as unknown as { __heisenbench_tick?: () => number }).__heisenbench_tick;
+				const t = (globalThis as unknown as { __heisenbench_tick?: () => number })
+					.__heisenbench_tick;
 				return t ? t() : 0;
 			}, null)
 			.catch(() => 0);
@@ -271,7 +272,8 @@ class Driver {
 	async act(a: Record<string, unknown>): Promise<void> {
 		await this.quiet();
 		await this.page.evaluate((x) => {
-			const act = (globalThis as unknown as { __heisenbench_act: (y: unknown) => void }).__heisenbench_act;
+			const act = (globalThis as unknown as { __heisenbench_act: (y: unknown) => void })
+				.__heisenbench_act;
 			act(x);
 		}, a);
 	}
@@ -313,7 +315,8 @@ class Driver {
 				await this.quiet();
 				const ok = await this.page.evaluate<boolean>(`Boolean(${action.until})`).catch(() => false);
 				if (ok) return;
-				if (t >= max) throw new Error(`heisenbench: timed out (${max} virtual ms) on ${action.until}`);
+				if (t >= max)
+					throw new Error(`heisenbench: timed out (${max} virtual ms) on ${action.until}`);
 				await this.tick();
 			}
 		}
@@ -324,7 +327,8 @@ class Driver {
 		await this.quiet();
 		return this.page
 			.evaluate((from) => {
-				const api = (globalThis as unknown as { __heisenbench?: { read(n: number): PageCounts } }).__heisenbench;
+				const api = (globalThis as unknown as { __heisenbench?: { read(n: number): PageCounts } })
+					.__heisenbench;
 				return api ? { counts: api.read(from), origin: performance.timeOrigin } : null;
 			}, metas_from)
 			.catch(() => null);

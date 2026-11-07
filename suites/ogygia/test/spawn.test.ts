@@ -86,7 +86,12 @@ test('exit 0 or 1 with its part written is clean; anything else is an error, rep
 	assert.equal(command_error(result({}), true, 'heisenbench run', 15), null);
 	assert.equal(command_error(result({ status: 1 }), true, 'heisenbench run', 15), null);
 	assert.equal(
-		command_error(result({ status: 134, stderr: 'abort\nat measure' }), true, 'heisenbench run', 15),
+		command_error(
+			result({ status: 134, stderr: 'abort\nat measure' }),
+			true,
+			'heisenbench run',
+			15
+		),
 		'heisenbench run exited with 134\nabort\nat measure'
 	);
 	assert.equal(

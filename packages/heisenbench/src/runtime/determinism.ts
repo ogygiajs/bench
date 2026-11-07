@@ -641,7 +641,11 @@ export class Determinism {
 			}
 		}
 		this.#set(globalThis as unknown as Obj, 'WeakRef', HeisenbenchWeakRef);
-		this.#set(globalThis as unknown as Obj, 'FinalizationRegistry', HeisenbenchFinalizationRegistry);
+		this.#set(
+			globalThis as unknown as Obj,
+			'FinalizationRegistry',
+			HeisenbenchFinalizationRegistry
+		);
 	}
 
 	/** Run finalizer callbacks queued so far. Called by the runner between runs, never inside. */

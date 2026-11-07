@@ -13,7 +13,12 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
-import { ArtifactError, validate_heisenbench, validate_apps, validate_weights } from './artifact.ts';
+import {
+	ArtifactError,
+	validate_heisenbench,
+	validate_apps,
+	validate_weights
+} from './artifact.ts';
 
 const { values, positionals } = parseArgs({
 	allowPositionals: true,

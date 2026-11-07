@@ -26,7 +26,11 @@ test('a comment that does not exist yet gets the marker, the heading and the one
 
 test('heisenbench comes first, whichever section was written first', () => {
 	const apps_first = upsertSection(upsertSection(null, 'apps', APPS), 'heisenbench', HEISENBENCH);
-	const heisenbench_first = upsertSection(upsertSection(null, 'heisenbench', HEISENBENCH), 'apps', APPS);
+	const heisenbench_first = upsertSection(
+		upsertSection(null, 'heisenbench', HEISENBENCH),
+		'apps',
+		APPS
+	);
 	assert.equal(apps_first, heisenbench_first);
 	assert.deepEqual(
 		parseComment(apps_first).map((s) => s.name),
@@ -84,10 +88,11 @@ test('the old failure comment migrates too', () => {
 });
 
 test('a CRLF body parses like an LF body', () => {
-	const body = upsertSection(upsertSection(null, 'heisenbench', HEISENBENCH), 'apps', APPS).replaceAll(
-		'\n',
-		'\r\n'
-	);
+	const body = upsertSection(
+		upsertSection(null, 'heisenbench', HEISENBENCH),
+		'apps',
+		APPS
+	).replaceAll('\n', '\r\n');
 	assert.equal(sectionOf(body, 'heisenbench'), HEISENBENCH);
 	assert.equal(sectionOf(body, 'apps'), APPS);
 });

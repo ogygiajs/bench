@@ -90,7 +90,8 @@ function run(cmd: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): 
 export async function counted_build(o: CountedBuildOptions): Promise<CountedBuild> {
 	const app = resolve(o.app_dir);
 	const dir = resolve(o.work_dir);
-	if (!existsSync(join(app, 'node_modules'))) throw new Error(`heisenbench: ${app} is not installed`);
+	if (!existsSync(join(app, 'node_modules')))
+		throw new Error(`heisenbench: ${app} is not installed`);
 	rmSync(dir, { recursive: true, force: true });
 	mkdirSync(dir, { recursive: true });
 	for (const e of readdirSync(app)) {

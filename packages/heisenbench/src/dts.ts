@@ -178,7 +178,9 @@ export function private_dts(opts: DtsOptions): string {
 			};
 			return ts.visitNode(node, visit) as T;
 		};
-		const type_text = tabs(printer.printNode(ts.EmitHint.Unspecified, qualify(heisenbench_type), d));
+		const type_text = tabs(
+			printer.printNode(ts.EmitHint.Unspecified, qualify(heisenbench_type), d)
+		);
 		const spec = rel_specifier(out_dir, file);
 		const body = [
 			`declare module '${spec.split('\\').join('\\\\').split("'").join("\\'")}' {`,

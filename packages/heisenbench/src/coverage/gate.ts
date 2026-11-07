@@ -171,9 +171,13 @@ export function read_exemptions(path: string): Exemption[] {
 	const list = Array.isArray(raw) ? raw : (raw.exempt ?? []);
 	for (const e of list) {
 		if (typeof e.id !== 'string' || typeof e.reason !== 'string' || e.reason.trim() === '')
-			throw new Error(`heisenbench: every exemption needs an id and a reason (${JSON.stringify(e)})`);
+			throw new Error(
+				`heisenbench: every exemption needs an id and a reason (${JSON.stringify(e)})`
+			);
 		if (e.nested !== undefined && typeof e.nested !== 'boolean')
-			throw new Error(`heisenbench: an exemption's "nested" is true or false (${JSON.stringify(e)})`);
+			throw new Error(
+				`heisenbench: an exemption's "nested" is true or false (${JSON.stringify(e)})`
+			);
 	}
 	return list;
 }
