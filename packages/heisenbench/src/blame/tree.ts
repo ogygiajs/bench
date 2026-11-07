@@ -86,10 +86,10 @@ export function write_tree(dst: string, files: TreeFiles, prefix = ''): void {
 	for (const [path, bytes] of files) {
 		if (!path.startsWith(lead)) continue;
 		const p = join(dst, ...path.slice(lead.length).split('/'));
-		if (bytes === null) {
-			rmSync(p, { force: true });
-			continue;
-		}
+		// Unlink first: a link copied into the scratch tree may point outside it, and writing
+		// through it would change the original.
+		rmSync(p, { force: true });
+		if (bytes === null) continue;
 		mkdirSync(dirname(p), { recursive: true });
 		writeFileSync(p, bytes);
 	}
