@@ -64,6 +64,24 @@ export interface GrowthCase {
 	power?: number;
 	/** The first size whose run went past the step cap (the sizes above it were not counted). */
 	capped_at?: number;
+	/**
+	 * The first size whose run overflowed the call stack (deep recursion: the sizes above it were
+	 * not counted, the class is fitted on the ones below). A finding of its own: the code
+	 * recurses as deep as its input.
+	 */
+	overflowed_at?: number;
+	/**
+	 * The generic scaler grew the input but no size counted a step more or less: the work follows
+	 * something the scaler does not grow (an object's keys, a number), or nothing. `constant`
+	 * then says that the case's work did not move, not that the function is O(1).
+	 */
+	unmoved?: true;
+	/**
+	 * The fitted fixed part (`a` of `a + b f(k)`) as a share of the steps at the largest size, when
+	 * it is half or more: the curve's class is that of the rest, and the exponent between the two
+	 * largest sizes reads low (0.14 for a linear part under a 69% fixed one).
+	 */
+	fixed_share?: number;
 	error: string | null;
 	/**
 	 * Where the steps are: the functions with the most self steps at the largest size (at most
@@ -162,45 +180,68 @@ export interface GrowthPoint {
 	report: CaseReport;
 }
 
+/** A run that overflowed the call stack (deep recursion on a grown input). */
+export function is_stack_overflow(e: unknown): boolean {
+	return e instanceof RangeError && /maximum call stack size exceeded/i.test(e.message);
+}
+
+/** Why a size was not counted: past the step cap, or past the call stack; null for another error. */
+function stop_of(e: unknown, overflow: boolean): 'cap' | 'stack' | null {
+	if (e instanceof StepCapError) return 'cap';
+	if (overflow && is_stack_overflow(e)) return 'stack';
+	return null;
+}
+
 /**
  * Count `count(k)` at every size of `sizes` (ascending), with the step cap. At the first size
- * that goes past the cap, growing stops there and falls back to a doubling ladder (1, 2, 4, 8 ...)
- * of the sizes below it that were not counted yet, each under the same cap, so a curve too steep
- * for the sizes asked (an exponential at 10x) still gets the points it can afford.
+ * that goes past the cap, or overflows the call stack, growing stops there and falls back to a
+ * doubling ladder (1, 2, 4, 8 ...) of the sizes below it that were not counted yet, each under the
+ * same cap, so a curve too steep for the sizes asked (an exponential at 10x), or a recursion too
+ * deep at 100x, still gets the points it can afford. `capped_at` / `overflowed_at`: the size it
+ * stopped at, and why. An overflow stops growing only with `overflow` (a growth case); otherwise
+ * it is thrown like any error (a proof must not take a candidate that overflows for one that
+ * stopped).
  */
 export async function count_ladder(
 	sizes: readonly number[],
-	count: (k: number) => Promise<GrowthPoint>
-): Promise<{ points: GrowthPoint[]; capped_at: number | null }> {
+	count: (k: number) => Promise<GrowthPoint>,
+	overflow = false
+): Promise<{ points: GrowthPoint[]; capped_at: number | null; overflowed_at: number | null }> {
 	const points: GrowthPoint[] = [];
-	let capped_at: number | null = null;
+	let stop: { k: number; why: 'cap' | 'stack' } | null = null;
 	for (const k of sizes) {
 		try {
 			points.push(await count(k));
 		} catch (e) {
-			if (!(e instanceof StepCapError)) throw e;
-			capped_at = k;
+			const why = stop_of(e, overflow);
+			if (why === null) throw e;
+			stop = { k, why };
 			break;
 		}
 	}
-	if (capped_at !== null) {
+	if (stop !== null) {
 		const done = new Set(points.map((p) => p.k));
-		for (let k = 1; k < capped_at; k *= 2) {
+		for (let k = 1; k < stop.k; k *= 2) {
 			if (done.has(k)) continue;
 			try {
 				points.push(await count(k));
 			} catch (e) {
-				if (!(e instanceof StepCapError)) throw e;
-				capped_at = k;
+				const why = stop_of(e, overflow);
+				if (why === null) throw e;
+				stop = { k, why };
 				break;
 			}
 		}
 		points.sort((a, b) => a.k - b.k);
-		// a ladder size past the new cap point is not measured; neither is any size above it
-		const cap = capped_at;
-		points.splice(0, points.length, ...points.filter((p) => p.k < cap));
+		// a ladder size past the new stop is not measured; neither is any size above it
+		const at = stop.k;
+		points.splice(0, points.length, ...points.filter((p) => p.k < at));
 	}
-	return { points, capped_at };
+	return {
+		points,
+		capped_at: stop?.why === 'cap' ? stop.k : null,
+		overflowed_at: stop?.why === 'stack' ? stop.k : null
+	};
 }
 
 /** Self steps per function and per package at each point, and their curves. */
@@ -413,7 +454,7 @@ export async function grow_case(
 			});
 			return { k, input_size: size, steps: r.steps, stable: r.stable, report };
 		};
-		const { points, capped_at } = await count_ladder(sizes, count);
+		const { points, capped_at, overflowed_at } = await count_ladder(sizes, count, true);
 		out.sizes = points.map((p) => p.k);
 		out.input_sizes = points.map((p) => p.input_size);
 		out.steps = points.map((p) => p.steps);
@@ -424,14 +465,35 @@ export async function grow_case(
 		});
 		out.stable = points.every((p) => p.stable);
 		if (capped_at !== null) out.capped_at = capped_at;
+		if (overflowed_at !== null) out.overflowed_at = overflowed_at;
 		if (points.length < 2) {
-			out.error = `exceeded the cap of ${cap} steps at size ${capped_at}x, with fewer than two smaller sizes to fit`;
+			out.error =
+				overflowed_at !== null
+					? `overflowed the call stack at size ${overflowed_at}x, with fewer than two smaller sizes to fit`
+					: `exceeded the cap of ${cap} steps at size ${capped_at}x, with fewer than two smaller sizes to fit`;
 			return out;
 		}
 		const fit = fit_growth(out.sizes, out.steps);
 		out.class = fit.class;
 		out.exponent = round3(fit.exponent);
 		if (fit.class === 'polynomial') out.power = fit.power;
+		const last = out.steps[out.steps.length - 1];
+		if (
+			!own &&
+			fit.class === 'constant' &&
+			out.steps.every((s) => s === out.steps[0]) &&
+			out.input_sizes[out.input_sizes.length - 1] > out.input_sizes[0]
+		) {
+			out.unmoved = true;
+		} else if (
+			fit.class !== 'constant' &&
+			GROWTH_RANK[fit.class] !== null &&
+			fit.a > 0 &&
+			last > 0 &&
+			fit.a / last >= FIXED_SHARE
+		) {
+			out.fixed_share = Math.round((fit.a / last) * 100) / 100;
+		}
 		Object.assign(out, where_steps(points));
 		const read = (pts: readonly GrowthPoint[]) => {
 			const from = path_from(pts.map((p) => ran_in(p.report)));
@@ -522,10 +584,38 @@ export function odds_note(g: Pick<GrowthCase, 'odds' | 'probe' | 'odds_from'>): 
 	return `; odds ${odds_words(g.odds)}${extra.length > 0 ? ` (${extra.join('; ')})` : ''}`;
 }
 
-/** `exceeded the cap at 10x, grown on 1x / 2x / 4x / 8x`, or '' when no size was capped. */
-export function capped_words(g: Pick<GrowthCase, 'capped_at' | 'sizes'>): string {
+/**
+ * `exceeded the cap at 10x, grown on 1x / 2x / 4x / 8x` (or `overflowed the call stack at
+ * 100x, ...`), or '' when every size was counted.
+ */
+export function capped_words(g: Pick<GrowthCase, 'capped_at' | 'overflowed_at' | 'sizes'>): string {
+	const grown = g.sizes.map((k) => `${k}x`).join(' / ');
+	if (g.overflowed_at !== undefined)
+		return `; overflowed the call stack at ${g.overflowed_at}x, grown on ${grown}`;
 	if (g.capped_at === undefined) return '';
-	return `; exceeded the cap at ${g.capped_at}x, grown on ${g.sizes.map((k) => `${k}x`).join(' / ')}`;
+	return `; exceeded the cap at ${g.capped_at}x, grown on ${grown}`;
+}
+
+/** A fixed part this large (of the steps at the largest size) is said in the verdict. */
+export const FIXED_SHARE = 0.5;
+
+/**
+ * What the class alone would mislead about: steps that never moved while the generic scaler grew
+ * the input, or a fixed part that makes the exponent read low. '' otherwise.
+ */
+export function verdict_note(
+	g: Pick<GrowthCase, 'unmoved' | 'fixed_share' | 'input_sizes' | 'sizes' | 'class' | 'power'>
+): string {
+	if (g.unmoved) {
+		const from = g.input_sizes[0];
+		const to = g.input_sizes[g.input_sizes.length - 1];
+		return `; no step moved while the generic scaler grew the input from ${from} to ${to}: it grows strings, arrays, Maps, Sets and chains, not an object's keys or a number. If the work follows those, give the case a \`scale\``;
+	}
+	if (g.fixed_share !== undefined) {
+		const at = g.sizes[g.sizes.length - 1];
+		return `; ${Math.round(g.fixed_share * 100)}% of the steps at ${at}x are a fixed part, the rest grows ${growth_label(g.class, g.power)}`;
+	}
+	return '';
 }
 
 export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
@@ -548,7 +638,7 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 			g.error
 				? `FAILED   ${c.name}: ${g.error}`
 				: [
-						`${g.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${growth_label(g.class, g.power)} (exponent ${g.exponent}; ${g.steps.map((s) => Math.round(s)).join(' / ')} steps${odds_note(g)}${capped_words(g)})`,
+						`${g.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${growth_label(g.class, g.power)} (exponent ${g.exponent}; ${g.steps.map((s) => Math.round(s)).join(' / ')} steps${odds_note(g)}${capped_words(g)}${verdict_note(g)})`,
 						...growth_lines(g)
 					].join('\n')
 		);

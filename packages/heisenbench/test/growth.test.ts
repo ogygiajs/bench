@@ -129,6 +129,24 @@ test('the generic scaler grows every collection once, linearly', () => {
 	assert.ok(input_size(scale_input(ctx, 10)) > 8 * input_size(ctx));
 });
 
+test('the generic scaler leaves a cycle a cycle: a link back to an ancestor is never followed', () => {
+	const posts = [{ id: 1 }, { id: 2 }];
+	const o: Record<string, unknown> = { name: 'a', posts };
+	o.self = o;
+	const parent: Record<string, unknown> = { kids: [] as unknown[] };
+	(parent.kids as unknown[]).push({ up: parent, v: 1 });
+	const s = scale_input({ o, parent }, 4);
+	const so = s.o as { name: string; posts: Array<{ id: number }>; self: unknown };
+	assert.equal(so.self, so, 'the self link points at the copy');
+	assert.equal(so.posts.length, 8);
+	assert.equal(so.name, 'aaaa');
+	const kids = (s.parent as { kids: Array<{ up: unknown; v: number }> }).kids;
+	assert.equal(kids.length, 4);
+	for (const k of kids) assert.equal(k.up, s.parent, 'a parent link points at the scaled parent');
+	assert.notEqual(kids[0], kids[1], 'repeats still share nothing but the ancestors');
+	assert.equal(o.self, o, 'the input itself is untouched');
+});
+
 test('clone keeps shared and cyclic structure', () => {
 	const shared = { v: 1 };
 	const a: Record<string, unknown> = { x: shared, y: shared };
