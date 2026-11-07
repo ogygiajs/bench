@@ -332,7 +332,20 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
 - A bench file that throws, does not parse or defines no cases is reported on its own; the other
   files still run.
 - `.svelte` components and `.svelte.ts` modules, compiled with the project's own Svelte (server
-  output). Lines map back to the `.svelte` source.
+  output). Lines map back to the `.svelte` source. `--svelte client` compiles them as client
+  output instead, and resolves with the `browser` condition, so `mount`, `hydrate` and
+  `flushSync` from `svelte` work: a component's hydration and updates are counted. The DOM is the
+  bench's to bring, from a preload (`--import bench/dom.ts`, putting happy-dom's `window`,
+  `document`, `Node`, `Element`, `Text`, `Comment` and `Event` on `globalThis`); loaded there,
+  before counting starts, the DOM's own work is not counted. One process compiles one way, so the
+  server and the client benches are two runs; `--append` adds the second run's cases to the
+  report the first wrote:
+
+  ```bash
+  npx heisenbench run bench/ssr.bench.ts --conditions svelte --out report.json
+  npx heisenbench run bench/client.bench.ts --svelte client --import bench/dom.ts --out report.json --append
+  ```
+
 - Dependencies are counted like your own code, and reported under their package name and
   version: `acorn@8.18.0/dist/acorn.mjs > Parser`. Work a dependency does for your code is your
   code's work: ogygia's compiler case read 33 times less work after a fix while its wall time

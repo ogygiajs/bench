@@ -23,6 +23,7 @@ import type {
 	Tier
 } from './types.ts';
 import { is_cold } from './diff.ts';
+import { svelte_output } from '../loader/svelte.ts';
 
 const CHILD = own_file('engine/child');
 
@@ -500,7 +501,7 @@ export async function engine_health(opts: HealthOptions): Promise<EngineReport> 
 		warmup,
 		runs,
 		deps: opts.deps ?? false,
-		svelte: opts.svelte ?? 'server'
+		svelte: svelte_output(opts.svelte)
 	};
 	const report: EngineReport = {
 		schema: ENGINE_SCHEMA,

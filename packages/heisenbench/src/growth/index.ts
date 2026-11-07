@@ -28,6 +28,7 @@ import { OWN_CODE, package_label } from '../identity.ts';
 import { add_units } from '../units.ts';
 import type { Units } from '../units.ts';
 import { ContractBook } from '../contracts/declare.ts';
+import { svelte_output } from '../loader/svelte.ts';
 
 /*
  * Growth (spec 9): a case's input scaled to several sizes (1x / 10x / 100x by default), steps
@@ -638,7 +639,7 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 	const cache = opts.cache
 		? new CaseCache<GrowthCase>(
 				opts.cache.dir,
-				{ root, deps: opts.deps ?? true, svelte: opts.svelte ?? 'server', fresh: true },
+				{ root, deps: opts.deps ?? true, svelte: svelte_output(opts.svelte), fresh: true },
 				m.rt,
 				{
 					name: 'growth',

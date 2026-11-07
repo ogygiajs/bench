@@ -124,6 +124,10 @@ workflows.
 - **Steps before counting.** Bench inputs that a script writes, or a build a bench reads, go
   after the install and before the counts, in each checkout:
   `pnpm install --frozen-lockfile && pnpm fixtures && pnpm build && npx heisenbench run ...`.
+- **Svelte.** A project built with Vite and the Svelte plugin resolves packages with the `svelte`
+  export condition: count with `--conditions svelte`, so a component library's `exports` give the
+  build the app gets. Client output (hydration, updates) is a second run on each side,
+  `--svelte client --import <dom preload> --append`, into the same report.
 - **A file that does not load on one side.** The diff lists it under "Did not run" with its error
   and how many of its cases were not compared; those cases are not "new" or "removed".
 - **Nothing changed.** Most PRs change no counted function. The section then shows the PR's own

@@ -13,13 +13,15 @@ import {
 import { private_bindings } from '../transform/instrument.ts';
 import { GENERATION, guess_format } from '../loader/core.ts';
 import { register_source_resolve } from '../loader/resolve.ts';
+import { svelte_output } from '../loader/svelte.ts';
 import { OWN_DIR } from '../own.ts';
 
 /*
  * The plain build: the code as it ships, for the layers that need the real engine (time, real
  * bytes, leaks). Nothing is counted. Two things still happen to files under the roots:
  *
- * - `.svelte` / `.svelte.ts` files are compiled (server output), like the counting loader does;
+ * - `.svelte` / `.svelte.ts` files are compiled (server output, or client with `--svelte client`),
+ *   like the counting loader does;
  * - every module gets the same `export const __heisenbench = {...}` of private bindings, appended at the
  *   end, so bench files that import private functions run unchanged.
  *
@@ -101,7 +103,7 @@ export function register_plain(config: PlainConfig): void {
 		for (const r of config.roots) if (!installed.roots.includes(r)) installed.roots.push(r);
 		return;
 	}
-	const cfg: PlainConfig = { roots: [...config.roots], svelte: config.svelte };
+	const cfg: PlainConfig = { roots: [...config.roots], svelte: svelte_output(config.svelte) };
 	installed = cfg;
 	register_source_resolve();
 	registerHooks({
