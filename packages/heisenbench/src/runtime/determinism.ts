@@ -475,9 +475,11 @@ export class Determinism {
 			return copy(v);
 		};
 		const root = this.root;
-		// Paths under VIRTUAL_ROOT (built from process.cwd() in the window) read the real root.
+		// Paths under VIRTUAL_ROOT (built from process.cwd() in the window) read the real root. With
+		// the counting loader's paths (paths.ts) fs itself takes them, and says them back virtually.
+		const mapped = (globalThis as Record<symbol, unknown>)[Symbol.for('heisenbench.paths')];
 		const real = (args: unknown[]): unknown[] => {
-			if (root === null || args.length === 0) return args;
+			if (root === null || args.length === 0 || mapped !== undefined) return args;
 			const out = [real_path(args[0], root)];
 			for (let i = 1; i < args.length; i++) out.push(args[i]);
 			return out;

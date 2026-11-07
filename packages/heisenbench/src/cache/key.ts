@@ -21,8 +21,6 @@ import type { IoOp } from './capture.ts';
  *   options    --deps, --state, svelte output: they change what is counted
  *   flags      Node's flags (NODE_OPTIONS, execArgv) with the content of every preload they name,
  *              and NODE_ENV
- *   root       the length of the run root's path: code that slices a path made from
- *              `import.meta.url` counts per character (README "Limits")
  *   modules    every module the process loaded, by kind:
  *                code   a counted module of the project: its text normalized (normalize.ts),
  *                       with the body of every function the case never ran left out
@@ -343,8 +341,7 @@ export function global_parts(o: KeyOptions, hasher: TreeHasher): Record<string, 
 		node: [process.version, process.versions.v8, process.platform, process.arch],
 		options: { deps: o.deps, svelte: o.svelte, fresh: o.fresh },
 		flags: node_flags(o.root, hasher),
-		node_env: process.env.NODE_ENV ?? null,
-		root: o.root.length
+		node_env: process.env.NODE_ENV ?? null
 	};
 }
 

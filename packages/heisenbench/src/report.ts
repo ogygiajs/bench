@@ -15,6 +15,7 @@ import type { SearchReport } from './search/index.ts';
 import type { AuditReport } from './audit/fit.ts';
 import type { ContractReport } from './contracts/index.ts';
 import { OWN_DIR, package_url } from './own.ts';
+import { real_path } from './runtime/determinism.ts';
 import type { CacheSummary } from './cache/index.ts';
 
 /*
@@ -240,6 +241,8 @@ export function error_frames(e: unknown, root: string, max = STACK_FRAMES): stri
 		} catch {
 			continue;
 		}
+		// a stack names the root virtually (runtime/paths.ts)
+		file = real_path(file, root) as string;
 		if (file.startsWith(OWN_DIR)) continue;
 		const rel = relative(root, file).split(sep).join('/');
 		const where = `${rel}:${m[3]}:${m[4]}`;

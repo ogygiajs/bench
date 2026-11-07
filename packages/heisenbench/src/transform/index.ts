@@ -15,6 +15,7 @@ import { own_url } from '../own.ts';
 import { require_peer, require_typescript } from '../peer.ts';
 
 export { instrument } from './instrument.ts';
+export { virtualize_meta } from './meta.ts';
 export type { InstrumentOptions, InstrumentResult } from './instrument.ts';
 
 export const VIRTUAL_PREFIX = 'heisenbench:module/';
@@ -35,6 +36,8 @@ export interface TransformOptions {
 	runtime?: string;
 	/** A CommonJS module (instrument.ts `commonjs`): its counters come without a counter module. */
 	commonjs?: boolean;
+	/** The module reads its own paths under the virtual root (instrument.ts `virtual_paths`). */
+	virtual_paths?: boolean;
 }
 
 export interface TransformResult extends InstrumentResult {
@@ -111,7 +114,8 @@ export function transform(code: string, opts: TransformOptions): TransformResult
 		prices_hash: p.hash,
 		module_specifier: specifier,
 		expose: opts.expose,
-		commonjs: opts.commonjs
+		commonjs: opts.commonjs,
+		virtual_paths: opts.virtual_paths
 	});
 	return { ...r, specifier, virtual: virtual_module_source(r.meta, opts.runtime ?? RUNTIME_URL) };
 }

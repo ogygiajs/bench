@@ -16,15 +16,12 @@ import { one_line } from '../report.ts';
  * lockfile back and installs with `npm ci`, so both count on the same dependency tree. Install
  * scripts never run: a receipt counts JavaScript, and a script could make the tree differ.
  *
- * The root's path has a fixed length and depth (ROOT_LENGTH characters, ROOT_DEPTH directories).
- * Code that slices or splits a path made from `import.meta.url` or `__dirname` does work per
- * character or per directory, and a checker's temp directory is not the maker's: directories are
- * added down to the depth and the last one padded to the length. Only the characters themselves
- * can still differ (a comparison that stops at the first differing one).
+ * The root is any new directory: the counted code sees it as the virtual root (runtime/paths.ts),
+ * so a checker's temp directory counts what the maker's did. Receipts made before that record the
+ * fixed length and depth of the root they were counted in (200 characters, 16 directories), and
+ * are checked in one padded to them (`make_root`).
  */
 
-export const ROOT_LENGTH = 200;
-export const ROOT_DEPTH = 16;
 export const TARBALL = 'package.tgz';
 const PROJECT = 'heisenbench-receipt';
 
@@ -35,15 +32,20 @@ export function depth_of(path: string): number {
 	return n;
 }
 
+/** A new empty root under `work` (a fresh temp directory by default). */
+export function new_root(work?: string): string {
+	if (work !== undefined) mkdirSync(work, { recursive: true });
+	// module ids are paths as the loader sees them, through links (`/var` is `/private/var`)
+	return realpathSync(mkdtempSync(join(work ?? tmpdir(), 'r-')));
+}
+
 /**
  * A new empty root under `work` (a fresh temp directory by default) whose path is `length`
  * characters long and `depth` directories deep: directories `d` down to the depth, the last one
  * padded to the length.
  */
 export function make_root(length: number, depth: number, work?: string): string {
-	if (work !== undefined) mkdirSync(work, { recursive: true });
-	// module ids are paths as the loader sees them, through links (`/var` is `/private/var`)
-	const base = realpathSync(mkdtempSync(join(work ?? tmpdir(), 'r-')));
+	const base = new_root(work);
 	const levels = depth - depth_of(base);
 	const room = length - base.length - levels;
 	if (levels < 1 || room < levels)

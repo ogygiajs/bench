@@ -200,9 +200,36 @@ measuring window:
 - **IO.** The warm-up run records file reads and `fetch` responses; the measured runs replay them,
   failed reads included (a missing file throws the same error). A read that was not recorded, any
   write, and any socket (`http`, `https`, `net`) throws.
-- **Working directory.** `process.cwd()` (and `PWD`) is `/heisenbench/root`, which stands for the run
-  root. Code that slices or compares the working directory (ogygia's profiler path helpers) counts
-  the same in every checkout, at any depth. Reads of files under `/heisenbench/root` go to the root.
+- **Paths.** The counted code lives under `/heisenbench/root`, which stands for the run root, in
+  every checkout and at any depth (`src/runtime/paths.ts`). Code that splits, slices, joins or
+  matches a path does work per character and per part, so a real path would make the count follow
+  the checkout: `heisenbench@0.0.0`'s transform writes its runtime's file URL into every module it
+  makes, and counted 1,496 more steps under a 182-character root than under a 46-character one.
+  What the code sees:
+
+  | Where                                        | What it says                                                                    |
+  | -------------------------------------------- | ------------------------------------------------------------------------------- |
+  | `import.meta.url`, `filename`, `dirname`     | `file:///heisenbench/root/src/lib.ts`, without `?heisenbench_gen=N`             |
+  | `import.meta.resolve(...)`                   | a virtual URL                                                                   |
+  | `__filename`, `__dirname`, `require.resolve` | virtual paths                                                                   |
+  | `createRequire(<virtual path or URL>)`       | a require of the real file, answering virtual paths                             |
+  | `error.stack`                                | virtual URLs and paths                                                          |
+  | `process.cwd()`                              | `/heisenbench/root`, called from a module of the root (and `PWD` in the window) |
+  | `fs` on a virtual path                       | the real file; `realpath`, `readdir` entries and errors say it back virtually   |
+
+  The transform rewrites `import.meta` in every counted module, and the loader in every bench
+  file, to a call of the module's own virtual meta (`src/transform/meta.ts`); the call is not
+  priced. `import()` and `require` of a virtual URL or path load the real file. A real path in
+  stays real: code that got one elsewhere gets real answers, and a module outside the root keeps
+  its real path (the fresh-copy query dropped). What stays real: `process.argv`, `os.tmpdir()`,
+  `module.filename`, `require.cache`'s keys, a `CallSite`'s file name, a stack formatted by a
+  `prepareStackTrace` the code sets itself, the `import.meta` of a dependency left out with
+  `--deps`, and the working directory for Heisenbench's own code and the compilers it loads, which
+  compile real files.
+  `test/paths.test.ts` counts a module that reads its own location all these ways, and every
+  answer key of `heisenbench verify`, at three roots (short; long and deep; unicode and spaces):
+  the reports are the same.
+
 - **Finalizers.** `FinalizationRegistry` callbacks only run between runs. A `WeakRef` made in the
   window keeps its target, so `deref()` never changes during a run.
 - **Module state.** Each run imports a fresh copy of the bench file and everything it imports
@@ -366,7 +393,6 @@ sits on now, and the case is marked `reused`. Code: `src/cache/`.
 | node    | Node, V8, platform and arch. A report records the Node that counted it, and Node's built-in modules are code counted code calls.                                                                                                                                                                                      |
 | options | `--deps`, `--state`, Svelte output; for growth also the sizes, the cap and `--scaled`.                                                                                                                                                                                                                                |
 | flags   | Node's flags (`NODE_OPTIONS`, `execArgv`), with the bytes of every preload they name, and `NODE_ENV`.                                                                                                                                                                                                                 |
-| root    | The length of the run root's path: code that slices a path made from `import.meta.url` counts per character.                                                                                                                                                                                                          |
 | modules | Every module the case loaded. A counted module of the project: its text normalized, with the body of every function the case did not run left out. A bench file: its whole text, normalized. Anything else (a dependency, a `.svelte` file, JSON): its bytes. Each with its id, which carries a dependency's version. |
 | files   | Every file the case read, statted or listed through `node:fs`, in the window or in `setup`: its bytes, its kind and size, its listing. The real path of every module Node resolved, and the `package.json` nearest to each module (its `exports` and `imports` decide what a specifier resolves to).                  |
 
@@ -414,8 +440,8 @@ What the key does not see, and so assumes:
   the same in either order and alone, for `run` and `growth`.
 - **`Function.prototype.toString` and `error.stack`.** Code that reads its own source text or line
   numbers sees comments and lines the key leaves out.
-- **Environment variables** other than `NODE_ENV`, and the contents of the root's path beyond its
-  length. Counts that depend on them already differ between two machines and two checkouts.
+- **Environment variables** other than `NODE_ENV`, and the paths that stay real (above). Counts
+  that depend on them already differ between two machines and two checkouts.
 - **CommonJS resolution.** `require` finds files by trying extensions in Node's own code, which the
   watch does not see; the files it loads, and their bytes, are keyed.
 - **Engine health and the time layers are measurements, not counts.** They are never cached.
