@@ -17,6 +17,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
 | Worst-case search | `heisenbench search`                                 | counting | changed cases with a `setup`, 4 min budget | no                   |
 | Real-app weight   | `heisenbench weights`, `heisenbench diff --weights`  | counting | ranks the changes                          | produces the weights |
+| Real traffic      | `heisenbench weights import`                         | none     | ranks the findings by CPU time per day     | the owner uploads it |
 | Coverage          | `heisenbench coverage`                               | counting | no                                         | no                   |
 | Gate              | `heisenbench unmeasured`                             | counting | in ogygia's CI                             | no                   |
 
@@ -567,6 +568,132 @@ results branch (`heisenbench/main/app-weights.json`). A PR run reads the latest 
 changed functions by real-app weight in a short table above the step table. When the weights are
 missing or come from another environment, the comment says so in one line and does not rank.
 [ci.md](ci.md) has the details.
+
+## Real traffic
+
+The app scenarios are five synthetic apps. A real site calls its functions at other rates, on
+other inputs. `heisenbench weights import` turns profiles of production servers into weights of
+real traffic, and `heisenbench diff --weights app-weights.json,real-weights.json` then ranks every
+finding by what it costs that traffic in CPU time per day:
+
+```bash
+heisenbench weights import prod/*.cpuprofile --requests 200 --root . --out real-weights.json
+heisenbench diff base.json pr.json --weights app-weights.json,real-weights.json --requests-per-day 1000000
+```
+
+### Importing
+
+Three formats, any mix, any number of files:
+
+| Format                  | What it gives                                                                                                                          |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `.cpuprofile`           | V8's sampled profile (`node --cpu-prof`, the inspector). Self time per function, total time once per stack. Give `--requests`.         |
+| ogygia profiler report  | A report dump (`.json`, or `.ogp` opened with `--secret` or `OGYGIA_PROFILER_SECRET`), or the curated report JSON (its hot functions). |
+| `heisenbench-traffic/1` | A JSON anyone can write, below.                                                                                                        |
+
+```json
+{
+	"schema": "heisenbench-traffic/1",
+	"requests": 1200,
+	"window_ms": 600000,
+	"start": "2026-11-01T00:00:00Z",
+	"end": "2026-11-01T00:10:00Z",
+	"functions": [
+		{ "id": "packages/core/src/router/match.ts > match", "self_ms": 120.5, "total_ms": 300, "calls": 4800, "samples": 241 },
+		{ "url": "file:///srv/app/build/server/chunks/x.js", "name": "", "line": 1, "col": 4120, "self_ms": 3.2 }
+	]
+}
+```
+
+A function is named by its Heisenbench id, or by a frame (`url`, `name`, `line` 1-based, `col`
+0-based) to map here. `calls` are optional (counted calls make a second way to price a change,
+below); give `samples` when the times are sampled, so the range can carry their error.
+
+A frame becomes the id a bench gives the function. Its file is read on the importing machine
+(`--path-map /srv/app=./app` for a path recorded elsewhere, `--root` for what ids are relative
+to). A built file is taken back through its source map (a `sourceMappingURL` comment, inline or a
+file, or `<file>.map`) to the file it was built from, read from the map's `sourcesContent` or from
+disk. That file goes through the counting transform, and the frame's function is the innermost one
+around its position. V8 reports a function at the `(` of its parameters, which a minified map
+seldom marks, so the first mapped token at or after it is used. Anonymous functions get their
+place (`Cart > cheapest > sort:0`): weights are kept per place, as app weights are. Run the import
+against the build the profile ran: a rebuilt chunk maps its positions somewhere else.
+
+Nothing about a request is read or kept: no URL, header, cookie or body. The file holds only
+function ids, times, samples, counted calls, the number of requests and the recording window.
+The frames that did not map are listed by function name and file, with how much self time they
+had and why (`engine`, `node internals`, `no file here`, `not in the source map`).
+
+The weights file is an app weights file (`heisenbench-app-weights/1`) with one unit, `real request`:
+per function its self and total ns per request, its samples, and its calls per request when they
+were counted. Profiles are summed in the order of their contents' hashes and every number is
+rounded the same way, so the same profiles give the same bytes in any order.
+
+### The cost
+
+For each finding, CPU time per day is the extra ns per call × real calls per request × requests
+per day. The extra ns per call comes from the steps-to-ns weights on the change's units (or, for
+a growth curve, which has no units, steps × the prices' `step_ns`); there is no other conversion.
+Requests per day are `--requests-per-day`, or the profiles' requests over their window.
+
+There are two ways to get the calls, and each holds under its own assumption:
+
+| Way      | Cost                                               | Range                                                                                                                              | Assumes                                                              |
+| -------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| per call | Δns per call × calls per request                   | the fit's absolute miss on its calibration points: 0.83x to 4.57x (p10–p90)                                                        | the traffic's input costs per call what the bench's does             |
+| by time  | real ns per request × Δns ÷ the base's ns per call | the fit's miss on one estimate over another of the same code: 0.80x to 1.25x, times the sampling's 90% interval (± 1.645/√samples) | the change takes the same share of the function's time on real input |
+
+The calls of the per-call way are the profile's (V8 precise coverage, in an ogygia profiler report),
+or else the median calls per server request of the app scenarios. The fit's spreads are measured on
+the 250 calibration points and kept in `weights.json` (`fit.spread`). With one way, that one. With
+both: when their ranges overlap, the narrower; when they do not, the estimate is their geometric
+mean, the range spans both, and the comment says how far apart they are.
+
+A growth case whose class changed is priced by its function with the most self steps, at the
+bench's own input, by time. A function that grows from recorded calls has no base to compare: the
+comment says what it takes on the traffic now, from the measured time alone.
+
+The comment ranks by real cost when real-traffic weights are given, else by app weight, else by
+steps per call, and says which. A finding the traffic does not run is ranked after the ones it
+does, by its app weight.
+
+### On ogygia
+
+ogygia `01dc5b9`, `apps/palaestra` built with source maps and served by `vite preview`, the server
+profiled with the inspector (500 µs sampling) over 200 requests after a warm-up: 50 each to
+`/heavy`, `/nest-matrix`, `/snippet-islands` and `/shapes`.
+
+```
+263 functions from 1 profile(s), 200 requests over 9400 ms -> real-weights.json
+95.8% of sampled self time mapped to counted functions (5373.7 of 5609.7 ms); top unmatched: (garbage collector) (native):0 (90.0 ms, engine), runMicrotasks (native):0 (15.9 ms, no file), encodeUtf8String (native):0 (11.0 ms, no file)
+```
+
+The import took 1.1 s. Two regressions were planted on a branch: `locate` (once per document)
+lowercases the whole document to find `</head>` and `</body>`, and the compiler's `strip_bom` makes
+a line-by-line pass over every source. Counted with `markup.bench.ts` and `compiler.bench.ts`:
+`strip_bom` +315.8K steps per call, `locate` +137.3K. By steps, `strip_bom` is first. With main's
+app weights and the real traffic, at 1M requests per day:
+
+| Function                                                 | Δ per call    | Real cost                                                                                                                                      |
+| -------------------------------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/core/src/server/document-assembly.ts > locate` | +137.3K steps | 1 call/request (app scenarios) or 201 µs/request of real time × 37: 1756x apart → ≈ 3 CPU-minutes/day (range 3.6 CPU-seconds to 3.2 CPU-hours) |
+| `packages/core/src/compiler/bom.ts > strip_bom`          | +315.8K steps | not in the imported traffic                                                                                                                    |
+
+The planted build, served and profiled the same way, measured `locate` at 376.0 µs per request
+(115 samples) against 201.2 µs (64 samples): +175 µs per request, 2.9 CPU-minutes a day at 1M
+requests. The two ways disagree because the bench's document is small and `locate` was O(1)
+(`indexOf` near the front, `lastIndexOf` near the back) while the planted pass is O(n). Per call
+assumes the traffic's documents are the bench's size (4.3 µs, 40 times too low); by time assumes
+the change grows like `locate`'s own time, which on the traffic is mostly V8 flattening the
+document string (7.5 ms, 43 times too high). With the real traffic alone (no app weights), only the
+by-time way is there and its range does not hold the measured cost. That is the limit: a real cost
+is as good as the bench's input is like the traffic's, and a second way is what shows when it is not.
+
+The same profile imported twice, and again after rebuilding the base, gave the same file
+(sha256 `245a1915…`), and the same diff gave the same ranking. The unit tests
+(`test/real-weights.test.ts`) plant a profile with a known split of self time, a minified bundle
+with a source map whose positions V8 reported, anonymous callbacks and a constructor, ogygia
+profiler dumps plain and encrypted, and the cost of both ways.
 
 ## Coverage of the app scenarios
 
