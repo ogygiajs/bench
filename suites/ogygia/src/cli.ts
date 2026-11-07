@@ -39,7 +39,7 @@ import {
 	rev_parse
 } from './checkout.ts';
 import { import_graphs } from './graph.ts';
-import { HEISENBENCH_DIR, empty_report, run_time, run_tree } from './run.ts';
+import { FULL_COMMANDS, HEISENBENCH_DIR, empty_report, run_time, run_tree } from './run.ts';
 import { RESULT_SCHEMA, render_full_summary, render_pr_section } from './section.ts';
 import type { Meta, Result } from './section.ts';
 import { SEARCH_BUDGET_MS, cases_with_inputs, pick_cases, run_searches } from './search.ts';
@@ -145,8 +145,10 @@ async function main(): Promise<void> {
 		const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
 		const jobs = Math.max(1, Math.floor(availableParallelism() / (base_tree ? 2 : 1)));
 		const tree_o = { jobs, check: true };
+		// A full run with the time layer also audits the prices (run.ts FULL_COMMANDS).
+		const head_commands = !mb && timed ? FULL_COMMANDS : undefined;
 		const run_head = () =>
-			run_tree(head, selection.selected, join(out, 'head'), log, measure, undefined, tree_o);
+			run_tree(head, selection.selected, join(out, 'head'), log, measure, head_commands, tree_o);
 		const run_base = () =>
 			base_tree
 				? run_tree(base_tree, base_files, join(out, 'base'), log, measure, undefined, tree_o)

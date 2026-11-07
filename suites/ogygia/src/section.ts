@@ -10,6 +10,7 @@ import {
 	SECTION_MARKER,
 	markdownCell,
 	markdownCode,
+	renderAudit,
 	renderMarkdown,
 	renderSections
 } from '@bench/heisenbench';
@@ -403,5 +404,7 @@ export function render_full_summary(r: Result): string {
 			lines.push('', `${cases.length - CAPS.full_rows} more cases are in result.json.`);
 		lines.push('');
 	}
+	// The price audit: a part only when some price is suspect.
+	if (r.head?.audit) lines.push(renderAudit(r.head.audit, { quiet: true }));
 	return lines.join('\n').trimEnd() + '\n';
 }

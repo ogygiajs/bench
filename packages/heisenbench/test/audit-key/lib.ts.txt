@@ -1,0 +1,32 @@
+export interface Row {
+	id: number;
+	title: string;
+	body: string;
+}
+
+export function rows(n: number): Row[] {
+	return Array.from({ length: n }, (_, i) => ({
+		id: i,
+		title: `Item ${i}`,
+		body: 'Fresh from the store, '.repeat(3)
+	}));
+}
+
+// A page built piece by piece, as every server renderer does: one join per row.
+export function render_page(list: Row[]): string {
+	let html = '<!doctype html><html><body><ul>';
+	for (const r of list) {
+		html += `<li id="row-${r.id}"><h2>${r.title}</h2><p>${r.body}</p></li>`;
+	}
+	html += '</ul></body></html>';
+	return html;
+}
+
+// The same rows, no joins: linear work that every price agrees on.
+export function total_length(list: Row[]): number {
+	let n = 0;
+	for (const r of list) {
+		n += r.title.length + r.body.length + (r.id % 7);
+	}
+	return n;
+}

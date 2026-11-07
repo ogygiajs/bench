@@ -1,0 +1,12 @@
+import { bench } from 'HEISENBENCH_BENCH';
+import { render_page, rows, total_length } from './lib.ts';
+
+bench('render_page: a list page built with +=', ({ list }) => render_page(list).length, {
+	setup: () => ({ list: rows(40) }),
+	scale: (_ctx, k) => ({ list: rows(40 * k) })
+});
+
+bench('total_length: the same rows, no joins', ({ list }) => total_length(list), {
+	setup: () => ({ list: rows(40) }),
+	scale: (_ctx, k) => ({ list: rows(40 * k) })
+});

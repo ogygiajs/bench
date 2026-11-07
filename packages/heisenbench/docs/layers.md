@@ -10,6 +10,7 @@ still compiles `.svelte` files and appends the `__heisenbench` export, so the sa
 | Steps             | `heisenbench run`                                    | counting | yes                                        | yes                  |
 | Engine health     | `heisenbench health`                                 | plain    | yes                                        | yes                  |
 | Growth            | `heisenbench growth`                                 | counting | cases with `scale`                         | cases with `scale`   |
+| Price audit       | `heisenbench audit`                                  | both     | no                                         | cases with `scale`   |
 | Time              | `heisenbench time`, `heisenbench run --measure time` | plain    | yes                                        | yes                  |
 | Real bytes        | `heisenbench run --measure bytes`                    | plain    | no                                         | yes                  |
 | Leaks             | `heisenbench run --measure leaks`                    | plain    | no                                         | yes                  |
@@ -313,6 +314,103 @@ bench('match_path: every request against a 300-route table', ({ table, paths }) 
 PR against base, a class change (linear to quadratic) is a finding. The same class with more
 steps is not: the step table already shows that. CI grows only the cases that declare `scale`
 (`--scaled on`).
+
+## Price audit
+
+Steps are only as good as the prices. Until `80ffd77`, every join (`s += x`, `a + b`, a template
+literal) was charged per character of its whole result, so a loop that builds a page cost n²
+characters, and three ogygia cases (`esi_rewrite`, `stitch_html`, the region round trip) looked
+quadratic while V8 ran them in linear time with cons strings. A person found it by reading code.
+`heisenbench audit` finds that kind of price on its own.
+
+For every case with a scaler it takes the steps the growth layer counted at 1x, 10x and 100x,
+split by kind (an op kind such as `call`, a dynamic cost such as `dyn.string_char`, a built-in
+such as `bi.Array.prototype.sort`), and times the plain build at the same sizes: 5 rounds, each
+in a fresh process. Then, per case and per round, it fits time over the sizes with competing
+models: the steps as they are; the steps plus a cost per call; the steps with an engine that gets
+a little slower per step as the input grows; and, for each kind that grows apart from the rest of
+the case, the steps with that one kind's price free (and, for a built-in, with a size term its
+price model leaves out). A kind is a **price suspect** when, in every round:
+
+1. the steps miss the time by 15% or more (RMS over the sizes),
+2. freeing that kind's price removes 90% of the miss, and at least half of what a per-call cost or
+   a slower engine would,
+3. of all the kinds that explain the round, it is the one that changes the case's steps the least,
+   no other kind explains it nearly as well, and even it needs its price off by more than 4x
+   either way.
+
+[calibration.md](calibration.md#the-price-audit) has the method in full. A suspect names the kind,
+the curve its steps grow on against the curve time grows on, between the two largest sizes, and
+the factor that would make them agree.
+
+With the old join pricing put back (a price file with `"cons_min": null`, through
+`HEISENBENCH_PRICES`), on ogygia `01dc5b9`, all 11 bench files (29 cases with a scaler, every
+dependency counted), M4 Max, Node 26.4.0, it finds the three cases a person had found by reading
+code:
+
+```
+SUSPECT  liftRegions + restoreRegions: the round trip around a foreign renderer  steps 1.419, time 1.008 (misfit 0.464; dyn.string_char at 0.0183x)
+SUSPECT  esi_rewrite: edge holes into ESI includes  steps 1.973, time 1.014 (misfit 0.761; dyn.string_char at 0.000668x)
+SUSPECT  stitch_html: splice fifty rendered holes into the page  steps 1.986, time 1.009 (misfit 0.765; dyn.string_char at 0.000242x)
+price suspect: dyn.string_char: steps grow quadratic in stitch_html: splice fifty rendered holes into the page (exponent 2.00), time grows linear (1.01) (and 2 more case(s)); the price likely charges work the engine does not do (time matches at 0.00067x its steps)
+```
+
+With the prices in this repository it finds one price, the same in every run, and it is real:
+
+```
+SUSPECT  transformHost: a route page as its island count grows  steps 1.907, time 1.698 (misfit 0.427; bi.String.prototype.split at 0.109x)
+price suspect: bi.String.prototype.split: steps grow quadratic in transformHost: a route page as its island count grows (exponent 1.99), time grows quadratic (1.70); the price likely charges work the engine does not do (time matches at 0.11x its steps)
+```
+
+The split is acorn's (counted since dependencies are counted by default):
+`this.input.slice(0, this.lineStart).split(lineBreak).length`, once per expression Svelte parses,
+on a prefix of the template that grows with it. `split` is priced per character (366 + 18.5 n),
+but what it costs follows the parts it makes. Timed on its own on 40,000 characters of code with a
+line break every 23, it took 0.45x its price; on 48,000 characters with a separator every 4, 2.3x.
+The audit saw acorn's long lines at 0.1x. A price per part would fix it; that is a calibration
+change and is left for one.
+
+The old pricing flags these four cases in both of its runs, and today's prices flag only
+`split` in both of theirs (and nothing at all in four earlier runs that counted only devalue,
+Svelte and magic-string). 22 cases miss time by less than 15%. Of the other seven, none is a
+suspect in any run:
+
+| Case                                     | Steps exponent | Time exponent | Why no suspect                                   |
+| ---------------------------------------- | -------------: | ------------: | ------------------------------------------------ |
+| `match_path` (300-route table)           |           1.00 |   1.35 – 1.51 | engine: time per step grows with the table       |
+| `decode_mappings`                        |           1.00 |   1.17 – 1.25 | engine                                           |
+| `page seed: the devalue lane`            |           1.01 |   1.16 – 1.20 | engine, or too little of it is one kind's        |
+| `seed refs: ... its own blocks`          |           1.00 |   1.09 – 1.15 | engine, or below the bar                         |
+| `signed hop`                             |           1.00 |   0.83 – 0.87 | constant: a fixed cost per call steps do not see |
+| `document tail`                          |           0.97 |   0.99 – 1.04 | ambiguous (25 kinds explain it), or engine       |
+| `flags: six flags read for 500 visitors` |           1.01 |   0.76 – 1.18 | no single price explains it                      |
+
+A case whose time follows a per-call constant (an `await` that costs microseconds) or grows a
+little faster than its steps (a working set that leaves the cache at 100x) is reported as
+`constant` or `engine` in the log and the JSON, never as a suspect. The audit checks growth, so a
+kind that is mispriced by a constant factor and always grows with the rest of its case cannot be
+told apart from it; that is what `heisenbench calibrate prices` measures, one built-in at a time.
+
+The report gets an `audit` section: every case's exponents, misfit and suspect, the findings, and
+the points (units and times per size) so several bench files can be judged together. The comment
+gets a "Prices" part only when a price is suspect. On `stitch.bench.ts` with the old join pricing
+(`run`, `growth` and `audit` into one report, so the lines come from the counted report):
+
+```md
+#### Prices
+
+Steps and time disagree on how these prices grow (3 case(s) audited at 1, 10, 100x, 5 rounds each). The counts are exact; the price they use may not be.
+
+- **price suspect: `dyn.string_char`**: it charges work the engine does not do; time matches at 0.000046x its steps
+  - `esi_rewrite: edge holes into ESI includes`: its steps grow quadratic (exponent 2.00), the case's time linear (1.00)
+  - `stitch_html: splice fifty rendered holes into the page`: its steps grow quadratic (exponent 2.00), the case's time linear (1.01)
+  - most of it at `packages/postrender/src/stitch.ts:139`, `packages/postrender/src/stitch.ts:82`, `packages/postrender/src/stitch.ts:79`
+```
+
+The whole suite took 480 to 504 s per audit on the M4 Max, counting the three sizes itself; in CI
+`growth` has counted them already.
+
+It runs on main and nightly, not on PRs ([ci.md](ci.md#full-runs)).
 
 ## Worst-case search
 

@@ -52,20 +52,45 @@ export interface Prices {
 		arguments_element: number;
 	};
 	builtins: Record<string, BuiltinPrice>;
+	/**
+	 * Joins (`a + b`, `s += x`, template literals) whose result has at least this many characters
+	 * make a cons string and cost no characters; shorter ones are copied and cost `string_char` per
+	 * character. Absent: V8's own threshold (layout.ts CONS_MIN). `null`: every join is copied and
+	 * charged for its whole result, the pricing before cons strings (a candidate price file can
+	 * bring it back, e.g. to check that `heisenbench audit` flags it).
+	 */
+	cons_min?: number | null;
 }
 
 function hash_of(prices: Prices): string {
 	return createHash('sha256').update(JSON.stringify(prices)).digest('hex').slice(0, 16);
 }
 
+/**
+ * Count with another price file: `HEISENBENCH_PRICES=<file>` replaces prices.json in this process
+ * and every process it starts (the transform, the runtime and the report all read it from here).
+ * For a calibration candidate or a price under audit; reports record its hash like any other.
+ */
+export const PRICES_ENV = 'HEISENBENCH_PRICES';
+
+function read_prices(path: string | URL): { prices: Prices; hash: string } {
+	const prices = JSON.parse(readFileSync(path, 'utf8')) as Prices;
+	return { prices, hash: hash_of(prices) };
+}
+
+// `globalThis.process`: the runtime is also bundled into pages (app layer), which have no process.
+const override = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
+	?.env?.[PRICES_ENV];
+
 /** The versioned price file (a JSON import, so a bundled runtime carries it along). */
-const DEFAULT = { prices: default_prices as Prices, hash: hash_of(default_prices as Prices) };
+const DEFAULT = override
+	? read_prices(override)
+	: { prices: default_prices as Prices, hash: hash_of(default_prices as Prices) };
 
 /** The default prices, or another price file (e.g. a calibration candidate). */
 export function load_prices(path?: string | URL): { prices: Prices; hash: string } {
 	if (!path) return DEFAULT;
-	const prices = JSON.parse(readFileSync(path, 'utf8')) as Prices;
-	return { prices, hash: hash_of(prices) };
+	return read_prices(path);
 }
 
 /** Price vector aligned with OP_KINDS. */

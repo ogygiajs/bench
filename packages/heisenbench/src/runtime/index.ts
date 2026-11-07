@@ -192,6 +192,8 @@ export class Runtime {
 	price_string_char: number;
 	price_rest_element: number;
 	price_arguments_element: number;
+	/** Joins from this length on are cons strings (Prices.cons_min; Infinity: none are). */
+	cons_min: number;
 
 	constructor(prices?: Prices) {
 		this.prices = prices ?? load_prices().prices;
@@ -204,6 +206,8 @@ export class Runtime {
 		this.price_string_char = d.string_char;
 		this.price_rest_element = d.rest_element;
 		this.price_arguments_element = d.arguments_element;
+		const cons = this.prices.cons_min;
+		this.cons_min = cons === undefined ? CONS_MIN : cons === null ? Infinity : cons;
 	}
 
 	// ------------------------------------------------------------ registration
@@ -500,7 +504,7 @@ export class Runtime {
 	 *  flat copy priced per character below that (layout.ts). */
 	str(d: Float64Array, i: number, v: string): string {
 		const n = v.length;
-		if (n >= CONS_MIN) {
+		if (n >= this.cons_min) {
 			d[2 * i] += CONS_STRING;
 			return v;
 		}

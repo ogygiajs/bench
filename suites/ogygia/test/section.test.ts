@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { REPORT_SCHEMA, diffReports } from '@bench/heisenbench';
+import { REPORT_SCHEMA, analyzeAudit, diffReports, loadPrices } from '@bench/heisenbench';
 import type { CaseReport, Report } from '@bench/heisenbench';
 import { parseComment, upsertSection } from '@bench/compare';
 import { merge_reports } from '../src/run.ts';
@@ -292,4 +292,45 @@ test('a full run lists every case with its counts', () => {
 	);
 	assert.match(md, /1 case in 1 bench file/);
 	assert.match(md, /\| `match` \| 1,234 \|/);
+});
+
+/** An audit section of one bench file: one case whose steps grow n² and its time n, or not. */
+function audit_part(name: string, mispriced: boolean): Report['audit'] {
+	const sizes = [1, 10, 100];
+	const units = sizes.map((k) => ({
+		call: 1000 * k,
+		prop_read: 3000 * k,
+		...(mispriced ? { 'dyn.string_char': 400_000 * k * k } : {})
+	}));
+	const ns = sizes.map((k) => 800 * k);
+	const input = {
+		file: `packages/${name}/bench/x.bench.ts`,
+		name,
+		sizes,
+		units,
+		rounds: [0.99, 1.01, 1, 1.02, 0.98].map((f) => ns.map((v) => v * f))
+	};
+	return analyzeAudit([input], { sizes, rounds: 5, prices: loadPrices() });
+}
+
+test('a full run audits every bench file together and shows Prices only when one is suspect', () => {
+	const a = { ...report('s', [case_of('page', 1)]), audit: audit_part('page', true) };
+	const b = { ...report('s', [case_of('rows', 1)]), audit: audit_part('rows', false) };
+	const merged = merge_reports([a, b], 'f'.repeat(40))!;
+	assert.equal(merged.audit!.cases.length, 2);
+	assert.deepEqual(
+		merged.audit!.findings.map((f) => [f.kind, f.cases.map((c) => c.name)]),
+		[['dyn.string_char', ['page']]]
+	);
+	const full = (head: Report) =>
+		render_full_summary(
+			result({
+				meta: { ...result({}).meta, kind: 'main', pr: null, base: null, merge_base: null },
+				selection: select_all(['x.bench.ts'], 'a full run'),
+				head
+			})
+		);
+	assert.match(full(merged), /#### Prices[\s\S]*price suspect: `dyn\.string_char`/);
+	const quiet = merge_reports([b], 'f'.repeat(40))!;
+	assert.doesNotMatch(full(quiet), /Prices/);
 });

@@ -51,6 +51,7 @@ code as it ships, nothing counted) next to the count:
 | Real bytes        | What V8 really allocates per function, next to the count's estimate.            |
 | Leaks             | Does the heap keep growing as the case runs again and again, and who holds it?  |
 | Growth            | Is the case constant, linear, n log n or quadratic in its input size?           |
+| Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?   |
 | Worst-case search | Which input of the same size costs the most steps?                              |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.  |
 
@@ -284,13 +285,14 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input and the fitted curve class.                                                       |
 | `heisenbench search <bench files>`                                                     | Mutates the input and keeps what costs more steps; reports the worst input found.                                  |
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
+| `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |
 | `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
 | `heisenbench inventory`, `heisenbench replay`, `heisenbench unmeasured`                | The measurement-source gate: every function, what measures it, and a failure for new ones that nothing measures.   |
 | `heisenbench calibrate prices\|points\|agree\|weights`                                 | Fit built-in prices and step-to-time weights on a quiet machine, and check that two calibrations agree.            |
 | `heisenbench verify`                                                                   | Run every planted case of every layer and check Heisenbench flags exactly the planted ones.                        |
 
-`health`, `growth` and `search` write their section into the report given by `--out`, so one JSON
-file per commit holds everything `diff` needs.
+`health`, `growth`, `search` and `audit` write their section into the report given by `--out`, so
+one JSON file per commit holds everything `diff` needs.
 
 `calibrate` and `verify` run only in a clone of this repository. The npm package does not ship
 the calibration corpus or the planted cases, and from npm both commands say so and stop.
@@ -398,9 +400,9 @@ only comparable on one V8.
 - **Coverage is low today.** ogygia's gate on PR #180: 1,524 of 8,234 functions (18.5%) have a
   measurement source, 555 through a bench and 969 through unit-test inputs that replay. The counted
   app scenarios reach 619 of `@ogygia/core`'s 3,434 functions (18%).
-- **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes and
-  leaks run on main and nightly. The worst-case search runs on a PR only for changed cases that
-  declare a `setup`, within a 4 minute budget.
+- **Not every layer runs on PRs.** PRs get steps, engine health, growth and time. Real bytes,
+  leaks and the price audit run on main and nightly. The worst-case search runs on a PR only for
+  changed cases that declare a `setup`, within a 4 minute budget.
 
 ## How it compares
 

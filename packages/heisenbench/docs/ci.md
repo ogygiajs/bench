@@ -135,9 +135,18 @@ cases". A bench file that does not load on one side is listed under "Did not run
 - **By hand.** `workflow_dispatch` with `sha`, and optionally `base_sha` for a PR-style run and
   `pr` plus `comment_repo` to post the section to a PR. A manual run is kept as an artifact only.
 
-A full run takes every bench file of one commit through `run`, `health` and `growth`, with every
-plain-build layer on `run` (`--measure all`: time, real bytes, leaks), and writes one summary
-table: steps, allocations, estimated and real bytes, p50 and leaks per case. It has 120 minutes.
+A full run takes every bench file of one commit through `run`, `health`, `growth` and `audit`,
+with every plain-build layer on `run` (`--measure all`: time, real bytes, leaks), and writes one
+summary table: steps, allocations, estimated and real bytes, p50 and leaks per case. It has 120
+minutes. `audit` reuses the steps `growth` counted at every size (the same `--out`), times the
+cases that declare `scale` at those sizes, and the suite judges every file's cases together
+(`mergeAudits`). The summary gets a "Prices" part only when a price is suspect
+([layers.md](layers.md#price-audit)).
+
+PRs do not run the audit. An ogygia PR cannot change a price (prices live in this repository), and
+the audit took 480 to 504 s for ogygia's 11 bench files on an M4 Max (5 rounds at 1x, 10x and
+100x, with its own growth count), half of what a whole PR run takes on a 4-core runner (15 min),
+and a CI runner is slower. A price that new ogygia code exposes is found on the next main push.
 
 A main or nightly run also counts the real apps, in an `app-weights` job beside the full run
 (read-only like it, 60 minutes): it waits for the commit's pkg.pr.new build, builds the ogygia app

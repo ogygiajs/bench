@@ -49,6 +49,10 @@ export interface TimeOptions {
 	warmup_ms?: number;
 	/** Minimum timed calls per measurement (default 64). */
 	iterations?: number;
+	/** Minimum warm-up calls (default 16, tinybench's). */
+	warmup_iterations?: number;
+	/** Measure CPU per call too (default true; the price audit reads the mean only). */
+	cpu?: boolean;
 }
 
 export const TIME_RULES: Record<'p50_ns' | 'p99_ns' | 'throughput' | 'cpu_ns', Rule> = {
@@ -109,14 +113,20 @@ async function cpu_per_call(
 	return cpu < CPU_RESOLUTION_US ? null : (cpu * 1e3) / calls;
 }
 
+/** Probe calls at most, and the wall time after which a probe of at least two calls stops. */
+const PROBE_CALLS = 16;
+const PROBE_MS = 100;
+
 /** Wall ms of one whole iteration (setup, call, teardown), averaged over a few. */
 async function probe_ms(c: BenchCase): Promise<number> {
-	const n = 16;
 	const t0 = performance.now();
-	for (let i = 0; i < n; i++) {
+	let n = 0;
+	// A slow iteration (a large input) needs fewer probes to know what one costs.
+	while (n < PROBE_CALLS && (n < 2 || performance.now() - t0 < PROBE_MS)) {
 		const ctx = c.setup ? await c.setup() : undefined;
 		await c.fn(ctx);
 		if (c.teardown) await c.teardown(ctx);
+		n++;
 	}
 	return Math.max((performance.now() - t0) / n, 1e-6);
 }
@@ -127,6 +137,7 @@ export async function time_case(c: BenchCase, o: TimeOptions = {}): Promise<Time
 	const bench = new Bench({
 		time: o.time_ms ?? 300,
 		warmupTime: o.warmup_ms ?? 100,
+		warmupIterations: o.warmup_iterations ?? 16,
 		iterations: o.iterations ?? 64,
 		warmup: false,
 		retainSamples: false,
@@ -178,7 +189,7 @@ export async function time_case(c: BenchCase, o: TimeOptions = {}): Promise<Time
 		p99_ns: r.latency.p99 * 1e6,
 		mean_ns,
 		throughput: r.throughput.mean,
-		cpu_ns: await cpu_per_call(c, async, mean_ns, (o.time_ms ?? 300) / 3),
+		cpu_ns: o.cpu === false ? null : await cpu_per_call(c, async, mean_ns, (o.time_ms ?? 300) / 3),
 		samples: runs
 	};
 }

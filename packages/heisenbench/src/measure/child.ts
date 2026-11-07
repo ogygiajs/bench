@@ -8,6 +8,8 @@ import type { BytesOptions } from './alloc.ts';
 import { find_leaks } from './leak.ts';
 import type { LeakOptions } from './leak.ts';
 import { time_builtins } from '../calibrate/prices.ts';
+import { time_sizes } from '../audit/time.ts';
+import type { AuditTimeOptions } from '../audit/time.ts';
 import { watch_parent } from '../proc.ts';
 
 /*
@@ -73,6 +75,13 @@ async function main(): Promise<void> {
 				return load_cases(job.roots[i], job.files[i], job.filter, `t${++generation}`);
 			};
 			result = await compare_time(base, pr, { ...(o as CompareOptions), load });
+			break;
+		}
+		case 'audit_time': {
+			const a = o as unknown as AuditTimeOptions & { scaled?: boolean };
+			result = await each(job, (c) =>
+				a.scaled && !c.scale ? Promise.resolve(null) : time_sizes(c, a)
+			);
 			break;
 		}
 		case 'bytes':
