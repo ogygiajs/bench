@@ -25,6 +25,7 @@ import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
 import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
 import { needs_bench_repo } from './own.ts';
+import { blame_command } from './blame/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -36,6 +37,10 @@ Counting (the counting build)
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
       [--time time.json] [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]
+  heisenbench blame <base.json> <pr.json> --root <pr checkout>   the hunks that made each
+                                 regressed case slower, by recounting the PR with hunks undone
+      [--repo dir] [--base sha] [--head sha] [--filter text] [--paths files.txt] [--min-ratio 0.02]
+      [--max-recounts 60] [--budget-ms 600000] [--jobs n] [--work dir] [--out blame.json] [--md blame.md]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -193,6 +198,26 @@ const SPECS: Record<string, Spec> = {
 		args: [2, 2],
 		files: true
 	},
+	blame: {
+		values: [
+			'root',
+			'repo',
+			'base',
+			'head',
+			'filter',
+			'paths',
+			'min-ratio',
+			'max-recounts',
+			'budget-ms',
+			'jobs',
+			'work',
+			'deps',
+			'out',
+			'md'
+		],
+		args: [2, 2],
+		files: true
+	},
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
 	health: { values: [...BENCH, 'warmup', 'runs', 'check'], args: [1, MANY], files: true },
 	audit: {
@@ -302,7 +327,9 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	tolerance: 'positive',
 	shift: 'positive',
 	requests: 'positive',
-	'requests-per-day': 'positive'
+	'requests-per-day': 'positive',
+	'max-recounts': 'count',
+	'min-ratio': 'positive'
 };
 
 const CHOICES: Record<string, readonly string[]> = {
@@ -512,6 +539,9 @@ async function main(argv: string[]): Promise<number> {
 			);
 		return 0;
 	}
+	if (cmd === 'blame') {
+		return blame_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
+	}
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
@@ -628,7 +658,7 @@ function check_dirs(cmd: string, flags: Map<string, string>): void {
 		if (!(existsSync(d) && statSync(d).isDirectory()))
 			throw new UsageError(`--${k} ${d} is not a directory`);
 	}
-	if (cmd === 'diff' && flags.has('repo')) {
+	if ((cmd === 'diff' || cmd === 'blame') && flags.has('repo')) {
 		const repo = flags.get('repo')!;
 		if (!(existsSync(repo) && statSync(repo).isDirectory()))
 			throw new UsageError(`--repo ${repo} is not a directory`);

@@ -16,6 +16,19 @@ export type { RunOptions } from './runner.ts';
 export { diff_reports as diffReports } from './diff/index.ts';
 export type { DiffResult, Finding, FunctionChange } from './diff/index.ts';
 export { render_markdown as renderMarkdown, SECTION_MARKER } from './diff/markdown.ts';
+export {
+	blame_regressions as blameRegressions,
+	regressed_cases as regressedCases,
+	BLAME_BUDGET_MS,
+	BLAME_MAX_RECOUNTS
+} from './blame/index.ts';
+export type {
+	BlameOptions,
+	BlameResult,
+	CaseBlame,
+	RegressedCase as BlameCase
+} from './blame/index.ts';
+export { render_blame as renderBlame } from './blame/markdown.ts';
 export { git_diff as gitDiff } from './diff/git.ts';
 export { code as markdownCode, cell as markdownCell } from './md.ts';
 export { env_mismatch as envMismatch, environment } from './report.ts';
