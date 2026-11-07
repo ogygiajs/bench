@@ -39,11 +39,14 @@ export {
 	coverage_line,
 	cpu_day_text,
 	exposure_cost,
+	model_cost_text,
 	real_cost,
 	requests_per_day,
 	traffic_unit
 } from './cost.ts';
-export type { CostInput, RealCost } from './cost.ts';
+export type { CostInput, ModelCost, RealCost } from './cost.ts';
+export { range_text } from '../ranges/text.ts';
+export type { RangeValue } from '../ranges/text.ts';
 export {
 	TRAFFIC_SCHEMA,
 	TRAFFIC_UNIT,

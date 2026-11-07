@@ -4,6 +4,8 @@ import type { GrowthClass } from '../growth/fit.ts';
 import { render_measure } from '../measure/markdown.ts';
 import { cell, code } from '../md.ts';
 import { odds_text } from '../models/feel.ts';
+import { range_text } from '../ranges/text.ts';
+import type { RangeValue } from '../ranges/text.ts';
 
 /** Marker of the Heisenbench section in the shared PR comment (upserted by section). */
 export const SECTION_MARKER = '<!-- heisenbench:section -->';
@@ -46,11 +48,14 @@ function cases_cell(cases: string[]): string {
 	return cases.length === 1 ? cell(cases[0]) : `${cell(cases[0])} and ${cases.length - 1} more`;
 }
 
-function change_row(c: FunctionChange, ns?: number): string {
+function change_row(c: FunctionChange, ns?: number, model?: RangeValue): string {
 	const base = c.base ? c.base.self_steps : 0;
 	const pr = c.pr ? c.pr.self_steps : 0;
 	const name = c.renamed_from ? `${c.function} (was ${c.renamed_from})` : c.function;
-	const est = ns === undefined ? '' : ` ≈ ${signed(ns, ' ns')}`;
+	// the weights' estimate, then the range model's (ranges/): extra text, never the verdict
+	const est =
+		(ns === undefined ? '' : ` ≈ ${signed(ns, ' ns')}`) +
+		(model ? `${ns === undefined ? ' ≈' : ';'} model ${range_text(model, true)}` : '');
 	const elided = c.findings.some((f) => f.elided);
 	return `| ${cell(c.case)} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${est} | ${signed(c.delta.allocations)} | ${bytes_cell(c.delta.bytes, elided)} | ${signed(c.delta.inclusive_steps)} |`;
 }
@@ -91,6 +96,8 @@ export function render_markdown(d: DiffResult): string {
 	// Elision qualifies bytes only: a function whose steps changed always shows.
 	const flagged = d.changes.filter((c) => c.findings.some(shown));
 	const ns_of = (c: FunctionChange) => d.measure?.ns[`${c.case} > ${c.module} > ${c.function}`];
+	const model_of = (c: FunctionChange) =>
+		d.measure?.ranges?.[`${c.case} > ${c.module} > ${c.function}`];
 	if (d.env && d.env.length > 0) {
 		lines.push(
 			`> ⚠️ The two reports come from different environments (${d.env.join('; ')}). Steps are compared; engine health is not.`,
@@ -119,7 +126,7 @@ export function render_markdown(d: DiffResult): string {
 		const sorted = [...flagged].sort(
 			(a, b) => Math.abs(b.delta.self_steps) - Math.abs(a.delta.self_steps)
 		);
-		for (const c of sorted.slice(0, MAX_ROWS)) lines.push(change_row(c, ns_of(c)));
+		for (const c of sorted.slice(0, MAX_ROWS)) lines.push(change_row(c, ns_of(c), model_of(c)));
 		if (sorted.length > MAX_ROWS)
 			lines.push('', `${sorted.length - MAX_ROWS} more changed functions are in the JSON result.`);
 		lines.push(

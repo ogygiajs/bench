@@ -2,7 +2,11 @@ import { load_prices } from '../prices.ts';
 import type { Prices } from '../prices.ts';
 import { prices_step_ns, units_ns } from '../calibrate/weights.ts';
 import type { FitSpread, Weights } from '../calibrate/weights.ts';
+import { add_units } from '../units.ts';
 import type { Units } from '../units.ts';
+import { change_range, usable } from '../ranges/apply.ts';
+import { load_ranges } from '../ranges/model.ts';
+import type { RangesModel } from '../ranges/model.ts';
 import type { AppWeights, FunctionWeight, Traffic } from './weights.ts';
 
 /*
@@ -35,6 +39,10 @@ import type { AppWeights, FunctionWeight, Traffic } from './weights.ts';
  *
  * Requests per day are given, or read off the profiles: requests over their recording window,
  * which extrapolates the rate during recording to a day.
+ *
+ * With the range model (ranges.json, trained on measured changes), a per-call change also gets
+ * `model`: that model's estimate of the change times the calls, with its 10-90% range. It is
+ * shown next to the estimate above and changes neither the ranking nor what is shown.
  */
 
 export type WayFrom = 'counted' | 'app scenarios' | 'by time';
@@ -73,6 +81,19 @@ export interface RealCost {
 	conversion: 'weights fit' | 'step_ns' | 'measured';
 	/** A `now` cost: the counted calls per request, when the profile counted them. */
 	calls?: number | null;
+	/**
+	 * The range model's estimate of the same change per call times the calls per request
+	 * (ranges/): extra text next to the estimate above, which alone ranks and judges.
+	 */
+	model?: ModelCost;
+}
+
+/** The range model's price of a change on the traffic: ns per request and CPU s per day. */
+export interface ModelCost {
+	ns: number;
+	range: [number, number];
+	cpu_s_per_day: number;
+	cpu_s_range: [number, number];
 }
 
 /** What a finding brings to the cost model. */
@@ -96,14 +117,22 @@ export interface CostContext {
 	prices: Prices;
 	/** Requests per day; read off the profiles when not given. */
 	requests_per_day?: number;
+	/** The range model, when it was trained with these prices. */
+	ranges?: RangesModel | null;
 }
 
 export function cost_context(
 	ns_weights: Weights | null,
 	requests_per_day?: number,
-	prices: Prices = load_prices().prices
+	prices: { prices: Prices; hash: string } = load_prices(),
+	ranges: RangesModel | null = load_ranges()
 ): CostContext {
-	return { ns_weights, prices, requests_per_day };
+	return {
+		ns_weights,
+		prices: prices.prices,
+		requests_per_day,
+		ranges: usable(ranges, prices.hash) ? ranges : null
+	};
 }
 
 const DEFAULT_SPREAD: FitSpread = {
@@ -277,7 +306,38 @@ export function real_cost(
 		ways.push(way('by time', real_ns * ratio, p10 / s, p90 * s, { real_ns, ratio }));
 	}
 	if (ways.length === 0) return null;
-	return priced('change', unit.key, rpd, combine(ways), ways, delta.conversion);
+	const cost = priced('change', unit.key, rpd, combine(ways), ways, delta.conversion);
+	const model = calls !== null && input.per_call ? model_cost(input, calls, rpd.n, ctx) : null;
+	return model ? { ...cost, model } : cost;
+}
+
+/**
+ * The range model's price of a change (ranges/apply.ts change_range on the base and the base plus
+ * the change), times the calls per request, per day. Null without the model or the units.
+ */
+function model_cost(
+	input: CostInput,
+	calls: number,
+	per_day: number,
+	ctx: CostContext
+): ModelCost | null {
+	if (!ctx.ranges || !input.delta_units) return null;
+	const base = input.ref_units ?? {};
+	const pr: Units = { ...base };
+	add_units(pr, input.delta_units);
+	const r = change_range(ctx.ranges, base, pr, ctx.prices);
+	if (!r) return null;
+	return model_of(r.ns * calls, [r.range[0] * calls, r.range[1] * calls], per_day);
+}
+
+function model_of(ns: number, range: [number, number], per_day: number): ModelCost {
+	const day = per_day / 1e9;
+	return {
+		ns: round_sig(ns),
+		range: [round_sig(range[0]), round_sig(range[1])],
+		cpu_s_per_day: round_sig(ns * day),
+		cpu_s_range: [round_sig(range[0] * day), round_sig(range[1] * day)]
+	};
 }
 
 /**
@@ -322,7 +382,7 @@ export function sum_costs(costs: readonly RealCost[]): RealCost | null {
 		hi += c.range[1];
 	}
 	const conversions = new Set(costs.map((c) => c.conversion));
-	return priced(
+	const sum = priced(
 		first.what,
 		first.unit,
 		{ n: first.requests_per_day, from: first.requests_per_day_from },
@@ -330,6 +390,17 @@ export function sum_costs(costs: readonly RealCost[]): RealCost | null {
 		[],
 		conversions.size === 1 ? first.conversion : 'weights fit'
 	);
+	// the model's estimates add the same way, when every cost has one
+	if (!costs.every((c) => c.model)) return sum;
+	let mns = 0;
+	let mlo = 0;
+	let mhi = 0;
+	for (const c of costs) {
+		mns += c.model!.ns;
+		mlo += c.model!.range[0];
+		mhi += c.model!.range[1];
+	}
+	return { ...sum, model: model_of(mns, ordered(mlo, mhi), first.requests_per_day) };
 }
 
 /** Four significant digits: estimates read the same from the same inputs on any machine. */
@@ -374,10 +445,19 @@ function rate_text(n: number): string {
 			: `${round_sig(n)}`;
 }
 
-/** `≈ 12 CPU-minutes/day at 1M requests/day (range 8–18)` */
+/**
+ * `≈ 12 CPU-minutes/day at 1M requests/day (range 8–18)`, and with the range model
+ * `; model 9.5 CPU-minutes/day, likely 1.2 to 76`.
+ */
 export function cost_text(c: RealCost): string {
 	const from = c.requests_per_day_from === 'profiles' ? ' (the profiles’ rate)' : '';
-	return `≈ ${cpu_day_text(c.cpu_s_per_day)} at ${rate_text(c.requests_per_day)} requests/day${from} (${cpu_range_text(c)})`;
+	return `≈ ${cpu_day_text(c.cpu_s_per_day)} at ${rate_text(c.requests_per_day)} requests/day${from} (${cpu_range_text(c)})${c.model ? `; model ${model_cost_text(c.model)}` : ''}`;
+}
+
+/** `9.5 CPU-minutes/day, likely 1.2 to 76`: both ends in the estimate's unit. */
+export function model_cost_text(m: ModelCost): string {
+	const [div, name] = cpu_unit(m.cpu_s_per_day);
+	return `${fmt(m.cpu_s_per_day / div)} ${name}, likely ${fmt(m.cpu_s_range[0] / div)} to ${fmt(m.cpu_s_range[1] / div)}`;
 }
 
 /** A time per request: `0.20 ms`, `4.3 µs`. */

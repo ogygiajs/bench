@@ -37,6 +37,7 @@ import { upgrade_command } from './upgrade/cli.ts';
 import { upstream_command } from './upstream/cli.ts';
 import { feel_command } from './models/cli.ts';
 import type { CacheSummary } from './cache/index.ts';
+import { receipt_command, registry_command, verify_receipt_command } from './receipt/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -75,6 +76,20 @@ Counting (the counting build)
       [--redact a,b] [--time-ms 1000] [--out issue.md] [--repro repro.ts] [--work dir]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
+
+Release receipts
+  heisenbench receipt <bench files...> --package <tarball | URL | name@version>   a release's counts:
+                                 the tarball installed in a scratch tree, each case counted and
+                                 grown in a process of its own, written down with the tarball's
+                                 integrity, the lockfile, the bench files, the engine and Node
+      [--include files,...]   files the bench files import or read, kept in the receipt too
+      [--preload files,...]   kept in the receipt, imported first by every counting process
+      [--root dir] [--npm on|off] [--work dir] [--jobs n]
+      [--out heisenbench-receipt.json]
+  heisenbench verify-receipt <receipt.json> <tarball | URL | name@version>   counts the tarball again
+                                 the way the receipt was made: "matches", or the first difference
+      [--work dir] [--jobs n] [--json result.json]
+  heisenbench registry <receipts...> --out index.html   the static page comparing them
 
 Layers (each writes its section into --out, default heisenbench-report.json)
   heisenbench health <bench files...>   V8 tiers, deopts and inline caches on the plain build
@@ -140,6 +155,9 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
+  heisenbench calibrate ranges [--data dir] [--data-version 1] [--out ranges.json] [--seed 1] [--md evaluation.md]
+                                 train the steps -> ms range model on the training data; --md
+                                 also writes its held-out evaluation
   heisenbench verify [--layers steps,elision,leak,engine,growth,contract,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
   heisenbench feel train [--data-version 1] [--seed 1] [--out feel.json] [--md eval.md]
@@ -346,6 +364,14 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
+	receipt: {
+		values: ['package', 'include', 'preload', 'root', 'npm', 'work', 'jobs', 'out'],
+		args: [1, MANY],
+		files: true
+	},
+	// the tarball may be a URL or name@version
+	'verify-receipt': { values: ['work', 'jobs', 'json'], args: [2, 2] },
+	registry: { values: ['out'], args: [1, MANY], files: true },
 	health: { values: [...BENCH, 'warmup', 'runs', 'check'], args: [1, MANY], files: true },
 	audit: {
 		values: [...BENCH, 'sizes', 'scaled', 'repeats', 'time-ms', 'md'],
@@ -437,7 +463,11 @@ const SPECS: Record<string, Spec> = {
 			'repeats',
 			'points',
 			'tolerance',
-			'shift'
+			'shift',
+			'data',
+			'data-version',
+			'seed',
+			'md'
 		],
 		args: [1, MANY],
 		files: true
@@ -534,7 +564,8 @@ const CHOICES: Record<string, readonly string[]> = {
 	check: ['on', 'off'],
 	scaled: ['on', 'off'],
 	'mutate-deps': ['on', 'off'],
-	edge: ['shapes', 'all']
+	edge: ['shapes', 'all'],
+	npm: ['on', 'off']
 };
 
 function check_number(name: string, v: string): void {
@@ -782,6 +813,9 @@ async function main(argv: string[]): Promise<number> {
 		return upgrade_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
 	}
 	if (cmd === 'upstream') return upstream_command(positional, flags);
+	if (cmd === 'receipt') return receipt_command(positional, flags);
+	if (cmd === 'verify-receipt') return verify_receipt_command(positional, flags);
+	if (cmd === 'registry') return registry_command(positional, flags);
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';

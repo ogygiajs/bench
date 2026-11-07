@@ -45,7 +45,7 @@ test('wrong or missing arguments: one line, exit 2, no stack', () => {
 		[['time', 'x.bench.ts', '--base', '.'], /--pr <dir> is required/],
 		[['coverage', 'other.json'], /--app <app dir,app dir...> is required/],
 		[['verify', 'extra'], /takes no file arguments/],
-		[['calibrate', 'sideways'], /calibrate takes prices, points, agree or weights/]
+		[['calibrate', 'sideways'], /calibrate takes prices, points, agree, weights or ranges/]
 	];
 	for (const [args, msg] of cases) {
 		const r = heisenbench(args, dir);

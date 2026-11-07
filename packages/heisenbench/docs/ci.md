@@ -398,15 +398,17 @@ tables.
 Every run is kept on the orphan `results` branch of this repository, next to the app benchmark's
 files, under `heisenbench/`:
 
-| Path                                      | What                                                       |
-| ----------------------------------------- | ---------------------------------------------------------- |
-| `heisenbench/pr/<number>.json`            | The newest run of that PR.                                 |
-| `heisenbench/commit/<sha>.json`           | The newest run of that ogygia commit, PR or main.          |
-| `heisenbench/main/<sha>.json`             | A full run of a main commit.                               |
-| `heisenbench/main/latest.json`            | The newest full run.                                       |
-| `heisenbench/main/app-weights.json`       | Real-app weights of the newest main run: what PRs rank by. |
-| `heisenbench/main/app-weights/<sha>.json` | Real-app weights of that main commit.                      |
-| `heisenbench/main/real-weights.json`      | Weights of real traffic, uploaded by the owner (optional). |
+| Path                                                  | What                                                       |
+| ----------------------------------------------------- | ---------------------------------------------------------- |
+| `heisenbench/pr/<number>.json`                        | The newest run of that PR.                                 |
+| `heisenbench/commit/<sha>.json`                       | The newest run of that ogygia commit, PR or main.          |
+| `heisenbench/main/<sha>.json`                         | A full run of a main commit.                               |
+| `heisenbench/main/latest.json`                        | The newest full run.                                       |
+| `heisenbench/main/app-weights.json`                   | Real-app weights of the newest main run: what PRs rank by. |
+| `heisenbench/main/app-weights/<sha>.json`             | Real-app weights of that main commit.                      |
+| `heisenbench/main/real-weights.json`                  | Weights of real traffic, uploaded by the owner (optional). |
+| `heisenbench/registry/receipts/<name>/<version>.json` | A release's receipt ([receipts.md](receipts.md)).          |
+| `heisenbench/registry/index.html`                     | The registry page, made from those receipts.               |
 
 Each run file is a `result.json` (`schema: "ogygia-heisenbench/1"`): `meta` (kind, PR, commits, the Heisenbench
 commit that counted, the Node version, the run URL, the layers measured), `selection`, the `head`

@@ -3,6 +3,10 @@ import type { CaseReport, Report } from '../report.ts';
 import type { DiffResult } from '../diff/index.ts';
 import { load_weights, units_ns } from '../calibrate/weights.ts';
 import type { LeakResult } from './leak.ts';
+import { change_range, usable } from '../ranges/apply.ts';
+import { load_ranges } from '../ranges/model.ts';
+import type { RangesModel } from '../ranges/model.ts';
+import type { RangeValue } from '../ranges/text.ts';
 
 /*
  * What the plain-build layers change in a PR vs base diff:
@@ -12,7 +16,8 @@ import type { LeakResult } from './leak.ts';
  *   but it is not a memory regression and the comment lists it apart.
  * - Leaks: a case that leaks on the PR and not on the base.
  * - Time-led cases: the steps -> ns estimate does not hold for them; read the time layer.
- * - Estimated ns per changed function, from the weights (next to the step delta).
+ * - Estimated ns per changed function, from the weights (next to the step delta), and the range
+ *   model's estimate with its 10-90% range (ranges/).
  */
 
 export interface LeakFinding {
@@ -28,6 +33,9 @@ export interface MeasureDiff {
 	/** Estimated ns delta per changed function: `case > function id` -> ns. */
 	ns: Record<string, number>;
 	weights_version: number | null;
+	/** The range model's estimate of the same changes, with its 10-90% range (ranges/). */
+	ranges?: Record<string, RangeValue>;
+	ranges_version?: number;
 }
 
 /** Real bytes grew by less than this share of the estimated growth: the engine elided it. */
@@ -53,7 +61,12 @@ function by_unique_name(cases: CaseReport[]): Map<string, CaseReport> {
 	return out;
 }
 
-export function measure_diff(d: DiffResult, base: Report, pr: Report): MeasureDiff {
+export function measure_diff(
+	d: DiffResult,
+	base: Report,
+	pr: Report,
+	ranges?: RangesModel | null
+): MeasureDiff {
 	const base_cases = by_unique_name(base.cases);
 	const pr_cases = by_unique_name(pr.cases);
 	for (const ch of d.changes) {
@@ -79,13 +92,26 @@ export function measure_diff(d: DiffResult, base: Report, pr: Report): MeasureDi
 	}
 	const w = load_weights();
 	const ns: Record<string, number> = {};
+	const { prices, hash } = load_prices();
 	if (w) {
-		const prices = load_prices().prices;
 		for (const ch of d.changes) {
 			const a = ch.pr?.units ? units_ns(ch.pr.units, w, prices) : 0;
 			const b = ch.base?.units ? units_ns(ch.base.units, w, prices) : 0;
 			if (a !== b) ns[`${ch.case} > ${ch.module} > ${ch.function}`] = Math.round((a - b) * 10) / 10;
 		}
 	}
-	return { leaks, time_led, ns, weights_version: w?.version ?? null };
+	// the range model's estimate of the same changes, next to the weights' (ranges/)
+	const m = ranges === undefined ? load_ranges() : ranges;
+	const out: MeasureDiff = { leaks, time_led, ns, weights_version: w?.version ?? null };
+	if (usable(m, hash)) {
+		const r: Record<string, RangeValue> = {};
+		for (const ch of d.changes) {
+			if (!ch.pr?.units && !ch.base?.units) continue;
+			const v = change_range(m, ch.base?.units, ch.pr?.units, prices);
+			if (v) r[`${ch.case} > ${ch.module} > ${ch.function}`] = v;
+		}
+		out.ranges = r;
+		out.ranges_version = m.version;
+	}
+	return out;
 }

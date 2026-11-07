@@ -25,7 +25,8 @@ import type {
 	Report,
 	TimeComparison
 } from '@bench/heisenbench';
-import { calls_text, cost_text } from '@bench/heisenbench/weight';
+import { calls_text, cost_text, range_text } from '@bench/heisenbench/weight';
+import type { RangeValue } from '@bench/heisenbench/weight';
 import type { BlameRun } from './blame.ts';
 import type { ContractsRun } from './contracts.ts';
 import type { LoadError } from './run.ts';
@@ -142,6 +143,11 @@ function ns_text(ns: number): string {
 	return `${sign}${a.toFixed(a >= 10 ? 0 : 1)} ns`;
 }
 
+const scaled = (r: RangeValue, k: number): RangeValue => ({
+	ns: r.ns * k,
+	range: [r.range[0] * k, r.range[1] * k]
+});
+
 /** A time in the unit that reads best: `877.86 µs`, the same as the time table. */
 function time_text(ns: number): string {
 	if (ns >= 1e6) return `${(ns / 1e6).toFixed(2)} ms`;
@@ -226,8 +232,14 @@ export function weight_lines(w: WeightRun): string[] {
 	];
 	for (const r of shown.slice(0, CAPS.weights)) {
 		const t = r.top;
+		// the weights' estimate, then the range model's: extra text, the ranking stays on steps
+		const m = t && r.ns_model ? scaled(r.ns_model, t.calls) : null;
+		const est = [
+			t && t.ns !== null ? `≈ ${ns_text(t.ns)}` : null,
+			m ? `model ${range_text(m, true)}` : null
+		].filter((x) => x !== null);
 		const per = t
-			? `${steps_text(t.steps)} steps${t.ns !== null ? ` (≈ ${ns_text(t.ns)})` : ''} per ${markdownCell(t.unit)} (${Math.round(t.calls * 100) / 100} calls)`
+			? `${steps_text(t.steps)} steps${est.length > 0 ? ` (${est.join('; ')})` : ''} per ${markdownCell(t.unit)} (${Math.round(t.calls * 100) / 100} calls)`
 			: 'no scenario runs it';
 		lines.push(
 			`| ${code(`${r.function}:${r.line}`)} | ${steps_text(r.delta_per_call)} steps | ${r.heat} | ${per} |`
