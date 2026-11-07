@@ -28,7 +28,8 @@ import { app_command, app_diff_sections, diff_ranking } from './app/cli.ts';
 import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
 import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
-import { needs_bench_repo } from './own.ts';
+import { needs_bench_repo, own_file } from './own.ts';
+import { CONDITIONS_ENV, parse_conditions, register_conditions } from './loader/conditions.ts';
 import { blame_command } from './blame/cli.ts';
 import { prove_command } from './prove/cli.ts';
 import { contracts_command } from './contracts/cli.ts';
@@ -159,9 +160,11 @@ ship the calibration corpus or the planted cases)
 
 Every command that loads bench files (run, health, growth, search, audit, time, blame, record,
 prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
-process it starts (resolve hooks for path aliases, Vite-only modules, globals the code expects).
-Relative imports of TypeScript sources (./x.js for x.ts, ./x for x.ts or x/index.ts) resolve
-without one.
+process it starts (resolve hooks for path aliases, Vite-only modules, globals the code expects),
+and --conditions <name>[,name]: export conditions the code under test resolves packages with, as
+its bundler does (svelte for a Svelte project; Heisenbench's own imports keep Node's). Relative
+imports of TypeScript sources (./x.js for x.ts, ./x for x.ts or x/index.ts), and imports with no
+extension inside a package (./helpers for helpers.js), resolve without one.
 
 Optional peer dependencies, installed in the project when needed: typescript (heisenbench dts, and
 TypeScript that type stripping cannot run), svelte (.svelte files), playwright (the app layer).
@@ -297,7 +300,7 @@ interface Spec {
 	switches?: readonly string[];
 }
 
-const BENCH = ['root', 'filter', 'out', 'deps', 'sha', 'import'];
+const BENCH = ['root', 'filter', 'out', 'deps', 'sha', 'import', 'conditions'];
 const MANY = Number.POSITIVE_INFINITY;
 
 const SPECS: Record<string, Spec> = {
@@ -339,7 +342,8 @@ const SPECS: Record<string, Spec> = {
 			'requests-per-day',
 			'out',
 			'md',
-			'import'
+			'import',
+			'conditions'
 		],
 		args: [2, 2],
 		files: true
@@ -414,7 +418,7 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	time: {
-		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md', 'import'],
+		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md', 'import', 'conditions'],
 		args: [1, MANY]
 	},
 	// app reports, or `import` and production profiles
@@ -426,7 +430,11 @@ const SPECS: Record<string, Spec> = {
 	coverage: { values: ['app', 'packages', 'out', 'md'], args: [1, MANY], files: true },
 	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
 	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
-	record: { values: ['targets', 'root', 'out', 'import'], args: [1, MANY], files: true },
+	record: {
+		values: ['targets', 'root', 'out', 'import', 'conditions'],
+		args: [1, MANY],
+		files: true
+	},
 	unmeasured: {
 		values: [
 			'inventory',
@@ -486,7 +494,8 @@ const SPECS: Record<string, Spec> = {
 			'weights',
 			'proposals',
 			'model',
-			'import'
+			'import',
+			'conditions'
 		],
 		args: [2, 2],
 		switches: ['propose', 'send-inputs']
@@ -690,6 +699,7 @@ async function main(argv: string[]): Promise<number> {
 		return 0;
 	}
 	check_dirs(cmd, flags);
+	conditions(flags.get('conditions'));
 	await preload(flags.get('import'));
 	if (cmd === 'run') {
 		const deps = deps_of(flags.get('deps'), true);
@@ -896,6 +906,23 @@ async function preload(list: string | undefined): Promise<void> {
 		const opts = process.env.NODE_OPTIONS ?? '';
 		process.env.NODE_OPTIONS = `${opts} --import=${abs}`.trim();
 	}
+}
+
+/**
+ * `--conditions svelte,browser`: the export conditions the code under test resolves packages with
+ * (loader/conditions.ts), in this process and, through NODE_OPTIONS, in every process it starts.
+ * Before `--import`, so a preload's own imports get them too.
+ */
+function conditions(list: string | undefined): void {
+	if (list === undefined) return;
+	const names = parse_conditions(list);
+	if (names.length === 0) throw new UsageError('--conditions takes names, like svelte,browser');
+	process.env[CONDITIONS_ENV] = names.join(',');
+	register_conditions(names);
+	const file = own_file('loader/conditions');
+	if (/\s/.test(file))
+		throw new UsageError('--conditions: Heisenbench is installed at a path with a space');
+	process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --import=${file}`.trim();
 }
 
 /** `--root` must be a directory, and the directories `--out`, `--md` and `--json` write into must exist. */

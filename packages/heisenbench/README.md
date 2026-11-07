@@ -312,7 +312,15 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
 - Relative imports the way TypeScript projects write them. When Node cannot find one, the source
   file it names is tried: `./clone.js` loads `clone.ts` (`.mjs` loads `.mts`), and `./core` with
   no extension loads `core.ts`, `core.mts`, `core.js`, `core.mjs`, `core/index.ts` or
-  `core/index.js`. Packages in `node_modules` resolve the way they ship.
+  `core/index.js`. Packages in `node_modules` resolve the way they ship, except that an import
+  with no extension inside one is tried as `.js`, `.mjs` and `/index.js`, as a bundler does
+  (Svelte component libraries built with `svelte-package` ship `./helpers`).
+- Packages the way your bundler picks their build. Vite with the Svelte plugin resolves with the
+  `svelte` export condition, a browser bundle with `browser`; Node with neither, so a package's
+  `exports` can hand a bench another build than the app gets. `--conditions svelte` (or
+  `svelte,browser`) adds them for the code under test, in every process the command starts.
+  Heisenbench's own imports keep Node's conditions (its parser's `browser` build does not run in
+  Node, which is why `NODE_OPTIONS=--conditions=browser` breaks it).
 - A type imported without `type` (`import { Rule, apply } from './rules.js'`, where `Rule` is an
   `export type`). Node's type stripping keeps that import and the module would not link ("does
   not provide an export named 'Rule'"); a named import that nothing in the module reads is

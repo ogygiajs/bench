@@ -11,8 +11,12 @@ import { registerHooks } from 'node:module';
  * Heisenbench counts the source as it is, so when Node cannot find a relative import, the source
  * file it names is tried: `x.js` -> `x.ts`, `x.mjs` -> `x.mts`, and an import with no extension ->
  * `x.ts`, `x.mts`, `x.js`, `x.mjs`, `x/index.ts`, `x/index.js`. Only after Node's own resolution
- * failed, and only for relative imports from files outside node_modules: what Node resolves
- * stays as it is, and a package is resolved the way it ships.
+ * failed: what Node resolves stays as it is.
+ *
+ * Inside a package (a file in node_modules) only the bundler's part applies: an import with no
+ * extension -> `x.js`, `x.mjs`, `x/index.js`. Packages built for bundlers ship those (Svelte
+ * component libraries built with `svelte-package` keep their source's `./helpers`); a package's
+ * `x.js` never becomes an `x.ts`.
  */
 
 /** Extensions an import already names: nothing is appended to these. */
@@ -20,19 +24,21 @@ const KNOWN = /\.(?:[cm]?[jt]sx?|json|node|svelte|wasm)$/;
 
 /** What a relative import may name instead, in the order tried (none: not a relative import). */
 export function source_candidates(specifier: string, parent: string | undefined): string[] {
-	if (!parent || !parent.startsWith('file:') || parent.includes('/node_modules/')) return [];
+	if (!parent || !parent.startsWith('file:')) return [];
 	if (!specifier.startsWith('./') && !specifier.startsWith('../')) return [];
+	const in_package = parent.includes('/node_modules/');
 	const q = specifier.search(/[?#]/);
 	const path = q === -1 ? specifier : specifier.slice(0, q);
 	const rest = q === -1 ? '' : specifier.slice(q);
-	if (path.endsWith('.js')) return [path.slice(0, -3) + '.ts' + rest];
-	if (path.endsWith('.mjs')) return [path.slice(0, -4) + '.mts' + rest];
+	if (!in_package && path.endsWith('.js')) return [path.slice(0, -3) + '.ts' + rest];
+	if (!in_package && path.endsWith('.mjs')) return [path.slice(0, -4) + '.mts' + rest];
 	if (KNOWN.test(path)) return [];
 	const dir = path.endsWith('/') ? path : path + '/';
+	const files = in_package ? ['.js', '.mjs'] : ['.ts', '.mts', '.js', '.mjs'];
+	const index = in_package ? ['index.js'] : ['index.ts', 'index.js'];
 	return [
-		...(path.endsWith('/') ? [] : ['.ts', '.mts', '.js', '.mjs'].map((e) => path + e + rest)),
-		dir + 'index.ts' + rest,
-		dir + 'index.js' + rest
+		...(path.endsWith('/') ? [] : files.map((e) => path + e + rest)),
+		...index.map((f) => dir + f + rest)
 	];
 }
 
