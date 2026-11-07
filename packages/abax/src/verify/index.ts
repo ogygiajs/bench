@@ -12,7 +12,8 @@ import type { Check, VerifyLayer, VerifyRow } from './types.ts';
  *
  *   steps     extra loop, extra allocation, quadratic helper; rename, comments, reorder, formatting
  *   elision   an allocation the engine removes: counted, shown, never called a regression
- *   leak      a module-level array that keeps every row; its twin keeps only the last
+ *   leak      a module-level array that keeps every row; its twin keeps only the last. A closure
+ *             cache keyed by the row object; its twin is keyed by row id (twenty entries)
  *   engine    shape order, int -> double, delete, megamorphic access; their same-line twins; no-ops
  *   growth    linear -> quadratic; a constant factor that is not a class change
  *   search    quadratic inputs found; a linear function has none

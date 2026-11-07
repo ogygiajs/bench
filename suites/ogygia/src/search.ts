@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { parseSync } from 'oxc-parser';
 import type { DiffResult, Report, SearchCase, SearchReport } from '@bench/abax';
 import type { Tree } from './checkout.ts';
-import { ABAX_CLI, node_options } from './run.ts';
+import { ABAX_CLI, COUNTED_DEPS, node_options } from './run.ts';
 import { spawn_group } from './spawn.ts';
 
 /** The whole layer on a PR, both sides together. */
@@ -212,7 +212,9 @@ export async function run_searches(
 				'--sha',
 				tree.sha,
 				'--budget-ms',
-				String(share)
+				String(share),
+				'--deps',
+				COUNTED_DEPS.join(',')
 			],
 			{ cwd: tree.dir, env: { ...process.env, NODE_OPTIONS: node_options(tree) } },
 			share + GRACE_MS

@@ -1,0 +1,34 @@
+export interface Row {
+	id: number;
+	tags: string[];
+}
+
+function score(row: Row): number {
+	let s = 0;
+	for (const t of row.tags) {
+		s += t.length;
+	}
+	return s;
+}
+
+function memo(f: (row: Row) => number): (row: Row) => number {
+	const cache = new Map<Row, number>();
+	return (row) => {
+		let v = cache.get(row);
+		if (v === undefined) {
+			v = f(row);
+			cache.set(row, v);
+		}
+		return v;
+	};
+}
+
+const scored = memo(score);
+
+export function rank(rows: Row[]): number[] {
+	const out: number[] = [];
+	for (const r of rows) {
+		out.push(scored(r));
+	}
+	return out;
+}

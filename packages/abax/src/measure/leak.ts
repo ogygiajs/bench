@@ -10,31 +10,43 @@ import { Snapshot } from './snapshot.ts';
 import type { RawSnapshot, Step } from './snapshot.ts';
 
 /*
- * Leaks (spec 4). On the plain build, in a child with --expose-gc:
+ * Leaks (spec 4). On the plain build, in a child with --expose-gc. Clean code moves the heap too:
+ * V8 compiles and re-tiers it, fills inline caches and feedback vectors, and two full GCs leave a
+ * few KB either way. Over 1,000 calls that reads as 2 to 20 B a call, up or down. So a leak needs
+ * three kinds of evidence, each one clean code cannot give:
  *
- * 1. Warm up one round, then `rounds` rounds of `calls` calls. After each round, two full GCs and
- *    the used heap size. The slope of heap over calls (least squares) is the retained bytes per
- *    call. A case grows when the slope is at least `min_bytes_per_call` and the heap went up in all
- *    but at most one round (one-off caches filled by the first rounds do not make a trend).
- * 2. Only when it grows: heap snapshot A, `confirm` more rounds, GC, snapshot B. Objects alive in B
- *    with ids above A's largest id were allocated by the confirm rounds and are still held. They
- *    are grouped by type (constructor name, `Function`, `string`...); the largest group is the top
- *    retained type. It is a leak when that group holds at least one object per 4 confirm calls.
- * 3. For one object of that type: the shortest strong retainer chain from the GC roots. Walking it
- *    back from the object, the first context variable (a `let`/`const` a closure or the module
- *    keeps alive) names the variable; a closure holding that context gives the module and
- *    function, and the variable's declaration gives the source line. (For a compiled .svelte
- *    file the line is a line of the compiled output.)
+ * 1. A/A noise. Three warm-up rounds of `calls` (N) calls (with a run of full GCs after the last
+ *    two), then rounds of N, N, 2N and 4N calls, so the heap is read (after two full GCs) at N,
+ *    2N, 4N and 8N calls. The first two rounds do the same work; the bytes their growth differs by
+ *    is this case's noise. The case's floor is that noise spread over the 8N calls, or
+ *    `min_bytes_per_call` when larger, and growth per call over the 8N calls must reach it.
+ * 2. Growth linear in calls. A leak keeps about the same bytes per call from the start to 2N, 4N
+ *    and 8N calls (a backing store that doubles makes it wobble, not drift); noise, a cache that
+ *    fills once or code V8 compiles late does not. Each must be within a factor 2 of the 8N one,
+ *    and the heap must already grow by the floor over the first N.
+ * 3. A program variable that holds the new objects. Only when 1 and 2 hold: heap snapshot A,
+ *    `confirm` more rounds of N, GC, snapshot B. Objects alive in B with ids above A's largest id
+ *    were made by the confirm rounds and are still held. Each gets its shortest strong retainer
+ *    chain from the GC roots, with engine holders (compiled code, feedback vectors, inline caches,
+ *    hidden classes, allocation sites) retaining nothing. Walking the chain back from the object,
+ *    the first context variable that a function of a source module keeps alive (a module `let` or
+ *    `const`, or one a closure captured) is the owner. Objects with no such owner are the engine's
+ *    or the harness's, never a leak. The owned objects are grouped by owner and type; the largest
+ *    group is the top retained type, and it is a leak when it holds at least one object per 4
+ *    confirm calls. The owner names the variable; the first function of the module that reads or
+ *    writes it is the one named, and the variable's declaration gives the source line. (For a
+ *    compiled .svelte file the line is a line of the compiled output.)
+ *
+ * A leak held only by a global property (`globalThis.x`) has no owner variable, so it is not
+ * reported.
  */
 
 export interface LeakOptions {
-	/** Measured rounds (default 6). */
-	rounds?: number;
-	/** Calls per round (default 1000). */
+	/** Calls per round, N (default 1000). */
 	calls?: number;
-	/** Confirm rounds between the two snapshots (default 2). */
+	/** Rounds of N calls between the two snapshots (default 2). */
 	confirm?: number;
-	/** Retained bytes per call below this are not growth (default 4). */
+	/** Retained bytes per call below this are not growth, whatever the noise (default 4). */
 	min_bytes_per_call?: number;
 }
 
@@ -50,9 +62,15 @@ export interface LeakSource {
 export interface LeakResult {
 	leaked: boolean;
 	calls: number;
-	/** Used heap after each measured round (after GC). */
+	/** Used heap (after GC) at 0, N, 2N, 4N and 8N calls. */
 	heap: number[];
+	/** Retained bytes per call over all 8N calls. */
 	bytes_per_call: number;
+	/** Retained bytes per call from the start to N, 2N, 4N and 8N calls. */
+	scales: Array<{ calls: number; bytes_per_call: number }>;
+	/** This case's growth floor, B/call: its A/A noise over 8N calls, or the fixed floor. */
+	threshold: number;
+	/** Steps 1 and 2 hold: growth above the noise, linear in calls. */
 	grows: boolean;
 	retained: { type: string; count: number; bytes: number; per_call: number } | null;
 	chain: Step[] | null;
@@ -73,20 +91,6 @@ async function round(c: BenchCase, calls: number): Promise<void> {
 		await c.fn(ctx);
 		if (c.teardown) await c.teardown(ctx);
 	}
-}
-
-function slope(ys: number[], step: number): number {
-	const n = ys.length;
-	if (n < 2) return 0;
-	const mx = ((n - 1) * step) / 2;
-	const my = ys.reduce((a, b) => a + b, 0) / n;
-	let num = 0;
-	let den = 0;
-	for (let i = 0; i < n; i++) {
-		num += (i * step - mx) * (ys[i] - my);
-		den += (i * step - mx) ** 2;
-	}
-	return num / den;
 }
 
 async function snapshot_text(): Promise<string> {
@@ -129,42 +133,82 @@ async function snapshot_max_id(): Promise<number> {
 	return max;
 }
 
+const round2 = (x: number): number => Math.round(x * 100) / 100;
+
+/** Full GCs before the first heap reading. */
+const FLUSH_GCS = 12;
+
+/** Calls before each heap reading, in units of N: the rounds are N, N, 2N and 4N calls. */
+export const CHECKPOINTS = [0, 1, 2, 4, 8];
+
+/**
+ * Steps 1 and 2 from the used heap at each checkpoint: bytes per call at each scale, the case's
+ * floor, and whether it grows.
+ */
+export function judge_growth(
+	heap: number[],
+	calls: number,
+	min: number
+): Pick<LeakResult, 'bytes_per_call' | 'scales' | 'threshold' | 'grows'> {
+	// A/A: the first two rounds do the same work; what they differ by is this case's noise.
+	const noise = Math.abs(heap[1] - heap[0] - (heap[2] - heap[1]));
+	const total = CHECKPOINTS[CHECKPOINTS.length - 1] * calls;
+	const threshold = Math.max(min, noise / total);
+	const scales = CHECKPOINTS.slice(1).map((k, i) => ({
+		calls: k * calls,
+		bytes_per_call: (heap[i + 1] - heap[0]) / (k * calls)
+	}));
+	const per = scales.map((s) => s.bytes_per_call);
+	const last = per[per.length - 1];
+	// Already growing at N; from 2N on, within a factor 2 of the 8N rate. (The first N calls can
+	// read far off: a hash table the earlier calls filled may double, or not, inside them.)
+	const grows =
+		last >= threshold && per[0] >= min && per.slice(1).every((p) => p * 2 >= last && p <= last * 2);
+	return {
+		bytes_per_call: round2(last),
+		scales: scales.map((s) => ({ calls: s.calls, bytes_per_call: round2(s.bytes_per_call) })),
+		threshold: round2(threshold),
+		grows
+	};
+}
+
 export async function find_leaks(
 	c: BenchCase,
 	root: string,
 	o: LeakOptions = {}
 ): Promise<LeakResult> {
 	if (!gc) throw new Error('abax: leak checks need --expose-gc');
-	const rounds = o.rounds ?? 6;
 	const calls = o.calls ?? 1000;
 	const confirm = o.confirm ?? 2;
 	const min = o.min_bytes_per_call ?? 4;
 
-	await round(c, calls);
-	const heap: number[] = [used_heap()];
-	for (let r = 0; r < rounds; r++) {
+	// V8 drops the bytecode of functions that sat unused through several full GCs (what loading
+	// the bench files ran): left to the measured rounds, that is a one-off drop of megabytes. Three
+	// warm-up rounds, with a run of full GCs after the second and the third.
+	for (let r = 0; r < 3; r++) {
 		await round(c, calls);
+		if (r > 0) for (let i = 0; i < FLUSH_GCS; i++) gc();
+	}
+	const heap: number[] = [used_heap()];
+	for (let i = 1; i < CHECKPOINTS.length; i++) {
+		await round(c, (CHECKPOINTS[i] - CHECKPOINTS[i - 1]) * calls);
 		heap.push(used_heap());
 	}
-	let ups = 0;
-	for (let i = 1; i < heap.length; i++) if (heap[i] > heap[i - 1]) ups++;
-	const per_call = slope(heap, calls);
-	const grows = per_call >= min && ups >= heap.length - 2;
 	const result: LeakResult = {
 		leaked: false,
 		calls,
 		heap,
-		bytes_per_call: Math.round(per_call * 100) / 100,
-		grows,
+		...judge_growth(heap, calls, min),
 		retained: null,
 		chain: null,
 		source: null
 	};
-	if (!grows) return result;
+	if (!result.grows) return result;
 
 	const max_id = await snapshot_max_id();
 	gc();
-	await round(c, calls * confirm);
+	const confirm_calls = calls * confirm;
+	await round(c, confirm_calls);
 	gc();
 	gc();
 
@@ -179,74 +223,98 @@ export async function find_leaks(
 	await session.post('Debugger.disable');
 	session.disconnect();
 
-	// An object that only compiled code holds (a constant or a name of a function V8 compiled
-	// during the rounds) is the engine's, not the program's: a memoized flag read "leaked" 5 B a
-	// call of such strings, held by Node's own stream code.
-	const held = new Uint8Array(b.node_count);
-	for (let n = 0; n < b.node_count; n++) {
-		if (b.type(n) === 'code') continue;
-		for (const [type, , to] of b.edges(n)) if (type !== 'weak' && type !== 'shortcut') held[to] = 1;
+	const owners = new Owners(b, scripts, new Attributor(root));
+	const tree = b.retainer_tree();
+	// The owner of each node: the source module's context variable nearest to it on its chain.
+	const owner = new Int32Array(b.node_count).fill(-1);
+	for (let i = 1; i < tree.order.length; i++) {
+		const n = tree.order[i];
+		const p = tree.parent[n];
+		const [type, name] = b.edge(tree.via[n]);
+		owner[n] = type === 'context' && owners.is_source_context(p) ? owners.id(p, name) : owner[p];
 	}
-	const groups = new Map<string, { count: number; bytes: number; nodes: number[] }>();
+	const groups = new Map<string, { owner: number; type: string; bytes: number; nodes: number[] }>();
 	for (let n = 0; n < b.node_count; n++) {
-		if (b.id(n) <= max_id || held[n] === 0) continue;
+		if (owner[n] === -1 || b.id(n) <= max_id) continue;
 		const t = b.type(n);
 		if (t === 'hidden' || t === 'code' || t === 'synthetic' || t === 'object shape') continue;
-		const k = b.kind(n);
-		const g = groups.get(k);
+		const type = b.kind(n);
+		const key = `${owner[n]}\0${type}`;
+		const g = groups.get(key);
 		if (g) {
-			g.count++;
 			g.bytes += b.self_size(n);
 			g.nodes.push(n);
 		} else {
-			groups.set(k, { count: 1, bytes: b.self_size(n), nodes: [n] });
+			groups.set(key, { owner: owner[n], type, bytes: b.self_size(n), nodes: [n] });
 		}
 	}
-	let top: [string, { count: number; bytes: number; nodes: number[] }] | null = null;
-	for (const e of groups) if (!top || e[1].count > top[1].count) top = e;
+	let top: { owner: number; type: string; bytes: number; nodes: number[] } | null = null;
+	for (const g of groups.values()) if (!top || g.nodes.length > top.nodes.length) top = g;
 	if (!top) return result;
-	const confirm_calls = calls * confirm;
+	const count = top.nodes.length;
 	result.retained = {
-		type: top[0],
-		count: top[1].count,
-		bytes: top[1].bytes,
-		per_call: Math.round((top[1].count / confirm_calls) * 1000) / 1000
+		type: top.type,
+		count,
+		bytes: top.bytes,
+		per_call: Math.round((count / confirm_calls) * 1000) / 1000
 	};
-	result.leaked = top[1].count * 4 >= confirm_calls;
-	if (!result.leaked) return result;
-	// A few objects of the group, spread over the confirm rounds: the newest few can still be held
-	// by the run that just ended (a pending microtask, a register). The chain that reaches a source
-	// variable wins; otherwise the first chain found.
-	const attributor = new Attributor(root);
-	const list = top[1].nodes;
-	for (const at of [0.5, 0.25, 0.75, 0.1, 0.9]) {
-		const path = b.retainer_path(list[Math.floor(at * (list.length - 1))]);
-		if (!path) continue;
-		const source = source_of(b, path, scripts, attributor);
-		if (!result.chain || source) {
-			result.chain = path.steps;
-			result.source = source;
-		}
-		if (source) break;
-	}
+	result.source = owners.source(top.owner);
+	result.chain = b.path(tree, top.nodes[Math.floor((count - 1) / 2)])?.steps ?? null;
+	result.leaked = result.source !== null && count * 4 >= confirm_calls;
 	return result;
 }
 
-function source_of(
-	snap: Snapshot,
-	path: { nodes: number[]; steps: Step[] },
-	scripts: Map<number, string>,
-	attributor: Attributor
-): LeakSource | null {
-	for (let i = path.steps.length - 2; i >= 0; i--) {
-		const step = path.steps[i];
-		if (step.edge_type !== 'context') continue;
-		const variable = step.edge;
+/** The context variables of source modules that hold objects, and where each is declared. */
+class Owners {
+	#snap: Snapshot;
+	#scripts: Map<number, string>;
+	#attributor: Attributor;
+	#closures: Map<number, number[]>;
+	#source_ctx = new Map<number, boolean>();
+	#ids = new Map<string, number>();
+	#vars: Array<{ ctx: number; variable: string }> = [];
+
+	constructor(snap: Snapshot, scripts: Map<number, string>, attributor: Attributor) {
+		this.#snap = snap;
+		this.#scripts = scripts;
+		this.#attributor = attributor;
+		this.#closures = snap.context_closures();
+	}
+
+	#url(fn: number): string | null {
+		const loc = this.#snap.location(fn);
+		const url = loc ? this.#scripts.get(loc.script) : undefined;
+		return url && this.#attributor.wants(url) ? url : null;
+	}
+
+	/** Whether a function of a source module (not a dependency, the bench file or Node) holds it. */
+	is_source_context(ctx: number): boolean {
+		let yes = this.#source_ctx.get(ctx);
+		if (yes === undefined) {
+			yes = (this.#closures.get(ctx) ?? []).some((fn) => this.#url(fn) !== null);
+			this.#source_ctx.set(ctx, yes);
+		}
+		return yes;
+	}
+
+	id(ctx: number, variable: string): number {
+		const key = `${ctx}\0${variable}`;
+		let id = this.#ids.get(key);
+		if (id === undefined) {
+			id = this.#vars.length;
+			this.#vars.push({ ctx, variable });
+			this.#ids.set(key, id);
+		}
+		return id;
+	}
+
+	source(id: number): LeakSource | null {
+		const { ctx, variable } = this.#vars[id];
 		// Any closure holding the context names the module (the module's functions all share one).
-		for (const fn of snap.closures_of(path.nodes[i])) {
-			const loc = snap.location(fn);
-			const url = loc ? scripts.get(loc.script) : undefined;
-			if (!loc || !url || !attributor.wants(url)) continue;
+		for (const fn of this.#closures.get(ctx) ?? []) {
+			const url = this.#url(fn);
+			const loc = this.#snap.location(fn);
+			if (!url || !loc) continue;
 			const src = SourceFile.of(url);
 			if (!src) continue;
 			const closure_at = Math.min(src.offset(loc.line, loc.col), src.code.length);
@@ -255,7 +323,7 @@ function source_of(
 			const user = src.first_user(variable);
 			const at = user ?? closure_at;
 			const pos = src.position(at);
-			const ref = attributor.at(url, pos.line0, pos.col0);
+			const ref = this.#attributor.at(url, pos.line0, pos.col0);
 			if (!ref) continue;
 			return {
 				module: ref.module,
@@ -264,8 +332,8 @@ function source_of(
 				line: src.declaration_line(variable, at) ?? ref.line
 			};
 		}
+		return null;
 	}
-	return null;
 }
 
 interface AstNode {

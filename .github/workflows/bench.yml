@@ -167,13 +167,13 @@ jobs:
     timeout-minutes: ${{ github.event.action == 'ogygia-pr' && 60 || 120 }}
     steps:
       # No token in .git/config: the steps below install and run the builds under test.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -270,7 +270,7 @@ jobs:
           cat results/scratch/comment.md >> "$GITHUB_STEP_SUMMARY"
 
       # What the publish job takes: the two files, at the artifact's top level.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: needs.plan.outputs.kind != 'manual'
         with:
           name: bench-publish
@@ -279,7 +279,7 @@ jobs:
             suites/apps/results/scratch/comment.md
           if-no-files-found: ignore
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: bench-results
@@ -300,18 +300,18 @@ jobs:
     steps:
       # This repository's own scripts, at the workflow's commit: the checker and the upsert script.
       # Neither needs an install.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: packages/compare
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
       - name: Download the run
         if: needs.measure.result == 'success'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: bench-publish
           path: ${{ runner.temp }}/artifact

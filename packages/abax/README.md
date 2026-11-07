@@ -82,7 +82,9 @@ The full comment is in [docs/sample-comment.md](docs/sample-comment.md).
 
 ## Quick start
 
-You need Node 22.18 or newer and pnpm. CI counts on Node 26.
+You need Node 26.4 or newer and pnpm. CI runs the tests on Node 26.4.0 and on the newest 26, and
+counts on the newest 26. Node 22 does not work: on 22.18, 6 of the 166 tests fail (`using`
+declarations, which its V8 does not parse, and engine health).
 
 ```bash
 git clone https://github.com/ogygiajs/bench.git
@@ -257,7 +259,8 @@ public callers.
   output). Lines map back to the `.svelte` source.
 - Dependencies run uncounted unless `--deps all` or `--deps devalue,svelte` asks for them; counted
   ones are reported under their package names
-  (`devalue/src/operations.js > parse_operations > createMap`).
+  (`devalue/src/operations.js > parse_operations > createMap`). suites/ogygia counts devalue,
+  Svelte and magic-string (see [docs/ci.md](docs/ci.md)).
 
 ## CLI
 
@@ -410,10 +413,10 @@ only comparable on one V8.
 Planted cases for every layer: slowdowns that must be flagged at the line they were planted on,
 and no-ops (renames, comments, reordering, formatting, same-line twins) that must stay quiet.
 CI runs it on every pull request and every push to main of this repository. Output on an M4 Max,
-Node 26.4.0, at `7b3d7a5`:
+Node 26.4.0:
 
 ```
-Abax verify: 32 of 32 planted cases pass
+Abax verify: 34 of 34 planted cases pass
 pass  steps/comments             no-op    nothing flagged
 pass  steps/extra-allocation     planted  flagged lines 17 (+240 steps)
 pass  steps/extra-loop           planted  flagged lines 11,12 (+520 steps)
@@ -421,8 +424,10 @@ pass  steps/formatting           no-op    nothing flagged
 pass  steps/quadratic-helper     planted  flagged lines 6,20 (+1720 steps)
 pass  steps/rename               no-op    nothing flagged
 pass  steps/reorder              no-op    nothing flagged
-pass  elision/elided-allocation  planted  elided at lines 9 (est 960 B, real 4.05 B)
+pass  elision/elided-allocation  planted  elided at lines 9 (est 960 B, real 4 B)
 pass  leak/leak                  planted  leak of `seen` at lib.ts:14
+pass  leak/leak-closure          planted  leak of `cache` at lib.ts:15
+pass  leak/leak-closure-twin     no-op    no leak
 pass  leak/leak-twin             no-op    no leak
 pass  engine/comments            no-op    nothing flagged
 pass  engine/delete              planted  deopt in make_items:7, deopt in total:15, inline cache in total:18
@@ -444,8 +449,8 @@ pass  app/cold-small             planted  configure: cold, suppressed (+5 steps/
 pass  app/hot-noop               no-op    nothing ranked
 pass  app/hot-small              planted  render_part: heavy, shown (+4 steps/call, 14 calls/request)
 pass  time/comments              no-op    work same (p50 0%, steps =), steady same (p50 0%, steps =)
-pass  time/faster                planted  work faster (p50 -83%, steps down), steady same (p50 +5%, steps =)
-pass  time/slowdown              planted  work slower (p50 +326%, steps up), steady same (p50 0%, steps =)
+pass  time/faster                planted  work faster (p50 -76%, steps down), steady same (p50 0%, steps =)
+pass  time/slowdown              planted  work slower (p50 +305%, steps up), steady same (p50 0%, steps =)
 ```
 
 The planted cases are in `test/*-key/`. Each is a base file and a changed copy with an

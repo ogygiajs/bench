@@ -68,6 +68,19 @@ In this repository:
    its part. The per-file reports merge into one report per tree. Before the files ran side by
    side, on a 4-core runner a PR with 11 bench files spent per tree about 2 minutes on engine
    health, 2.4 on growth and 25 seconds on counting, then 5.4 minutes on timing.
+
+   Counting, growth and the worst-case search pass `--deps devalue,svelte,magic-string`
+   (`COUNTED_DEPS` in `suites/ogygia/src/run.ts`): ogygia's dependencies that do real work on the
+   measured paths are counted like ogygia's own code, and blamed under their package names
+   (`devalue/src/stringify.js > stringify`). devalue is the page seed, Svelte is server rendering
+   and the compiler ogygia's transforms call, magic-string is every source rewrite. The fuzzer
+   checks all three instrumented against plain. Before this, `page seed: the devalue lane` read 63
+   steps for 3.1 ms of work; it now reads 19.7 million. On ogygia `5f7efdc`, counting them adds 22
+   million steps to the serialize file (49 to 71 million) and 9 million to the compiler file (11 to
+   20 million), and about a second to that file's run; the other files are unchanged, and two full
+   runs give the same counts. Engine health stays on ogygia's own functions: what V8 does with
+   Svelte's compiler is not ogygia's to fix.
+
 7. **The diff.** `diffReports` and `diffSections` with `git diff -M --unified=0` between the merge
    base and the head.
 8. **Time.** `abax time` loads both trees in one process and times the selected bench files in

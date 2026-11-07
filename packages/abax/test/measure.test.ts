@@ -12,6 +12,7 @@ import type { TimeComparison, TimeStats } from '../src/measure/time.ts';
 import { judge_time } from '../src/measure/time.ts';
 import { render_time } from '../src/measure/markdown.ts';
 import type { BytesResult } from '../src/measure/alloc.ts';
+import { judge_growth } from '../src/measure/leak.ts';
 import type { LeakResult } from '../src/measure/leak.ts';
 import { temp_dir, write_files } from './helpers.ts';
 
@@ -240,13 +241,15 @@ bench('array push', () => m.remember(1));
 bench('closure cache', () => m.memoized());
 bench('no leak', () => m.tidy(8));
 bench('bounded cache', () => m.bounded_memo());
+const kept: Array<{ at: number }> = [];
+bench('held by the bench file', () => kept.push({ at: m.tidy(1) }));
 `
 	});
 	const r = await run_child<Array<CaseResult<LeakResult>>>({
 		kind: 'leaks',
 		roots: [dir],
 		files: [['leaky.bench.ts']],
-		options: { rounds: 5, calls: 2000 }
+		options: { calls: 1000 }
 	});
 	const by = (n: string) => {
 		const c = r.find((x) => x.name === n)!;
@@ -270,6 +273,35 @@ bench('bounded cache', () => m.bounded_memo());
 	assert.ok(cache.chain!.some((s) => s.edge_type === 'context' && s.edge === 'cache'));
 	assert.equal(by('no leak').leaked, false);
 	assert.equal(by('bounded cache').leaked, false);
+	// The heap grows linearly, but no variable of a source module holds the objects.
+	const harness = by('held by the bench file');
+	assert.equal(harness.grows, true, JSON.stringify(harness));
+	assert.equal(harness.leaked, false, JSON.stringify(harness));
+	assert.equal(harness.source, null);
+});
+
+test('leak growth: above the A/A noise and linear in calls at N, 2N, 4N and 8N', () => {
+	const at = (per_call: number[], start = 1e7) => [
+		start,
+		...per_call.map((p, i) => start + p * 1000 * [1, 2, 4, 8][i])
+	];
+	// a leak of 40 B a call, a backing store doubling on the way
+	assert.equal(judge_growth(at([44, 38, 39, 39]), 1000, 4).grows, true);
+	// a Map cache: its table doubles after the first N calls
+	assert.equal(judge_growth(at([32, 89, 61, 75]), 1000, 4).grows, true);
+	// noise: up 20 KB, then down
+	const noisy = judge_growth([1e7, 1e7 + 20_000, 1e7 - 1_000, 1e7 + 18_000, 1e7 + 30_000], 1000, 4);
+	assert.equal(noisy.grows, false);
+	assert.equal(noisy.threshold, 5.13);
+	// a cache that fills once in the first round: 30 KB, then flat
+	assert.equal(
+		judge_growth([1e7, 1e7 + 30_000, 1e7 + 30_000, 1e7 + 30_000, 1e7 + 30_000], 1000, 4).grows,
+		false
+	);
+	// steady growth below the floor
+	assert.equal(judge_growth(at([3, 3, 3, 3]), 1000, 4).grows, false);
+	// growth that speeds up (code compiled late), not linear
+	assert.equal(judge_growth(at([1, 2, 6, 12]), 1000, 4).grows, false);
 });
 
 test('CLI: abax run --measure all, abax time, abax diff --time', async () => {
