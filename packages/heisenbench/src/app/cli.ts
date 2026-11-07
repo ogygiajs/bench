@@ -5,8 +5,11 @@ import type { DiffResult } from '../diff/index.ts';
 import type { Report } from '../report.ts';
 import type { AppReport } from './types.ts';
 import { render_app_diff } from './diff.ts';
-import { build_weights, load_app_weights, write_app_weights } from '../weight/weights.ts';
-import { rank_changes, render_weighted } from '../weight/rank.ts';
+import { build_weights, load_weights_list, write_app_weights } from '../weight/weights.ts';
+import { rank_findings, render_weighted } from '../weight/rank.ts';
+import type { Ranking } from '../weight/rank.ts';
+import { import_traffic } from '../weight/traffic.ts';
+import { coverage_line } from '../weight/cost.ts';
 import { build_coverage, render_coverage } from '../coverage/report.ts';
 import { installed_packages, package_inventory } from '../coverage/inventory.ts';
 
@@ -14,6 +17,8 @@ import { installed_packages, package_inventory } from '../coverage/inventory.ts'
  * The app commands of the CLI (cli.ts hands them over):
  *
  *   heisenbench weights <app-report.json...> [--out app-weights.json]
+ *   heisenbench weights import <profiles...> [--out real-weights.json] [--root dir] [--requests n]
+ *                 [--path-map from=to,...] [--secret s]
  *   heisenbench coverage <app-report.json...> --app <installed app dir> [--packages ogygia,@ogygia/*]
  *                 [--out coverage.json] [--md coverage.md]
  *
@@ -22,8 +27,39 @@ import { installed_packages, package_inventory } from '../coverage/inventory.ts'
  */
 
 export const APP_USAGE = `heisenbench weights <app-report.json...> [--out app-weights.json]
+heisenbench weights import <profiles...> [--out real-weights.json] [--root dir] [--requests n] [--path-map from=to,...] [--secret s]
 heisenbench coverage <app-report.json...> --app <installed app dir> [--packages ogygia,@ogygia/*] [--out coverage.json] [--md coverage.md]
-heisenbench diff ... [--weights app-weights.json]   (ranks changes by real-app weight; app reports also get a per-phase summary)`;
+heisenbench diff ... [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]   (ranks findings by real cost, else real-app weight; app reports also get a per-phase summary)`;
+
+/** `/srv/app=./app,/x=/y` -> prefix pairs. */
+function path_map(v: string | undefined): Array<[string, string]> {
+	if (!v) return [];
+	return v.split(',').map((pair) => {
+		const eq = pair.indexOf('=');
+		if (eq <= 0)
+			throw new UsageError(`--path-map takes from=to pairs, not ${JSON.stringify(pair)}`);
+		return [pair.slice(0, eq), pair.slice(eq + 1)];
+	});
+}
+
+/** `heisenbench weights import`: production profiles -> real-traffic weights. */
+async function import_command(files: string[], flags: Map<string, string>): Promise<number> {
+	if (files.length === 0) throw new UsageError('which profiles? (none given)');
+	const w = await import_traffic(files, {
+		root: resolve(flags.get('root') ?? '.'),
+		requests: flags.has('requests') ? Number(flags.get('requests')) : undefined,
+		path_map: path_map(flags.get('path-map')),
+		secret: flags.get('secret') ?? process.env.OGYGIA_PROFILER_SECRET
+	});
+	const out = flags.get('out') ?? 'real-weights.json';
+	write_app_weights(out, w);
+	const u = Object.values(w.units)[0];
+	console.log(
+		`${Object.keys(w.functions).length} functions from ${files.length} profile(s), ${u.units} requests over ${Math.round(u.traffic!.window_ms)} ms -> ${out}`
+	);
+	console.log(coverage_line(w));
+	return 0;
+}
 
 const DEFAULT_PACKAGES = ['ogygia', '@ogygia/*'];
 
@@ -43,7 +79,9 @@ export function app_command(
 	cmd: string | undefined,
 	positional: string[],
 	flags: Map<string, string>
-): number | null {
+): number | Promise<number> | null {
+	if (cmd === 'weights' && positional[0] === 'import')
+		return import_command(positional.slice(1), flags);
 	if (cmd === 'weights') {
 		if (positional.length === 0) {
 			console.error(APP_USAGE);
@@ -89,18 +127,33 @@ export function app_command(
 	return null;
 }
 
+/** `heisenbench diff --weights a.json[,b.json]`: every finding ranked (null without weights). */
+export function diff_ranking(
+	result: DiffResult,
+	base: Report,
+	pr: Report,
+	flags: Map<string, string>
+): Ranking | null {
+	const weights = flags.get('weights');
+	if (!weights) return null;
+	const rpd = flags.get('requests-per-day');
+	return rank_findings(result, base, pr, load_weights_list(weights), undefined, {
+		requests_per_day: rpd === undefined ? undefined : Number(rpd)
+	});
+}
+
 /** Extra sections of `heisenbench diff` (empty when none applies). */
 export function app_diff_sections(
 	result: DiffResult,
 	base: Report,
 	pr: Report,
-	flags: Map<string, string>
+	flags: Map<string, string>,
+	ranking: Ranking | null = diff_ranking(result, base, pr, flags)
 ): string {
 	const parts: string[] = [];
 	const b = base as Partial<AppReport>;
 	const p = pr as Partial<AppReport>;
 	if (b.app && p.app) parts.push(render_app_diff(result, base as AppReport, pr as AppReport));
-	const weights = flags.get('weights');
-	if (weights) parts.push(render_weighted(rank_changes(result, load_app_weights(weights))));
+	if (ranking) parts.push(render_weighted(ranking.ranked, ranking.basis, ranking));
 	return parts.join('\n');
 }

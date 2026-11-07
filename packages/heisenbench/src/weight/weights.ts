@@ -19,18 +19,45 @@ import { context_path, unversioned_module } from '../identity.ts';
 export const WEIGHTS_SCHEMA = 'heisenbench-app-weights/1';
 
 export interface UnitWeights {
-	/** Steps of one unit (all counted functions). */
+	/** Steps of one unit (all counted functions; 0 for a unit of real traffic, which is timed). */
 	steps: number;
 	/** Units the numbers were averaged over. */
 	units: number;
 	side: 'server' | 'browser';
+	/** A unit of real traffic (weight/traffic.ts): measured in production, not counted. */
+	traffic?: Traffic;
+}
+
+/** What a unit of real traffic was measured from. Only counts and times: no URL, no request data. */
+export interface Traffic {
+	/** Profiles imported, by format. */
+	profiles: Record<string, number>;
+	/** Requests the profiles covered. */
+	requests: number;
+	/** Summed recording windows. */
+	window_ms: number;
+	/** First and last moment recorded, when a profile says (ISO dates; a .cpuprofile does not). */
+	start: string | null;
+	end: string | null;
+	/** Sampled CPU time of JavaScript and the engine (idle and the profiler's own frames left out). */
+	sampled_ms: number;
+	/** The part of it that mapped to a function Heisenbench counts. */
+	mapped_ms: number;
+	/** The frames with the most self time that did not map, and why. */
+	unmatched: Array<{ frame: string; reason: string; self_ms: number }>;
 }
 
 export interface FunctionWeight {
-	/** Calls per unit. */
+	/** Calls per unit (for real traffic: counted calls, or 0 when the profiles only sampled). */
 	calls: number;
 	self_steps: number;
 	inclusive_steps: number;
+	/** Real traffic: measured self and total ns per unit, and the samples behind them. */
+	self_ns?: number;
+	total_ns?: number;
+	samples?: number;
+	/** Real traffic: `calls` were counted (V8 precise coverage, or a source that counts). */
+	calls_counted?: boolean;
 }
 
 export interface AppWeights {
@@ -143,6 +170,42 @@ export function load_app_weights(path: string): AppWeights {
 	if (w.schema !== WEIGHTS_SCHEMA)
 		throw new Error(`heisenbench: ${path} is not an app weights file`);
 	return w;
+}
+
+/**
+ * One weights file from several (`--weights app-weights.json,real-weights.json`): the counted
+ * scenarios' units and the real traffic's side by side. A unit two files both have keeps the
+ * first file's numbers.
+ */
+export function merge_weights(list: readonly AppWeights[]): AppWeights {
+	const out: AppWeights = {
+		schema: WEIGHTS_SCHEMA,
+		source: list[0]?.source ?? { sha: null, ogygia: {}, scenarios: [] },
+		units: {},
+		functions: {}
+	};
+	for (const w of list) {
+		const fresh = Object.keys(w.units).filter((u) => !(u in out.units));
+		for (const u of fresh) out.units[u] = w.units[u];
+		for (const [id, per] of Object.entries(w.functions)) {
+			for (const u of fresh) if (per[u]) (out.functions[id] ??= {})[u] = per[u];
+		}
+		out.source = {
+			...out.source,
+			scenarios: [...new Set([...out.source.scenarios, ...w.source.scenarios])].sort()
+		};
+	}
+	return out;
+}
+
+/** `a.json,b.json`: each file's weights, merged. */
+export function load_weights_list(paths: string): AppWeights {
+	return merge_weights(
+		paths
+			.split(',')
+			.filter(Boolean)
+			.map((p) => load_app_weights(p))
+	);
 }
 
 export function write_app_weights(path: string, w: AppWeights): void {

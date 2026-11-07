@@ -20,7 +20,7 @@ import { alias_records, read_record_dir } from './coverage/replay-run.ts';
 import { run_search } from './search/index.ts';
 import { diff_sections, render_sections, write_section } from './sections.ts';
 import { measure_command, measure_run, time_section } from './measure/cli.ts';
-import { app_command, app_diff_sections } from './app/cli.ts';
+import { app_command, app_diff_sections, diff_ranking } from './app/cli.ts';
 import { VERIFY_LAYERS, render_verify, run_verify } from './verify/index.ts';
 import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
@@ -35,7 +35,7 @@ Counting (the counting build)
       [--state fresh|shared] [--measure time,bytes,leaks|all] [--time-ms 300]
   heisenbench diff <base.json> <pr.json>   compare two reports: the markdown section
       [--repo dir] [--base sha] [--head sha] [--out section.md] [--json diff.json]
-      [--time time.json] [--weights app-weights.json]
+      [--time time.json] [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -59,6 +59,9 @@ Layers (each writes its section into --out, default heisenbench-report.json)
 
 Real apps and the measurement-source gate
   heisenbench weights <app-report.json...> [--out app-weights.json]
+  heisenbench weights import <profiles...> [--out real-weights.json]   weights of real traffic, from
+                                 .cpuprofile, ogygia profiler reports (.json, .ogp) or heisenbench-traffic JSON
+      [--root dir] [--requests n] [--path-map /srv/app=./app,...] [--secret s]
   heisenbench coverage <app-report.json...> --app <app dir,app dir...> [--packages ogygia,@ogygia/*]
       [--out coverage.json] [--md coverage.md]
   heisenbench inventory [files...] [--list files.txt] --root dir --out inventory.json
@@ -183,7 +186,7 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	diff: {
-		values: ['repo', 'base', 'head', 'out', 'json', 'time', 'weights'],
+		values: ['repo', 'base', 'head', 'out', 'json', 'time', 'weights', 'requests-per-day'],
 		args: [2, 2],
 		files: true
 	},
@@ -219,7 +222,12 @@ const SPECS: Record<string, Spec> = {
 		values: ['base', 'pr', 'repeats', 'time-ms', 'filter', 'out', 'md'],
 		args: [1, MANY]
 	},
-	weights: { values: ['out'], args: [1, MANY], files: true },
+	// app reports, or `import` and production profiles
+	weights: {
+		values: ['out', 'root', 'requests', 'path-map', 'secret'],
+		args: [1, MANY],
+		files: true
+	},
 	coverage: { values: ['app', 'packages', 'out', 'md'], args: [1, MANY], files: true },
 	inventory: { values: ['list', 'root', 'out', 'reports', 'targets'], args: [0, MANY] },
 	replay: { values: ['records', 'root', 'out'], args: [0, 0] },
@@ -277,7 +285,9 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	repeats: 'count',
 	jobs: 'count',
 	tolerance: 'positive',
-	shift: 'positive'
+	shift: 'positive',
+	requests: 'positive',
+	'requests-per-day': 'positive'
 };
 
 const CHOICES: Record<string, readonly string[]> = {
@@ -374,7 +384,10 @@ function parse(cmd: string, argv: string[]): Parsed {
 		);
 	}
 	if (spec.files) {
-		const files = cmd === 'calibrate' ? positional.slice(1) : positional;
+		const files =
+			cmd === 'calibrate' || (cmd === 'weights' && positional[0] === 'import')
+				? positional.slice(1)
+				: positional;
 		for (const f of files) {
 			if (!existsSync(f)) throw new UsageError(`no such file: ${f}`);
 			if (!statSync(f).isFile()) throw new UsageError(`${f} is a directory, not a file`);
@@ -446,7 +459,7 @@ async function main(argv: string[]): Promise<number> {
 	}
 	const measured = await measure_command(cmd, positional, flags);
 	if (measured !== null) return measured;
-	const app = app_command(cmd, positional, flags);
+	const app = await app_command(cmd, positional, flags);
 	if (app !== null) return app;
 	if (cmd === 'verify') return verify_command(flags);
 	const coverage = await coverage_command(cmd, positional, flags);
@@ -465,7 +478,8 @@ async function main(argv: string[]): Promise<number> {
 		const sections = diff_sections(base, pr, files);
 		const extra = render_sections(sections);
 		const time = time_section(flags);
-		const apps = app_diff_sections(result, base, pr, flags);
+		const ranking = diff_ranking(result, base, pr, flags);
+		const apps = app_diff_sections(result, base, pr, flags, ranking);
 		const md =
 			(apps ? apps + '\n' : '') +
 			render_markdown(result) +
@@ -475,7 +489,12 @@ async function main(argv: string[]): Promise<number> {
 		if (out) writeFileSync(out, md + '\n');
 		else console.log(md);
 		const json = flags.get('json');
-		if (json) writeFileSync(json, JSON.stringify({ ...result, ...sections }, null, '\t') + '\n');
+		if (json)
+			writeFileSync(
+				json,
+				JSON.stringify({ ...result, ...sections, ...(ranking ? { ranking } : {}) }, null, '\t') +
+					'\n'
+			);
 		return 0;
 	}
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
