@@ -24,7 +24,11 @@
  * different versions: the head's code counted with each tree's install, upgrade.ts; default on),
  * --history <dir> (a full run: the results branch, a checkout
  * or a blobless clone; each case's steps over main's earlier full runs, in first-parent order,
- * are checked for slow creep, trend.ts; report-only).
+ * are checked for slow creep, trend.ts; report-only), --cache <dir> (incremental counting:
+ * `heisenbench run` and `growth` reuse each case whose code and inputs did not change, from this
+ * directory, and add what they count; entries no run used for CACHE_DAYS days are pruned at the
+ * end), --cache-verify <n> (that many bench files per tree count one reused case again as a
+ * check; default CACHE_VERIFY).
  *
  * A PR: both commits are checked out and installed, the PR is measured against the merge base of
  * the two, and only the bench files whose import graph reaches a changed file run: counted, health
@@ -44,7 +48,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { diffReports, diffSections, gitDiff } from '@bench/heisenbench';
+import { diffReports, diffSections, gitDiff, pruneCache } from '@bench/heisenbench';
 import {
 	changed_files,
 	clone,
@@ -53,7 +57,15 @@ import {
 	rev_parse
 } from './checkout.ts';
 import { import_graphs } from './graph.ts';
-import { FULL_COMMANDS, HEISENBENCH_DIR, empty_report, run_time, run_tree } from './run.ts';
+import {
+	CACHE_DAYS,
+	CACHE_VERIFY,
+	FULL_COMMANDS,
+	HEISENBENCH_DIR,
+	empty_report,
+	run_time,
+	run_tree
+} from './run.ts';
 import { RESULT_SCHEMA, render_full_summary, render_pr_section } from './section.ts';
 import type { Meta, Result } from './section.ts';
 import {
@@ -94,9 +106,14 @@ const { values } = parseArgs({
 		recorded: { type: 'string' },
 		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) },
 		upgrade: { type: 'string', default: 'on' },
-		history: { type: 'string' }
+		history: { type: 'string' },
+		cache: { type: 'string' },
+		'cache-verify': { type: 'string', default: String(CACHE_VERIFY) }
 	}
 });
+const cache_verify = Number(values['cache-verify']);
+if (!(Number.isInteger(cache_verify) && cache_verify >= 0))
+	throw new Error('--cache-verify takes a whole number');
 if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.recorded))
 	throw new Error('--recorded takes all, changed or off');
 if (values.search !== undefined && !['all', 'changed', 'off'].includes(values.search))
@@ -192,7 +209,8 @@ async function main(): Promise<void> {
 		const base_files = selection.selected.filter((f) => present.has(f));
 		const timed = measure !== null && (measure === 'all' || measure.split(',').includes('time'));
 		const jobs = Math.max(1, Math.floor(availableParallelism() / (base_tree ? 2 : 1)));
-		const tree_o = { jobs, check: true };
+		const cache = values.cache ? { dir: resolve(values.cache), verify: cache_verify } : null;
+		const tree_o = { jobs, check: true, cache };
 		// A full run with the time layer also audits the prices (run.ts FULL_COMMANDS).
 		const head_commands = !mb && timed ? FULL_COMMANDS : undefined;
 		const run_head = () =>
@@ -364,6 +382,13 @@ async function main(): Promise<void> {
 			recorded: result.recorded.findings,
 			requests_per_day: values['requests-per-day'] ? Number(values['requests-per-day']) : undefined
 		});
+	}
+
+	if (values.cache) {
+		const p = pruneCache(resolve(values.cache), CACHE_DAYS);
+		log(
+			`cache: ${p.kept} files (${Math.round(p.bytes / 1024)} KB) kept, ${p.removed} unused for ${CACHE_DAYS} days removed`
+		);
 	}
 
 	const md = mb ? render_pr_section(result) : render_full_summary(result);

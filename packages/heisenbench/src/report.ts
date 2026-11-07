@@ -15,6 +15,7 @@ import type { SearchReport } from './search/index.ts';
 import type { AuditReport } from './audit/fit.ts';
 import type { ContractReport } from './contracts/index.ts';
 import { OWN_DIR, package_url } from './own.ts';
+import type { CacheSummary } from './cache/index.ts';
 
 /*
  * The report (JSON, versioned). One entry per bench case; inside, every function the case ran.
@@ -118,6 +119,8 @@ export interface CaseReport {
 	edges: EdgeReport[];
 	/** The plain-build layers and the time estimate (measure/), when they ran. */
 	measure?: CaseMeasure;
+	/** Not counted again: its key was unchanged, so the counts came from the cache (cache/). */
+	reused?: boolean;
 }
 
 export interface Report {
@@ -149,6 +152,8 @@ export interface Report {
 	audit?: AuditReport;
 	/** `heisenbench contracts`: each complexity contract held against the growth measured (contracts/). */
 	contracts?: ContractReport;
+	/** `--cache`: how many cases were reused, counted and checked (cache/). */
+	cache?: CacheSummary;
 }
 
 export interface LoadError {

@@ -495,3 +495,62 @@ test('complexity contracts: a PR shows the ones it changes or breaks, a full run
 	);
 	assert.match(failed, /\*\*Complexity contracts failed\*\*: `it crashed`/);
 });
+
+test('incremental counting: per side what was reused and counted, why, and every cache bug', () => {
+	const summary = (
+		reused: number,
+		counted: number,
+		extra: Partial<NonNullable<Report['cache']>> = {}
+	) => ({
+		reused,
+		counted,
+		verified: 0,
+		mismatches: [],
+		why: [],
+		...extra
+	});
+	const head = {
+		...report('a', [case_of('one', 1), case_of('two', 2)]),
+		// one reused case, one counted, one reused case counted again as a check
+		cache: summary(1, 2, {
+			verified: 1,
+			why: [{ file: 'x.bench.ts', name: 'two', why: ['packages/router/src/match.ts changed'] }]
+		})
+	};
+	const base = { ...report('c', [case_of('one', 1), case_of('two', 2)]), cache: summary(2, 0) };
+	const selection = select_changed(new Map([['x.bench.ts', ['x.bench.ts', 'y.ts']]]), ['y.ts']);
+	const md = render_pr_section(result({ head, base, selection }));
+	assert.match(
+		md,
+		/Incremental counting: PR: 2 cases reused, 1 counted; base: 2 cases reused, 0 counted\./
+	);
+	assert.match(md, /1 reused case counted again as a check: the same\./);
+	assert.match(md, /Why 1 case counted again<\/summary>/);
+	assert.match(md, /- `two`: packages\/router\/src\/match\.ts changed/);
+
+	const bug = {
+		...head,
+		cache: summary(1, 1, { verified: 1, mismatches: ['one: totals.steps: 4 vs 3'] })
+	};
+	const bad = render_pr_section(result({ head: bug, base, selection }));
+	assert.match(bad, /1 reused case counted again as a check: 1 differ\./);
+	assert.match(
+		bad,
+		/\*\*Cache bug\*\*: a reused case differs from its recount: `one: totals\.steps: 4 vs 3`/
+	);
+
+	// no cache, no line
+	assert.doesNotMatch(
+		render_pr_section(result({ head: report('a', []), base: report('c', []), selection })),
+		/Incremental/
+	);
+	// the per-file summaries add up
+	const merged = merge_reports([head, base], 'f'.repeat(40))!;
+	assert.deepEqual(merged.cache, {
+		reused: 3,
+		counted: 2,
+		verified: 1,
+		mismatches: [],
+		why: head.cache.why
+	});
+});

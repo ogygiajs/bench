@@ -163,6 +163,12 @@ export interface InstrumentResult {
 	meta: ModuleMeta;
 	/** Where each block (aligned with meta.blocks) starts in the code given to the transform. */
 	origins: BlockOrigin[];
+	/**
+	 * Where each function's body is (aligned with meta.functions; `[start, end)` in the code given
+	 * to the transform), null for the module body and field initialisers. Incremental counting
+	 * (cache/) leaves the bodies of functions a case never ran out of its key.
+	 */
+	bodies: Array<[number, number] | null>;
 }
 
 /**
@@ -198,6 +204,8 @@ interface FnRec {
 	refs: Set<string>;
 	uses_arguments: boolean;
 	blocks: number;
+	/** The body's span, for a function (InstrumentResult.bodies). */
+	body: [number, number] | null;
 }
 
 interface BlockRec {
@@ -343,7 +351,8 @@ class Instrumenter {
 			declared: new Set(),
 			refs: new Set(),
 			uses_arguments: false,
-			blocks: 0
+			blocks: 0,
+			body: null
 		};
 		this.fns.push(f);
 		return f;
@@ -970,6 +979,7 @@ class Instrumenter {
 		if (own_id && node.type === 'FunctionExpression') this.declare(text(own_id, 'name'));
 
 		const body = get(node, 'body')!;
+		f.body = [body.start, body.end];
 		const entry = this.new_block(body.start, 'entry');
 		this.block = entry;
 		this.scope_block = entry;
@@ -1991,5 +2001,11 @@ export function instrument(code: string, opts: InstrumentOptions): InstrumentRes
 		const chained = remapping([map, opts.input_map] as Parameters<typeof remapping>[0], () => null);
 		map = chained as unknown as typeof map;
 	}
-	return { code: s.toString(), map, meta, origins: ins.blocks.map((b) => b.origin) };
+	return {
+		code: s.toString(),
+		map,
+		meta,
+		origins: ins.blocks.map((b) => b.origin),
+		bodies: ins.fns.map((f) => f.body)
+	};
 }

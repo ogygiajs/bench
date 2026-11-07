@@ -14,7 +14,11 @@ import {
 	probe_size
 } from './odds.ts';
 import type { GrowthOdds, OddsOptions } from './odds.ts';
-import { Measurer, load_cases } from './measure.ts';
+import { relative, resolve, sep } from 'node:path';
+import { fresh_copy, positions } from '../fresh.ts';
+import { Measurer, import_cases, register_loader } from './measure.ts';
+import { CaseCache, run_incremental } from '../cache/index.ts';
+import type { CacheSummary, CaseWatch, LineRef } from '../cache/index.ts';
 import type { LoadOptions } from './measure.ts';
 import { input_size, scale_input } from './scale.ts';
 import { build_case_report } from '../report.ts';
@@ -101,6 +105,8 @@ export interface GrowthCase {
 	 * inside the case. Absent when it ran none.
 	 */
 	contracts?: ContractCurve[];
+	/** Not grown again: its key was unchanged, so it came from the cache (cache/). */
+	reused?: boolean;
 }
 
 /**
@@ -150,12 +156,16 @@ export interface GrowthReport {
 	schema: typeof GROWTH_SCHEMA;
 	sizes: number[];
 	cases: GrowthCase[];
+	/** `--cache`: how many cases were reused, grown and checked (cache/). */
+	cache?: CacheSummary;
 }
 
 export interface GrowthOptions extends LoadOptions {
 	sizes?: number[];
 	/** Steps one run may take (default GROWTH_CAP). */
 	cap?: number;
+	/** Incremental counting: reuse the curve of every case whose key is in `dir` (cache/). */
+	cache?: { dir: string; verify?: number };
 	/** Only the cases that declare their own `scale` (default: every case, the rest scaled generically). */
 	scaled?: boolean;
 	/** Prior and bar of the growth odds. */
@@ -438,9 +448,10 @@ export async function grow_case(
 	};
 	try {
 		const count = async (k: number): Promise<GrowthPoint> => {
-			const make = async (): Promise<unknown> => {
-				const ctx = c.setup ? await c.setup() : undefined;
-				return own ? own(ctx, k) : scale_input(ctx, k);
+			// the input of the copy that runs (Measurer.fresh), from that copy's own modules
+			const make = async (cc: BenchCase = c): Promise<unknown> => {
+				const ctx = cc.setup ? await cc.setup() : undefined;
+				return cc.scale ? cc.scale(ctx, k) : scale_input(ctx, k);
 			};
 			const size = input_size(await make());
 			const r = await m.steps(c, make, cap);
@@ -621,19 +632,52 @@ export function verdict_note(
 export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 	const sizes = opts.sizes ?? DEFAULT_SIZES;
 	const log = opts.log ?? (() => {});
-	const loaded = await load_cases(opts);
-	const list = opts.scaled ? loaded.filter((c) => c.scale !== undefined) : loaded;
-	const m = new Measurer(opts.root);
-	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
+	const root = register_loader(opts);
+	const m = new Measurer(root);
+	// Before any bench file loads: the cache watches every module that does.
+	const cache = opts.cache
+		? new CaseCache<GrowthCase>(
+				opts.cache.dir,
+				{ root, deps: opts.deps ?? true, svelte: opts.svelte ?? 'server', fresh: true },
+				m.rt,
+				{
+					name: 'growth',
+					// the odds' prior and bar decide which extra size is counted
+					params: {
+						sizes,
+						cap: opts.cap ?? GROWTH_CAP,
+						scaled: opts.scaled ?? false,
+						odds: opts.odds ?? null
+					},
+					lines: contract_lines
+				}
+			)
+		: null;
+	const failed = new Set<string>();
+	// Every run of every size starts from fresh module state, as `heisenbench run` does: a case's
+	// curve does not depend on which cases grew before it in the process.
+	const position = new Map<BenchCase, number>();
+	m.fresh = (c) => fresh_copy(c, root, position.get(c) ?? 0);
+	const load = async (files: readonly string[]): Promise<BenchCase[]> => {
+		const loaded = await import_cases(files, root, log, (f) => failed.add(f));
+		for (const [c, n] of positions(loaded)) position.set(c, n);
+		return opts.scaled ? loaded.filter((c) => c.scale !== undefined) : loaded;
+	};
+	const wanted = (name: string): boolean => !opts.filter || name.includes(opts.filter);
 	// the contracts of every module loaded so far (a case can import more as it runs)
 	const book = new ContractBook();
 	const contracted = (ran: ReadonlySet<string>): string[] => {
 		book.read(m.rt.modules.map((r) => r.meta));
 		return [...ran].filter((id) => book.contracts.has(id)).sort();
 	};
-	for (const c of list) {
-		const g = await grow_case(c, m, sizes, opts.cap, opts.odds, contracted);
-		report.cases.push(g);
+	const grow = async (c: BenchCase, watch?: CaseWatch): Promise<GrowthCase> => {
+		m.watch = watch;
+		let g: GrowthCase;
+		try {
+			g = await grow_case(c, m, sizes, opts.cap, opts.odds, contracted);
+		} finally {
+			m.watch = undefined;
+		}
 		log(
 			g.error
 				? `FAILED   ${c.name}: ${g.error}`
@@ -642,8 +686,48 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 						...growth_lines(g)
 					].join('\n')
 		);
+		return g;
+	};
+	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
+	if (cache) {
+		const run = await run_incremental(cache, {
+			files: opts.files.map((f) => relative(root, resolve(f)).split(sep).join('/')),
+			complete: !opts.filter,
+			wanted,
+			verify: opts.cache?.verify ?? 0,
+			load,
+			failed: (file) => failed.has(file),
+			count: grow,
+			label: (g) => `${g.steps.map((s) => Math.round(s)).join(' / ')} steps`,
+			log
+		});
+		report.cases = run.results;
+		report.cache = run.summary;
+		return report;
 	}
+	for (const c of (await load(opts.files.map((f) => resolve(f)))).filter((c) => wanted(c.name)))
+		report.cases.push(await grow(c));
 	return report;
+}
+
+/** The lines a growth case names (its contracts' `module:line`), moved with the code on reuse. */
+function contract_lines(g: GrowthCase): LineRef[] {
+	const out: LineRef[] = [];
+	for (const c of g.contracts ?? []) {
+		for (const l of c.lines) {
+			const at = l.at.lastIndexOf(':');
+			if (at === -1) continue;
+			const module = l.at.slice(0, at);
+			out.push({
+				module,
+				line: Number(l.at.slice(at + 1)),
+				set: (n) => {
+					l.at = `${module}:${n}`;
+				}
+			});
+		}
+	}
+	return out;
 }
 
 export interface GrowthFinding {
