@@ -120,7 +120,13 @@ export async function measure_layers(report: Report, o: MeasureOptions): Promise
 					: v.source
 						? 'ok (grows, but few objects stay held)'
 						: 'ok (grows, but no source variable holds it)';
-			o.log?.(`leaks   ${c.name}  ${verdict}  ${v.bytes_per_call} B/call (floor ${v.threshold})`);
+			const held =
+				v.leaked && v.source
+					? `, held by ${v.source.variable} in ${v.source.module}${v.source.package ? ` (${v.source.path.join(' > ')})` : ''}`
+					: '';
+			o.log?.(
+				`leaks   ${c.name}  ${verdict}  ${v.bytes_per_call} B/call (floor ${v.threshold})${held}`
+			);
 		}
 	}
 	return report;

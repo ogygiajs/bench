@@ -14,8 +14,13 @@ export function render_measure(d: DiffResult): string[] {
 		lines.push('**Leaks** (retained heap grows with every call):', '');
 		for (const l of fresh) {
 			const r = l.pr.retained;
-			const where = l.pr.source
-				? ` held by ${code(l.pr.source.variable)} (${code(`${l.pr.source.module}:${l.pr.source.line}`)}, kept growing by ${code(l.pr.source.function)})`
+			const s = l.pr.source;
+			// A dependency's cache is named with its package and how the variable holds the objects.
+			const dep = s?.package
+				? `, inside ${code(s.package)}${(s.path?.length ?? 0) > 1 ? ` through ${code(s.path.join(' → '))}` : ''}`
+				: '';
+			const where = s
+				? ` held by ${code(s.variable)} (${code(`${s.module}:${s.line}`)}, kept growing by ${code(s.function)}${dep})`
 				: '';
 			lines.push(
 				`- ${code(l.case)}: ${l.pr.bytes_per_call} B per call${r ? `, ${r.per_call} ${r.type} per call` : ''}${where}`

@@ -260,12 +260,15 @@ bench('held by the bench file', () => kept.push({ at: m.tidy(1) }));
 	const push = by('array push');
 	assert.equal(push.leaked, true, JSON.stringify(push));
 	assert.equal(push.retained!.type, 'Object');
-	assert.deepEqual(push.source, {
+	const { path, ...source } = push.source!;
+	assert.deepEqual(source, {
 		module: 'leaky.ts',
+		package: null,
 		function: 'remember',
 		variable: 'seen',
 		line: 1
 	});
+	assert.equal(path[0], 'seen');
 	const cache = by('closure cache');
 	assert.equal(cache.leaked, true, JSON.stringify(cache));
 	assert.equal(cache.source?.variable, 'cache');
@@ -279,6 +282,114 @@ bench('held by the bench file', () => kept.push({ at: m.tidy(1) }));
 	assert.equal(harness.grows, true, JSON.stringify(harness));
 	assert.equal(harness.leaked, false, JSON.stringify(harness));
 	assert.equal(harness.source, null);
+});
+
+// Dependencies with a module-level cache: a CommonJS one and an ES module one that grow with every
+// call (a key per call), and their clean twins (the same caches, bounded to twenty keys).
+const DEP_FILES: Record<string, string> = {
+	'node_modules/grow-cjs/package.json': JSON.stringify({ name: 'grow-cjs', version: '1.2.3' }),
+	'node_modules/grow-cjs/index.js': `'use strict';
+const names = new Map();
+let next = 0;
+exports.intern = function intern(s) {
+	const key = s + ':' + next++;
+	names.set(key, { key, at: next });
+	return names.size;
+};
+`,
+	'node_modules/grow-esm/package.json': JSON.stringify({
+		name: 'grow-esm',
+		version: '4.5.6',
+		type: 'module',
+		exports: './index.js'
+	}),
+	'node_modules/grow-esm/index.js': `const log = [];
+export function record(n) {
+	log.push({ n, at: log.length });
+	return log.length;
+}
+`,
+	'node_modules/tidy-cjs/package.json': JSON.stringify({ name: 'tidy-cjs', version: '1.2.3' }),
+	'node_modules/tidy-cjs/index.js': `'use strict';
+const names = new Map();
+let next = 0;
+exports.intern = function intern(s) {
+	const key = s + ':' + (next++ % 20);
+	if (!names.has(key)) names.set(key, { key, at: next });
+	return names.size;
+};
+`,
+	'node_modules/tidy-esm/package.json': JSON.stringify({
+		name: 'tidy-esm',
+		version: '4.5.6',
+		type: 'module',
+		exports: './index.js'
+	}),
+	'node_modules/tidy-esm/index.js': `const log = [];
+export function record(n) {
+	log.push({ n, at: log.length });
+	if (log.length > 20) log.shift();
+	return log.length;
+}
+`,
+	'lib.ts': `import { intern } from 'grow-cjs';
+import { record } from 'grow-esm';
+import { intern as intern_tidy } from 'tidy-cjs';
+import { record as record_tidy } from 'tidy-esm';
+
+export const grow_cjs = (): number => intern('row');
+export const grow_esm = (): number => record(1);
+export const tidy_cjs = (): number => intern_tidy('row');
+export const tidy_esm = (): number => record_tidy(1);
+`
+};
+
+test('leaks inside dependencies: a module-level cache that grows is found, with its package', async () => {
+	const dir = temp_dir('heisenbench-dep-leak-');
+	write_files(dir, {
+		...DEP_FILES,
+		'lib.bench.ts': `import { bench } from ${JSON.stringify(BENCH_API)};
+import * as m from './lib.ts';
+bench('commonjs cache', () => m.grow_cjs());
+bench('es module log', () => m.grow_esm());
+bench('bounded commonjs cache', () => m.tidy_cjs());
+bench('bounded es module log', () => m.tidy_esm());
+`
+	});
+	const r = await run_child<Array<CaseResult<LeakResult>>>({
+		kind: 'leaks',
+		roots: [dir],
+		files: [['lib.bench.ts']],
+		options: { calls: 1000 }
+	});
+	const by = (n: string) => {
+		const c = r.find((x) => x.name === n)!;
+		assert.equal(c.error, null, c.error ?? '');
+		return c.result!;
+	};
+	const cjs = by('commonjs cache');
+	assert.equal(cjs.leaked, true, JSON.stringify(cjs));
+	assert.equal(cjs.source?.package, 'grow-cjs@1.2.3');
+	assert.equal(cjs.source?.module, 'grow-cjs@1.2.3/index.js');
+	assert.equal(cjs.source?.variable, 'names');
+	assert.equal(cjs.source?.function, 'intern');
+	assert.equal(cjs.source?.line, 2);
+	// how the variable holds them: the Map's table, then an entry
+	assert.deepEqual(cjs.source?.path.slice(0, 2), ['names', 'table']);
+	const esm = by('es module log');
+	assert.equal(esm.leaked, true, JSON.stringify(esm));
+	assert.equal(esm.source?.package, 'grow-esm@4.5.6');
+	assert.equal(esm.source?.module, 'grow-esm@4.5.6/index.js');
+	assert.equal(esm.source?.variable, 'log');
+	assert.equal(esm.source?.function, 'record');
+	assert.equal(esm.source?.line, 1);
+	assert.match(esm.source?.path.join(' ') ?? '', /^log \[\d+\]$/);
+	// The same caches bounded: the heap does not grow with the calls, nothing is a leak.
+	for (const name of ['bounded commonjs cache', 'bounded es module log']) {
+		const clean = by(name);
+		assert.equal(clean.leaked, false, `${name}: ${JSON.stringify(clean)}`);
+		assert.equal(clean.grows, false, `${name}: ${JSON.stringify(clean)}`);
+	}
 });
 
 test('leak growth: above the A/A noise and linear in calls at N, 2N, 4N and 8N', () => {

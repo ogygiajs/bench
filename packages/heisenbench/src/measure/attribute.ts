@@ -4,7 +4,12 @@ import { module_id, module_specifier } from '../transform/index.ts';
 import { instrument } from '../transform/instrument.ts';
 import { load_prices } from '../prices.ts';
 import type { FunctionMeta } from '../meta.ts';
-import { executed_code, is_dependency_source, is_plain_source } from './plain.ts';
+import {
+	executed_code,
+	is_commonjs_source,
+	is_dependency_source,
+	is_plain_source
+} from './plain.ts';
 
 /*
  * From a script position V8 reports (heap profile call frames, snapshot closures) to the function
@@ -69,7 +74,8 @@ export class Attributor {
 				prices: this.#prices.prices,
 				prices_hash: this.#prices.hash,
 				module_specifier: module_specifier(filename),
-				expose: false
+				expose: false,
+				commonjs: is_commonjs_source(filename)
 			};
 			// Generated positions to match V8; original lines (through the map) for the report.
 			const lang = map ? ('js' as const) : undefined;
