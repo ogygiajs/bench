@@ -22,6 +22,11 @@ export interface RecordBenchesOptions {
 	targets: Record<string, string[]>;
 	/** The sample file to write. */
 	out: string;
+	/**
+	 * Factors a case that declares `scale` runs at too (its input grown by its own scaler), so the
+	 * recorder sees the sizes a growth case would (`heisenbench prove --bench`). Default: none.
+	 */
+	scales?: number[];
 	log?: (line: string) => void;
 }
 
@@ -58,6 +63,11 @@ export async function record_benches(
 			const ctx = c.setup ? await c.setup() : undefined;
 			await c.fn(ctx);
 			if (c.teardown) await c.teardown(ctx);
+			for (const k of c.scale ? (o.scales ?? []).filter((k) => k !== 1) : []) {
+				const grown = c.scale!(c.setup ? await c.setup() : undefined, k);
+				await c.fn(grown);
+				if (c.teardown) await c.teardown(grown);
+			}
 			ran++;
 		} catch (e) {
 			failed++;
