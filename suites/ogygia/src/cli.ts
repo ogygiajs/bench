@@ -20,7 +20,9 @@
  * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
  * modules only, or none; default all for a full run, changed for a PR), --blame-budget <seconds>
  * (a PR: which hunks made the regressed cases slower, recounted on scratch copies of the head
- * tree; default 300, 0 turns it off), --history <dir> (a full run: the results branch, a checkout
+ * tree; default 300, 0 turns it off), --upgrade on|off (a PR whose trees count a dependency at
+ * different versions: the head's code counted with each tree's install, upgrade.ts; default on),
+ * --history <dir> (a full run: the results branch, a checkout
  * or a blobless clone; each case's steps over main's earlier full runs, in first-parent order,
  * are checked for slow creep, trend.ts; report-only).
  *
@@ -67,6 +69,7 @@ import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
 import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
 import { run_contracts } from './contracts.ts';
+import { run_upgrade } from './upgrade.ts';
 import type { Tree } from './checkout.ts';
 import type { RecordedGrowthReport } from '@bench/heisenbench';
 import { run_trend } from './trend.ts';
@@ -90,6 +93,7 @@ const { values } = parseArgs({
 		'search-budget': { type: 'string' },
 		recorded: { type: 'string' },
 		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) },
+		upgrade: { type: 'string', default: 'on' },
 		history: { type: 'string' }
 	}
 });
@@ -97,6 +101,7 @@ if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.
 	throw new Error('--recorded takes all, changed or off');
 if (values.search !== undefined && !['all', 'changed', 'off'].includes(values.search))
 	throw new Error('--search takes all, changed or off');
+if (!['on', 'off'].includes(values.upgrade)) throw new Error('--upgrade takes on or off');
 
 const LAYERS = /^(all|none|(time|bytes|leaks)(,(time|bytes|leaks))*)$/;
 
@@ -270,6 +275,15 @@ async function main(): Promise<void> {
 							: undefined
 					}
 				);
+			}
+			// a dependency counted at another version: what the upgrade alone costs
+			if (result.head && result.base && values.upgrade !== 'off') {
+				result.upgrade = await run_upgrade(head, base_tree, result.head, result.base, work, log);
+				const u = result.upgrade;
+				if (u)
+					log(
+						`dependency upgrades: ${u.error ? `failed: ${u.error}` : `${u.result!.bumps.map((b) => `${b.name} ${b.from} → ${b.to}`).join(', ')}; ${u.result!.cases.filter((c) => c.delta !== 0).length} of ${u.result!.cases.length} case(s) changed`}`
+					);
 			}
 		}
 		// every case of the selected files, on the head (the nightly run)

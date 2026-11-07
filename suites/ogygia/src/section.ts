@@ -15,7 +15,8 @@ import {
 	renderContracts,
 	renderContractsDiff,
 	renderMarkdown,
-	renderSections
+	renderSections,
+	renderUpgrade
 } from '@bench/heisenbench';
 import type { DiffResult, RecordedGrowth, Report, TimeComparison } from '@bench/heisenbench';
 import { calls_text, cost_text } from '@bench/heisenbench/weight';
@@ -26,6 +27,7 @@ import { FLAG_RATIO, flagged } from './search.ts';
 import type { FullSearchRun, SearchRun } from './search.ts';
 import type { Selection } from './select.ts';
 import type { TrendRun } from './trend.ts';
+import type { UpgradeRun } from './upgrade.ts';
 import type { WeightRun } from './weights.ts';
 
 export const RESULT_SCHEMA = 'ogygia-heisenbench/1';
@@ -91,6 +93,8 @@ export interface Result {
 	recorded?: RecordedSummary | null;
 	/** A PR: the hunks that made each regressed case slower (absent or null: none regressed, or off). */
 	blame?: BlameRun | null;
+	/** A PR that counts a dependency at another version: what the upgrade alone costs (absent: none). */
+	upgrade?: UpgradeRun | null;
 	/** A full run: slow creep in each case's steps over main's earlier full runs (trend.ts). */
 	trend?: TrendRun | null;
 	/** Complexity contracts (contracts.ts): each tree's check, and what a PR changed (absent: no tags). */
@@ -559,6 +563,9 @@ export function render_pr_section(r: Result): string {
 		lines.push(step_body(r.diff));
 		if (r.blame?.error) lines.push('', `**Blame failed**: ${code(one_line(r.blame.error))}`);
 		else if (r.blame?.result) lines.push('', renderBlame(r.blame.result).trimEnd());
+		if (r.upgrade?.error)
+			lines.push('', `**Dependency upgrade diff failed**: ${code(one_line(r.upgrade.error))}`);
+		else if (r.upgrade?.result) lines.push('', renderUpgrade(r.upgrade.result).trimEnd());
 		const extra = capped_sections(r.diff);
 		if (extra) lines.push('', extra);
 	}

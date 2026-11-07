@@ -7,7 +7,7 @@ import {
 	diffReports,
 	loadPrices
 } from '@bench/heisenbench';
-import type { CaseReport, Report } from '@bench/heisenbench';
+import type { CaseReport, Report, UpgradeResult } from '@bench/heisenbench';
 import { parseComment, upsertSection } from '@bench/compare';
 import { merge_reports } from '../src/run.ts';
 import {
@@ -248,6 +248,79 @@ test('engine and growth findings are capped', () => {
 	const md = render_pr_section(result({ selection: sel_one(), diff }));
 	assert.equal(md.split('\n').filter((l) => l.startsWith('- finding ')).length, CAPS.engine);
 	assert.match(md, /25 more engine entries are in result\.json\./);
+});
+
+test('a dependency upgrade gets its part after the step table, or says it failed', () => {
+	const diff = {
+		...diffReports(report('c', [case_of('c', 1)]), report('a', [case_of('c', 2)]), {
+			files: null
+		}),
+		engine: null,
+		growth: null,
+		search: null
+	};
+	const upgrade: UpgradeResult = {
+		schema: 'heisenbench-upgrade/1',
+		root: '/w/head',
+		base_root: '/w/base',
+		bumps: [
+			{
+				name: 'slowdep',
+				from: '1.0.0',
+				to: '1.1.0',
+				dirs: { from: '/w/base/x', to: '/w/head/x' },
+				changed_files: 2
+			}
+		],
+		added: [],
+		removed: [],
+		cases: [
+			{
+				case: 'c',
+				file: 'x.bench.ts',
+				old_steps: 1,
+				new_steps: 2,
+				delta: 1,
+				packages: ['slowdep'],
+				by_package: [{ package: 'slowdep@1.1.0', delta: 1 }],
+				functions: [
+					{
+						module: 'slowdep@1.1.0/index.js',
+						function: 'tokenize',
+						old_module: 'slowdep@1.0.0/index.js',
+						line: 6,
+						end_line: 20,
+						package: 'slowdep@1.1.0',
+						old_self_steps: 1,
+						new_self_steps: 2,
+						delta_self_steps: 1,
+						calls: { old: 1, new: 1 },
+						only: null,
+						upstream: true,
+						lines: [{ line: 14, kind: 'new code', delta_steps: 1, upstream: true }]
+					}
+				],
+				entries: {}
+			}
+		],
+		unexplained: [],
+		order_dependent: [],
+		failed: [],
+		spent: { files: 1, cases: 1, ms: 10 }
+	};
+	const md = render_pr_section(
+		result({ selection: sel_one(), diff, upgrade: { result: upgrade, error: null } })
+	);
+	assert.match(md, /#### What the dependency upgrades cost/);
+	assert.match(
+		md,
+		/- upgrading slowdep 1\.0\.0 → 1\.1\.0 makes `c` \*\*\+100\.0%\*\* \(\+1 steps; all in `slowdep@1\.1\.0\/index\.js > tokenize` L14\)/
+	);
+	assert.ok(md.indexOf('steps per function') < md.indexOf('What the dependency upgrades cost'));
+	const failed = render_pr_section(
+		result({ selection: sel_one(), diff, upgrade: { result: null, error: 'no install' } })
+	);
+	assert.match(failed, /\*\*Dependency upgrade diff failed\*\*: `no install`/);
 });
 
 test('the weight line comes before the step table, the search line after it', () => {

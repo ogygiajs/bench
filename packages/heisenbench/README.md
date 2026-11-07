@@ -58,6 +58,8 @@ code as it ships, nothing counted) next to the count:
 | Proof             | Is this faster version the same on every input, and cheaper? (on demand)           |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
 | Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
+| Upgrades          | What does a dependency upgrade cost, on which of the package's lines?              |
+| Upstream draft    | The upgrade's slowdown as an issue for the package: a repro, the counts, the line. |
 
 [docs/layers.md](docs/layers.md) explains each one.
 
@@ -341,6 +343,8 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench run <bench files>`                                                        | Count every case. `--measure time,bytes,leaks` (or `all`) adds the plain-build layers to the same report.          |
 | `heisenbench diff <base.json> <pr.json>`                                               | The markdown section: changed functions, lines, engine and growth changes. `--time`, `--weights` add their tables. |
 | `heisenbench blame <base.json> <pr.json> --root <dir>`                                 | The smallest set of the PR's hunks that makes each regressed case slower, by recounting trees with hunks undone.   |
+| `heisenbench upgrade <base.json> <pr.json> --root <dir> --base-root <dir>`             | The PR's code counted with each side's install: what its dependency upgrades cost, on the package's own lines.     |
+| `heisenbench upstream draft <upgrade.json>`                                            | An issue for the upgraded package's maintainers: a standalone repro timed on both versions, the counts, the line.  |
 | `heisenbench dts <source files> --out <file>`                                          | Types for `__heisenbench`.                                                                                         |
 | `heisenbench health <bench files>`                                                     | Engine health section: tiers, deopts, inline-cache states.                                                         |
 | `heisenbench growth <bench files>`                                                     | Steps at 1x, 10x, 100x the input, the fitted curve class and the odds of each shape.                               |
@@ -514,7 +518,15 @@ only comparable on one V8.
 - **Blame sees hunks, not their meaning.** It names the smallest set of hunks that carries the
   extra steps. Hunks that only load together (a renamed function and its callers) come out as one
   set; a regression from a dependency or the lockfile is said to be outside the hunks, since every
-  candidate tree shares the head's `node_modules`.
+  candidate tree shares the head's `node_modules`. `heisenbench upgrade` answers that one: it counts
+  the PR's code with the base's install and with its own.
+- **An upgrade is placed on lines, not on the upstream commit.** It names the package's function
+  and lines between the two installed versions; which release or commit between them made the
+  change is left to the package's own history.
+- **An upstream draft needs a call a stranger can make.** The function the project called must be
+  exported, and its recorded arguments must rebuild as source (strings, numbers, arrays, plain
+  objects, Map, Set, Date, RegExp). Otherwise `--entry` and `--input` say what to call and with
+  what.
 
 ## How it compares
 
