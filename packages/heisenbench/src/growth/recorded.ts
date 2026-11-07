@@ -164,7 +164,7 @@ function module_of(id: string): string {
 const IDENT = /^[A-Za-z_$][\w$]*$/;
 
 /** The callable of a top-level function (its export, or the `__heisenbench` hidden export). */
-function handle(mod: Record<string, unknown>, path: string): Function | null {
+export function handle(mod: Record<string, unknown>, path: string): Function | null {
 	if (!IDENT.test(path)) return null;
 	const own = mod[path];
 	if (typeof own === 'function') return own;
@@ -219,7 +219,7 @@ async function count_call(
 }
 
 /** The lines with the most self steps in a report. */
-function top_lines(report: CaseReport): NonNullable<RecordedGrowth['lines']> {
+export function top_lines(report: CaseReport): NonNullable<RecordedGrowth['lines']> {
 	const all: Array<{ at: string; steps: number }> = [];
 	let total = 0;
 	for (const f of report.functions) {

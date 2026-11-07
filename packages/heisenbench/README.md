@@ -54,6 +54,7 @@ code as it ships, nothing counted) next to the count:
 | Recorded growth   | Which function grows quadratically on its tests' real inputs, with no growth case? |
 | Price audit       | Do steps grow with the input the way time does? If not, which price is wrong?      |
 | Worst-case search | Which input costs the most work per unit of input, and how does it grow?           |
+| Proof             | Is this faster version the same on every input, and cheaper? (on demand)           |
 | Real-app weight   | How often the real apps call this function, so a change can be ranked by cost.     |
 | Blame             | Which hunks of the PR made a case slower? Found by recounting it with some undone. |
 
@@ -290,6 +291,7 @@ writes JSON; `diff` and a few others also write markdown.
 | `heisenbench growth --recorded <dir>`                                                  | Growth of every function a recorded test run called, over its real input sizes: no `scale` needed.                 |
 | `heisenbench record <bench files> --targets <file>`                                    | Every bench case run once with the input recorder on: more recorded calls, at bench sizes.                         |
 | `heisenbench search <bench files>`                                                     | Edits the input by its grammar toward the most steps per unit; shrinks, grows 1x to 8x, blames lines.              |
+| `heisenbench prove <module> <function> --candidate <file>`                             | Accepts a faster version only when it behaves the same on every input and costs fewer steps.                       |
 | `heisenbench time <bench files> --base <dir> --pr <dir>`                               | Times both trees in one process, in turns, and judges them by the no-overlap rule.                                 |
 | `heisenbench audit <bench files>`                                                      | Times the cases at every growth size; names a price whose steps grow unlike the time.                              |
 | `heisenbench weights <app reports>` / `heisenbench coverage <app reports> --app <dir>` | Real-app weights per function; which functions the app scenarios reached.                                          |
@@ -535,7 +537,7 @@ handles, and 369 corpus files. What it found is fixed, each with a test in
 
 - [How counting works](docs/how-counting-works.md): the transform, prices, built-ins, determinism,
   source maps, the shadow call stack, allocations and the byte model.
-- [Layers](docs/layers.md): engine health, time, real bytes, leaks, growth, search, app weights,
-  coverage and the gate.
+- [Layers](docs/layers.md): engine health, time, real bytes, leaks, growth, search, proofs of a
+  faster version, app weights, coverage and the gate.
 - [CI](docs/ci.md): the ogygia suite, the workflows, the comment, the results branch.
 - [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.
