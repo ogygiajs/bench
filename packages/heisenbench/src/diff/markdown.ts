@@ -1,5 +1,6 @@
 import type { CaseSummary, DiffResult, Finding, FunctionChange } from './index.ts';
 import { growth_label, is_superlinear } from '../growth/fit.ts';
+import { pct as odds_pct } from '../growth/odds.ts';
 import type { GrowthClass } from '../growth/fit.ts';
 import { render_measure } from '../measure/markdown.ts';
 import { cell, code } from '../md.ts';
@@ -220,9 +221,12 @@ function share(n: number): string {
 function summary_row(s: CaseSummary): string {
 	const fn = s.top_function ? `${code(s.top_function.id)} ${share(s.top_function.share)}` : '';
 	const line = s.top_line ? `${code(s.top_line.where)} ${share(s.top_line.share)}` : '';
-	const g = s.growth
-		? `${growth_label(s.growth.class as GrowthClass, s.growth.power)} (exponent ${s.growth.exponent})`
-		: '';
+	const label = s.growth ? growth_label(s.growth.class as GrowthClass, s.growth.power) : '';
+	const g = !s.growth
+		? ''
+		: s.growth.odds
+			? `${s.growth.odds.shape} by the odds (${odds_pct(s.growth.odds.p)}; exponent ${s.growth.exponent} alone reads ${label})`
+			: `${label} (exponent ${s.growth.exponent})`;
 	return `| ${cell(s.name)} | ${fmt(s.steps)} | ${fmt(s.allocations)} | ${fn} | ${line} | ${g} |`;
 }
 

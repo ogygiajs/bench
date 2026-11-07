@@ -11,6 +11,7 @@ import type { Prices } from '../prices.ts';
 import { feel_input, feel_probability, load_feel_model } from '../models/feel.ts';
 import type { FeelModel } from '../models/feel.ts';
 import { OWN_CODE, context_path, package_of, unversioned_module } from '../identity.ts';
+import { odds_disagree } from '../growth/fit.ts';
 
 /*
  * PR vs base (spec 11). Functions are matched by identity (`module > path`), through git file
@@ -135,7 +136,13 @@ export interface CaseSummary {
 	/** The line with the most steps (`module:line`), and its share. */
 	top_line: { where: string; share: number } | null;
 	/** The growth class of the case, when the report has a growth section. */
-	growth?: { class: string; exponent: number; power?: number };
+	growth?: {
+		class: string;
+		exponent: number;
+		power?: number;
+		/** The shape the odds back (90% or more) when it is not the fitted class. */
+		odds?: { shape: string; p: number };
+	};
 }
 
 /** Each counted case of a report with where its steps are, heaviest first. */
@@ -166,6 +173,8 @@ export function summarize_cases(report: Report): CaseSummary[] {
 		if (g && g.class && !g.error) {
 			s.growth = { class: g.class, exponent: g.exponent };
 			if (g.power !== undefined) s.growth.power = g.power;
+			const odds = odds_disagree(g);
+			if (odds) s.growth.odds = odds;
 		}
 		out.push(s);
 	}

@@ -1,7 +1,7 @@
 import type { BenchCase } from '../bench.ts';
 import { pair_cases } from '../cases.ts';
 import { code } from '../md.ts';
-import { GROWTH_RANK, fit_growth, growth_label, is_superlinear } from './fit.ts';
+import { GROWTH_RANK, fit_growth, growth_label, growth_verdict, is_superlinear } from './fit.ts';
 import type { GrowthClass } from './fit.ts';
 import {
 	SUPERLINEAR_ODDS,
@@ -682,7 +682,7 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 			g.error
 				? `FAILED   ${c.name}: ${g.error}`
 				: [
-						`${g.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${growth_label(g.class, g.power)} (exponent ${g.exponent}; ${g.steps.map((s) => Math.round(s)).join(' / ')} steps${odds_note(g)}${capped_words(g)}${verdict_note(g)})`,
+						`${g.stable ? 'ok      ' : 'UNSTABLE'} ${c.name}  ${growth_verdict(g)} (exponent ${g.exponent}; ${g.steps.map((s) => Math.round(s)).join(' / ')} steps${odds_note(g)}${capped_words(g)}${verdict_note(g)})`,
 						...growth_lines(g)
 					].join('\n')
 		);

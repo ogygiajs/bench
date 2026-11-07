@@ -19,8 +19,8 @@
  * The class is one name; how sure it is, is odds.ts (growth odds).
  */
 
-import { noisy_odds, odds_superlinear } from './odds.ts';
-import type { GrowthOdds, OddsOptions } from './odds.ts';
+import { CLOSE_CALL, noisy_odds, odds_superlinear, pct } from './odds.ts';
+import type { GrowthOdds, OddsOptions, Shape } from './odds.ts';
 
 export type GrowthClass =
 	| 'constant'
@@ -313,4 +313,34 @@ export function growth_label(c: GrowthClass | null, power?: number): string {
 	if (c === 'irregular') return 'irregular: the scaled input may be invalid';
 	if (c === 'shrinks') return 'shrinks: the scaled input may be invalid';
 	return c;
+}
+
+/**
+ * The shape the odds back with CLOSE_CALL or more when it is not the class the exponent was
+ * fitted to, else null. A curve like `a·n·log n` over 1x / 10x / 100x fits an exponent near 1.03,
+ * which reads linear; the odds, which fit each shape's own curve, tell them apart.
+ */
+export function odds_disagree(g: {
+	class: GrowthClass | string | null;
+	odds?: GrowthOdds | null;
+}): { shape: Shape; p: number } | null {
+	const top = g.odds?.odds[0];
+	if (!top || g.class === null || top.shape === g.class || top.p < CLOSE_CALL) return null;
+	if (GROWTH_RANK[g.class as GrowthClass] == null) return null;
+	return { shape: top.shape, p: top.p };
+}
+
+/**
+ * The class a case's line leads with: the fitted class, or, when the odds back another shape,
+ * that shape first (`n log n by the odds (>99%), linear by the exponent alone`), so a line never
+ * says "linear" and "odds n log n >99%" at once without saying which to read.
+ */
+export function growth_verdict(g: {
+	class: GrowthClass | null;
+	power?: number;
+	odds?: GrowthOdds | null;
+}): string {
+	const label = growth_label(g.class, g.power);
+	const d = odds_disagree(g);
+	return d ? `${d.shape} by the odds (${pct(d.p)}), ${label} by the exponent alone` : label;
 }
