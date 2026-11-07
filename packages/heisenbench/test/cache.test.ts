@@ -366,6 +366,12 @@ test('normalizing keeps what can change a count and drops what cannot', () => {
 		normalize(code2, 'x.ts', [body(code2)])!.text
 	);
 	assert.equal(normalize('let x = ;', 'x.ts'), null);
+	// a complexity contract is read from its comment, so that comment counts
+	assert.notEqual(
+		n('/** @heisenbench linear in xs */\nfunction f(xs) {}'),
+		n('/** @heisenbench quadratic in xs */\nfunction f(xs) {}')
+	);
+	assert.equal(n('/** sums xs */\nfunction f(xs) {}'), n('function f(xs) {}'));
 });
 
 test('pruning drops entries no run used lately', () => {
