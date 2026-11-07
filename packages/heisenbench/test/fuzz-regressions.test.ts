@@ -320,7 +320,9 @@ test('the slow-input search finds an input the code never finishes on, and stops
 	const s = await search_case(c as BenchCase, new Measurer(), { evals: 200, steps: 2e5, seed: 1 });
 	assert.equal(s.error, null);
 	assert.equal(s.runaway, true);
-	assert.equal(s.stopped, 'steps');
-	assert.ok(s.worst > 1e5);
+	assert.equal(s.stopped, 'runaway');
+	// the try ran out its own cap, not the budget's leftover, and is not the worst input
+	assert.ok(s.exceeded && s.exceeded.cap >= 1e4 && s.exceeded.cap < 2e5, JSON.stringify(s));
+	assert.ok(s.worst < s.exceeded.cap, JSON.stringify(s));
 	assert.equal(rt.cap, Infinity);
 });

@@ -14,15 +14,20 @@ import { StepCapError } from '../runtime/index.ts';
  * of the same size is slowest.
  *
  * Bounded by evaluations, by total steps counted and by wall time. The first two are
- * deterministic; when the time budget ends a search the result says so. Each input runs under a
- * step cap (what is left of the step budget): an input on which the code would run forever ends
- * its run at the cap, and is the worst input found (`runaway`).
+ * deterministic; when the time budget ends a search the result says so. Each try runs under its
+ * own step cap (TRY_CAP_FACTOR times the typical steps): an input on which the code would run
+ * forever ends its run there and is reported as exceeding the cap at its size (`runaway`), never
+ * as the worst input. A try that would need more than what is left of the budget is not run.
  *
  * Built-ins are priced by input size, so a regular expression that backtracks badly costs no more
  * steps than one that does not: catastrophic regexes are not found by this search.
  */
 
 export const SEARCH_SCHEMA = 'heisenbench-search/1';
+
+/** Each try's step cap: this many times the typical steps, and at least TRY_CAP_MIN. */
+export const TRY_CAP_FACTOR = 256;
+export const TRY_CAP_MIN = 1e4;
 
 export interface SearchCase {
 	name: string;
@@ -34,14 +39,16 @@ export interface SearchCase {
 	/** worst / typical. */
 	ratio: number;
 	evals: number;
-	/** What ended the search. */
-	stopped: 'evals' | 'steps' | 'time';
+	/** What ended the search (`runaway`: a try went past its own cap). */
+	stopped: 'evals' | 'steps' | 'time' | 'runaway';
 	/** The worst input, as JSON (shortened). */
 	input: string;
 	/** Mutations from the case's input to the worst one. */
 	mutations: string[];
-	/** On the worst input the run went past its step cap: it may never end. */
+	/** A try went past its own step cap: it may never end (`exceeded` says on what). */
 	runaway?: boolean;
+	/** The input that exceeded the cap, its size, and the cap. */
+	exceeded?: { size: number; cap: number; input: string };
 	error: string | null;
 }
 
@@ -121,6 +128,7 @@ export async function search_case(
 		const first = await m.once(c, seed_input, 'record');
 		out.typical = first.steps;
 		let spent = first.steps;
+		const try_cap = Math.max(TRY_CAP_MIN, TRY_CAP_FACTOR * first.steps);
 		const rng = new Rng(o.seed);
 		let cur = {
 			input: (c.setup ? await c.setup() : undefined) as unknown,
@@ -149,17 +157,25 @@ export async function search_case(
 				if (++tries > o.evals * 20) break;
 				continue;
 			}
+			// Every try has its own cap, a multiple of the typical steps. A try that would run past
+			// what is left of the budget instead is not run: hitting the leftover is not a finding.
+			const left = o.steps - spent;
+			if (left < try_cap) {
+				out.stopped = 'steps';
+				break;
+			}
 			out.evals++;
 			let steps: number;
 			try {
 				// the case may change its input: count on a copy, keep the original
-				steps = (await m.once(c, clone(next.input), 'replay', o.steps - spent)).steps;
+				steps = (await m.once(c, clone(next.input), 'replay', try_cap)).steps;
 			} catch (e) {
 				if (e instanceof StepCapError) {
-					// it would have used the whole budget, and maybe never ended: the worst input
-					best = { input: next.input, steps: e.steps, trail: [...cur.trail, next.what].slice(-20) };
+					// past its own cap: it may never end. Said as such, never the worst input.
+					spent += try_cap;
 					out.runaway = true;
-					out.stopped = 'steps';
+					out.exceeded = { size: input_size(next.input), cap: try_cap, input: preview(next.input) };
+					out.stopped = 'runaway';
 					break;
 				}
 				stale++;
@@ -223,7 +239,7 @@ export function diff_search(base: SearchReport, pr: SearchReport, flag = 4): Sea
 		if (p.runaway && !b?.runaway) {
 			out.push({
 				case: p.name,
-				text: `${'`'}${p.name}${'`'} has an input it may never finish on: past ${Math.round(p.worst)} steps (${Math.round(p.typical)} typical)`
+				text: `${code(p.name)} has an input it may never finish on: it exceeded the cap of ${Math.round(p.exceeded?.cap ?? 0)} steps at size ${p.exceeded?.size ?? '?'} (${Math.round(p.typical)} typical)`
 			});
 		} else if (p.ratio >= flag && p.ratio >= 2 * base_ratio) {
 			out.push({
