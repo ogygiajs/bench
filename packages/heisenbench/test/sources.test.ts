@@ -70,8 +70,15 @@ test('conditions_for: added for the code under test, never for Heisenbench and i
 		'import',
 		'svelte'
 	]);
-	assert.equal(add(pathToFileURL(fileURLToPath(new URL('../src/cli.ts', import.meta.url))).href), node);
-	assert.equal(add('file:///p/node_modules/oxc-parser/index.js'), node, 'a package Heisenbench loaded');
+	assert.equal(
+		add(pathToFileURL(fileURLToPath(new URL('../src/cli.ts', import.meta.url))).href),
+		node
+	);
+	assert.equal(
+		add('file:///p/node_modules/oxc-parser/index.js'),
+		node,
+		'a package Heisenbench loaded'
+	);
 	assert.equal(add(undefined), node, 'the entry point');
 	assert.deepEqual(parse_conditions(' svelte, browser,svelte,'), ['svelte', 'browser']);
 });
@@ -88,7 +95,11 @@ test('--conditions picks the build a bundler would, and package imports with no 
 			version: '1.2.3',
 			type: 'module',
 			exports: {
-				'.': { svelte: './svelte/index.js', browser: './browser/index.js', default: './node/index.js' }
+				'.': {
+					svelte: './svelte/index.js',
+					browser: './browser/index.js',
+					default: './node/index.js'
+				}
 			}
 		}),
 		'node_modules/lib/svelte/index.js': build('svelte'),
