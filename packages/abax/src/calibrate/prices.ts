@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { Bench } from 'tinybench';
 import { builtin_size } from '../runtime/builtins.ts';
 import { load_prices } from '../prices.ts';
@@ -254,14 +254,20 @@ export function format_prices(p: PriceFile): string {
 	return lines.join('\n') + '\n';
 }
 
+/**
+ * Writes `builtins` into the price file at `path`, a new version when a price changed. A `path`
+ * that does not exist yet starts from `from` (the committed prices.json) and is always written.
+ */
 export function write_prices(
 	path: string,
 	builtins: Record<string, BuiltinPrice>,
-	calibration?: PriceCalibration
+	calibration?: PriceCalibration,
+	from: string = path
 ): { version: number; changed: boolean } {
-	const current = JSON.parse(readFileSync(path, 'utf8')) as PriceFile;
+	const fresh = !existsSync(path);
+	const current = JSON.parse(readFileSync(fresh ? from : path, 'utf8')) as PriceFile;
 	const { prices, changed } = next_prices(current, builtins);
-	if (changed) {
+	if (changed || fresh) {
 		writeFileSync(
 			path,
 			format_prices({

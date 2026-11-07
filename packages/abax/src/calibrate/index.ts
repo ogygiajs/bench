@@ -111,10 +111,15 @@ export async function calibrate_prices(o: CalibratePricesOptions = {}): Promise<
 	}
 	const out = o.out ?? DEFAULT_PRICES_PATH;
 	const { load: _load, ...machine } = machine_info();
-	const { version, changed } = write_prices(out, prices_from_fits(fits, ns_per_step), {
-		date: new Date().toISOString().slice(0, 10),
-		step_ns: Math.round(ns_per_step * 1e4) / 1e4,
-		machine
-	});
+	const { version, changed } = write_prices(
+		out,
+		prices_from_fits(fits, ns_per_step),
+		{
+			date: new Date().toISOString().slice(0, 10),
+			step_ns: Math.round(ns_per_step * 1e4) / 1e4,
+			machine
+		},
+		DEFAULT_PRICES_PATH
+	);
 	return { fits, step_ns: ns_per_step, version, changed };
 }
