@@ -20,7 +20,9 @@
  * all|changed|off (growth from recorded calls, recorded.ts: every source module, a PR's changed
  * modules only, or none; default all for a full run, changed for a PR), --blame-budget <seconds>
  * (a PR: which hunks made the regressed cases slower, recounted on scratch copies of the head
- * tree; default 300, 0 turns it off).
+ * tree; default 300, 0 turns it off), --history <dir> (a full run: the results branch, a checkout
+ * or a blobless clone; each case's steps over main's earlier full runs, in first-parent order,
+ * are checked for slow creep, trend.ts; report-only).
  *
  * A PR: both commits are checked out and installed, the PR is measured against the merge base of
  * the two, and only the bench files whose import graph reaches a changed file run: counted, health
@@ -63,6 +65,7 @@ import { select_all, select_changed } from './select.ts';
 import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
 import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
+import { run_trend } from './trend.ts';
 
 const { values } = parseArgs({
 	options: {
@@ -82,7 +85,8 @@ const { values } = parseArgs({
 		search: { type: 'string' },
 		'search-budget': { type: 'string' },
 		recorded: { type: 'string' },
-		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) }
+		'blame-budget': { type: 'string', default: String(BLAME_BUDGET_MS / 1000) },
+		history: { type: 'string' }
 	}
 });
 if (values.recorded !== undefined && !['all', 'changed', 'off'].includes(values.recorded))
@@ -298,6 +302,15 @@ async function main(): Promise<void> {
 				`growth from recorded calls: ${result.recorded.findings.length} findings of ${result.recorded.grown} grown (build ${run.seconds.build} s, record ${run.seconds.record} s, grow ${run.seconds.grow} s)${run.error ? `; ${run.error}` : ''}`
 			);
 		}
+	}
+
+	// a full run: slow creep over main's earlier full runs, with this run as the newest
+	if (!mb && result.head && values.history !== undefined) {
+		result.trend = run_trend({ repo, history: resolve(values.history), result });
+		const t = result.trend;
+		log(
+			`trend over main: ${t.error ? `failed: ${t.error}` : `${t.creeps.length} creeping of ${t.cases} cases over ${t.runs.length} full runs${t.note ? ` (${t.note})` : ''}`} (${t.ms} ms)`
+		);
 	}
 
 	// with real traffic, the recorded findings are ranked too: by what each takes on it now

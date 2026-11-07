@@ -108,7 +108,7 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
-  heisenbench verify [--layers steps,elision,leak,engine,growth,search,app,time] [--filter text]
+  heisenbench verify [--layers steps,elision,leak,engine,growth,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
 
 Optional peer dependencies, installed in the project when needed: typescript (heisenbench dts, and

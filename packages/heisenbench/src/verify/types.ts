@@ -6,7 +6,8 @@ export type VerifyLayer =
 	| 'growth'
 	| 'search'
 	| 'app'
-	| 'time';
+	| 'time'
+	| 'trend';
 
 export const VERIFY_LAYERS: VerifyLayer[] = [
 	'steps',
@@ -16,7 +17,8 @@ export const VERIFY_LAYERS: VerifyLayer[] = [
 	'growth',
 	'search',
 	'app',
-	'time'
+	'time',
+	'trend'
 ];
 
 /** One planted change (or planted no-op) and how to check what Heisenbench says about it. */
