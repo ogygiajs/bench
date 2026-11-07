@@ -1,19 +1,20 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
-import { isAbsolute, join, resolve, sep } from 'node:path';
+import { join, resolve } from 'node:path';
 import { case_key } from '../cases.ts';
 import { diff_reports } from '../diff/index.ts';
 import type { DiffResult } from '../diff/index.ts';
 import type { LoaderConfig } from '../loader/register.ts';
-import { own_file } from '../own.ts';
-import { ProcessError, run_process } from '../proc.ts';
 import { one_line } from '../report.ts';
 import type { Report } from '../report.ts';
 import { ddmin } from './ddmin.ts';
 import type { Outcome, Tester } from './ddmin.ts';
 import { diff_units } from './hunks.ts';
-import type { TreeFiles, Unit, Units } from './hunks.ts';
-import { mirror_tree, remove_tree, write_tree } from './tree.ts';
+import type { Unit, Units } from './hunks.ts';
+import { Lanes, run_child } from './lanes.ts';
+import { remove_tree } from './tree.ts';
+
+export { move_args } from './lanes.ts';
 import type { FunctionChange } from '../diff/index.ts';
 import { load_weights } from '../calibrate/weights.ts';
 import { rank_changes } from '../weight/rank.ts';
@@ -262,68 +263,6 @@ interface Count {
 	error: string | null;
 }
 
-const PATH_FLAGS = new Set(['--import', '--require', '-r', '--loader', '--experimental-loader']);
-
-/** Node flags with every path into `root` moved into `lane` (relative ones resolved first). */
-export function move_args(args: readonly string[], root: string, lane: string): string[] {
-	const move = (v: string): string => {
-		if (!(v.startsWith('.') || isAbsolute(v))) return v; // a package name
-		const abs = resolve(v);
-		return abs === root || abs.startsWith(root + sep) ? lane + abs.slice(root.length) : abs;
-	};
-	const out: string[] = [];
-	for (let i = 0; i < args.length; i++) {
-		const a = args[i];
-		const eq = a.indexOf('=');
-		if (eq !== -1 && PATH_FLAGS.has(a.slice(0, eq)))
-			out.push(a.slice(0, eq + 1) + move(a.slice(eq + 1)));
-		else if (PATH_FLAGS.has(a) && i + 1 < args.length) out.push(a, move(args[++i]));
-		else out.push(a);
-	}
-	return out;
-}
-
-class Lanes {
-	#free: string[] = [];
-	#made = 0;
-	#waiting: Array<(dir: string) => void> = [];
-	root: string;
-	work: string;
-	jobs: number;
-	fixed: TreeFiles;
-	prefix: string;
-	constructor(root: string, work: string, jobs: number, fixed: TreeFiles, prefix: string) {
-		this.root = root;
-		this.work = work;
-		this.jobs = jobs;
-		this.fixed = fixed;
-		this.prefix = prefix;
-	}
-
-	take(): Promise<string> {
-		const dir = this.#free.pop();
-		if (dir) return Promise.resolve(dir);
-		if (this.#made < this.jobs) {
-			const d = join(this.work, `tree-${this.#made++}`);
-			remove_tree(d); // one a stopped run left
-			mirror_tree(this.root, d);
-			write_tree(d, this.fixed, this.prefix);
-			return Promise.resolve(d);
-		}
-		return new Promise((r) => this.#waiting.push(r));
-	}
-
-	give(dir: string): void {
-		const w = this.#waiting.shift();
-		if (w) w(dir);
-		else this.#free.push(dir);
-	}
-
-	remove(): void {
-		for (let i = 0; i < this.#made; i++) remove_tree(join(this.work, `tree-${i}`));
-	}
-}
-
 /** The units a set leaves applied, sorted. */
 function ids(s: Iterable<number>): number[] {
 	return [...s].sort((a, b) => a - b);
@@ -371,35 +310,22 @@ export async function blame_regressions(o: BlameOptions): Promise<BlameResult> {
 		const job_file = join(work, 'counts', `${hash}.job.json`);
 		let error: string | null = null;
 		try {
-			write_tree(lane, units.tree(applied), prefix);
-			writeFileSync(
-				job_file,
-				JSON.stringify({
-					root: lane,
-					files,
-					cases: names,
-					sha: null,
-					prefix,
-					deps: o.deps ?? true,
-					out
-				})
-			);
+			lanes.put(lane, units.tree(applied));
 			const left = budget_ms - (Date.now() - started);
-			// a preload in the root (ogygia maps Vite-only specifiers to stubs) loads from the copy
-			const move = (args: readonly string[]) =>
-				move_args(move_args(args, given_root, lane), root, lane);
-			const opts = (env.NODE_OPTIONS ?? '').split(' ').filter(Boolean);
-			await run_process(process.execPath, [...move(node_args), own_file('blame/child'), job_file], {
-				cwd: lane,
-				env: { ...env, NODE_OPTIONS: move(opts).join(' ') },
-				timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, left))
-			});
+			error = await run_child(
+				lane,
+				{ root: lane, files, cases: names, sha: null, prefix, deps: o.deps ?? true, out },
+				job_file,
+				{
+					given_root,
+					root,
+					node_args,
+					env,
+					timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, left))
+				}
+			);
 		} catch (e) {
-			const tail =
-				e instanceof ProcessError
-					? (e.stderr || e.stdout).trim().split('\n').slice(-3).join(' ')
-					: '';
-			error = `the recount ${one_line(e)}${tail ? `: ${tail}` : ''}`;
+			error = `the recount ${one_line(e)}`;
 		} finally {
 			lanes.give(lane);
 		}
