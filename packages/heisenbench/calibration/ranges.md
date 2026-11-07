@@ -1,6 +1,6 @@
 # Steps to ms, with a range: held-out evaluation
 
-Written by `heisenbench calibrate ranges --md calibration/ranges.md` (docs/calibration.md, "Ranges"). ranges.json v1: training data 1 (`9f6b31fc8689c8ad`), 950 timed sides, seed 1; 120 trees of depth 3 per quantile. A call's 10-90% range is widened by 0.06790063 (log), a change's is its estimate times and over 7.69.
+Written by `heisenbench calibrate ranges --md calibration/ranges.md` (docs/calibration.md, "Ranges"). ranges.json v2: training data 2 (`24b42d6bd93c6749`), 950 timed sides, seed 1; 120 trees of depth 3 per quantile. A call's 10-90% range is widened by 0.0307099 (log), a change's is its estimate times and over 6.13.
 
 Every number below is held out: a model trained without the group predicts it.
 
@@ -10,71 +10,68 @@ Every number below is held out: a model trained without the group predicts it.
 
 | Estimate | Median abs error | Median log error | Mean log error | Inside 10-90% | Median width |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| weights.json (today) | 59.8 µs | 0.655 | 0.966 | 58% | 5.50x |
-| linear part alone, refitted | 41.3 µs | 0.314 | 0.601 | 74% | 2.91x |
-| model, from counts (as reports use it) | 16.3 µs | 0.077 | 0.298 | 85% | 2.15x |
-| model, with engine health and input size | 17.1 µs | 0.081 | 0.297 | 87% | 2.16x |
+| weights.json (today) | 100.7 µs | 0.828 | 1.136 | 57% | 5.50x |
+| linear part alone, refitted | 30.0 µs | 0.216 | 0.489 | 75% | 3.28x |
+| model, from counts (as reports use it) | 9.5 µs | 0.046 | 0.233 | 86% | 1.63x |
+| model, with engine health and input size | 9.5 µs | 0.046 | 0.232 | 87% | 1.64x |
 
-Changes: the 76 pairs whose time moved beyond noise, the estimate of PR minus base against the measured change.
+Changes: the 92 pairs whose time moved beyond noise, the estimate of PR minus base against the measured change.
 
 | Estimate | Median error | Right sign | Inside the range | Median width |
 | --- | ---: | ---: | ---: | ---: |
-| weights.json (today) | 76% | 100% | 36% | 5.50x |
-| linear part alone, refitted | 75% | 95% | 28% | 2.86x |
-| model, from counts (as reports use it) | 43% | 100% | 80% | 27.39x |
-| model, with engine health and input size | 43% | 100% | 80% | 27.39x |
+| weights.json (today) | 86% | 100% | 33% | 5.50x |
+| linear part alone, refitted | 29% | 96% | 58% | 3.18x |
+| model, from counts (as reports use it) | 36% | 100% | 83% | 13.26x |
+| model, with engine health and input size | 36% | 100% | 83% | 13.26x |
 
 By source:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| history | 528 | 82% | 86% | 59% | 67% | 0.216 | 0.584 |
-| planted | 422 | 88% | 89% | 91% | 46% | 0.028 | 0.194 |
+| history | 528 | 84% | 86% | 63% | 65% | 0.111 | 0.454 |
+| planted | 422 | 89% | 89% | 90% | 47% | 0.023 | 0.131 |
 
 By input size:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 100 | 194 | 91% | 93% | 88% | 21% | 0.043 | 0.322 |
-| 100 to 1K | 130 | 85% | 88% | 85% | 72% | 0.026 | 0.152 |
-| 1K to 10K | 260 | 87% | 87% | 88% | 83% | 0.047 | 0.201 |
-| 10K to 100K | 204 | 77% | 79% | 52% | 57% | 0.386 | 0.659 |
-| 100K or more | 136 | 80% | 87% | 41% | 49% | 0.301 | 0.648 |
-| unknown | 26 | 100% | 100% | 100% | 58% | 0.340 | 0.085 |
+| under 100 | 220 | 94% | 94% | 89% | 18% | 0.015 | 0.139 |
+| 100 to 1K | 130 | 90% | 90% | 84% | 75% | 0.048 | 0.115 |
+| 1K to 10K | 260 | 87% | 88% | 87% | 83% | 0.033 | 0.136 |
+| 10K to 100K | 204 | 78% | 80% | 56% | 50% | 0.191 | 0.557 |
+| 100K or more | 136 | 80% | 85% | 51% | 65% | 0.203 | 0.616 |
 
 By unit kind (the group holding most of the steps):
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| alloc | 56 | 86% | 86% | 88% | 4% | 0.015 | 0.303 |
-| arith | 96 | 100% | 100% | 100% | 0% | 0.045 | 0.071 |
-| bi_array | 256 | 85% | 86% | 89% | 95% | 0.027 | 0.190 |
-| bi_json | 60 | 95% | 98% | 7% | 27% | 0.147 | 1.872 |
-| bi_map | 12 | 67% | 100% | 17% | 8% | 2.673 | 4.247 |
-| bi_regexp | 106 | 75% | 75% | 74% | 62% | 0.330 | 0.448 |
-| bi_string | 110 | 85% | 89% | 77% | 80% | 0.097 | 0.354 |
-| call | 98 | 85% | 90% | 67% | 82% | 0.177 | 0.614 |
-| control | 68 | 76% | 76% | 47% | 78% | 0.348 | 0.430 |
-| loop | 88 | 82% | 84% | 67% | 0% | 0.151 | 0.364 |
+| alloc | 56 | 88% | 88% | 80% | 2% | 0.025 | 0.690 |
+| arith | 96 | 100% | 100% | 100% | 0% | 0.006 | 0.063 |
+| bi_array | 214 | 89% | 89% | 94% | 99% | 0.043 | 0.106 |
+| bi_json | 66 | 83% | 83% | 36% | 33% | 0.312 | 1.070 |
+| bi_map | 12 | 67% | 67% | 0% | 0% | 1.729 | 3.694 |
+| bi_regexp | 154 | 87% | 87% | 78% | 47% | 0.077 | 0.240 |
+| bi_string | 62 | 92% | 94% | 65% | 68% | 0.031 | 0.557 |
+| call | 98 | 84% | 87% | 69% | 80% | 0.165 | 0.456 |
+| control | 104 | 72% | 77% | 62% | 94% | 0.048 | 0.387 |
+| loop | 88 | 81% | 85% | 65% | 20% | 0.309 | 0.445 |
 
 By measured time:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 1 µs | 78 | 87% | 87% | 86% | 0% | 0.044 | 0.129 |
-| 1 to 10 µs | 46 | 80% | 80% | 83% | 2% | 0.056 | 0.063 |
-| 10 to 100 µs | 217 | 86% | 90% | 75% | 68% | 0.063 | 0.365 |
-| 100 µs to 1 ms | 456 | 83% | 85% | 65% | 63% | 0.153 | 0.431 |
-| 1 ms or more | 153 | 90% | 90% | 88% | 75% | 0.061 | 0.306 |
+| under 1 µs | 78 | 91% | 91% | 86% | 3% | 0.009 | 0.083 |
+| 1 to 10 µs | 50 | 86% | 86% | 72% | 8% | 0.010 | 0.074 |
+| 10 to 100 µs | 201 | 83% | 85% | 83% | 65% | 0.051 | 0.209 |
+| 100 µs to 1 ms | 451 | 86% | 88% | 67% | 62% | 0.082 | 0.330 |
+| 1 ms or more | 170 | 88% | 89% | 84% | 75% | 0.033 | 0.195 |
 
 By load average while timed:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 10 | 36 | 86% | 86% | 56% | 61% | 0.082 | 0.656 |
-| 10 to 12 | 510 | 87% | 88% | 76% | 53% | 0.061 | 0.303 |
-| 12 to 14 | 326 | 80% | 84% | 69% | 72% | 0.146 | 0.357 |
-| 14 or more | 78 | 90% | 95% | 87% | 27% | 0.055 | 0.117 |
+| under 3 | 618 | 85% | 87% | 68% | 54% | 0.051 | 0.330 |
+| 3 to 10 | 332 | 88% | 89% | 89% | 63% | 0.038 | 0.128 |
 
 ## Held out by code
 
@@ -82,68 +79,65 @@ By load average while timed:
 
 | Estimate | Median abs error | Median log error | Mean log error | Inside 10-90% | Median width |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| weights.json (today) | 59.8 µs | 0.655 | 0.966 | 58% | 5.50x |
-| linear part alone, refitted | 88.1 µs | 0.547 | 0.835 | 50% | 2.71x |
-| model, from counts (as reports use it) | 82.0 µs | 0.412 | 0.734 | 94% | 86.26x |
-| model, with engine health and input size | 82.2 µs | 0.408 | 0.731 | 94% | 86.39x |
+| weights.json (today) | 100.7 µs | 0.828 | 1.136 | 57% | 5.50x |
+| linear part alone, refitted | 90.8 µs | 0.528 | 0.951 | 31% | 2.54x |
+| model, from counts (as reports use it) | 129.9 µs | 0.639 | 0.900 | 87% | 28.58x |
+| model, with engine health and input size | 127.7 µs | 0.658 | 0.902 | 87% | 28.60x |
 
-Changes: the 76 pairs whose time moved beyond noise, the estimate of PR minus base against the measured change.
+Changes: the 92 pairs whose time moved beyond noise, the estimate of PR minus base against the measured change.
 
 | Estimate | Median error | Right sign | Inside the range | Median width |
 | --- | ---: | ---: | ---: | ---: |
-| weights.json (today) | 76% | 100% | 36% | 5.50x |
-| linear part alone, refitted | 67% | 95% | 24% | 2.71x |
-| model, from counts (as reports use it) | 37% | 100% | 91% | 210.55x |
-| model, with engine health and input size | 37% | 100% | 91% | 210.55x |
+| weights.json (today) | 86% | 100% | 33% | 5.50x |
+| linear part alone, refitted | 86% | 100% | 17% | 2.52x |
+| model, from counts (as reports use it) | 80% | 100% | 87% | 94.61x |
+| model, with engine health and input size | 80% | 100% | 87% | 94.61x |
 
 By source:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| history | 528 | 89% | 89% | 37% | 67% | 0.661 | 0.699 |
-| planted | 422 | 100% | 100% | 65% | 46% | 0.238 | 0.262 |
+| history | 528 | 88% | 88% | 46% | 65% | 0.466 | 0.587 |
+| planted | 422 | 86% | 86% | 14% | 47% | 0.956 | 0.421 |
 
 By input size:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 100 | 194 | 98% | 98% | 28% | 21% | 0.373 | 1.018 |
-| 100 to 1K | 130 | 94% | 94% | 82% | 72% | 0.261 | 0.058 |
-| 1K to 10K | 260 | 100% | 100% | 67% | 83% | 0.253 | 0.237 |
-| 10K to 100K | 204 | 99% | 99% | 43% | 57% | 0.610 | 0.724 |
-| 100K or more | 136 | 88% | 88% | 38% | 49% | 0.792 | 0.995 |
-| unknown | 26 | 0% | 0% | 0% | 58% | 3.976 | 3.211 |
+| under 100 | 220 | 62% | 62% | 8% | 18% | 1.604 | 1.965 |
+| 100 to 1K | 130 | 92% | 92% | 15% | 75% | 0.946 | 0.368 |
+| 1K to 10K | 260 | 99% | 99% | 33% | 83% | 0.483 | 0.335 |
+| 10K to 100K | 204 | 99% | 99% | 53% | 50% | 0.357 | 0.588 |
+| 100K or more | 136 | 79% | 79% | 50% | 65% | 0.438 | 0.697 |
 
 By unit kind (the group holding most of the steps):
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| alloc | 56 | 100% | 100% | 75% | 4% | 0.866 | 0.738 |
-| arith | 96 | 100% | 100% | 0% | 0% | 0.090 | 1.094 |
-| bi_array | 256 | 100% | 100% | 80% | 95% | 0.255 | 0.054 |
-| bi_json | 60 | 100% | 100% | 7% | 27% | 1.300 | 1.840 |
-| bi_map | 12 | 17% | 17% | 17% | 8% | 3.432 | 4.444 |
-| bi_regexp | 106 | 70% | 70% | 37% | 62% | 1.111 | 0.944 |
-| bi_string | 110 | 91% | 91% | 42% | 80% | 0.378 | 0.337 |
-| call | 98 | 100% | 100% | 43% | 82% | 0.618 | 0.461 |
-| control | 68 | 100% | 100% | 53% | 78% | 0.515 | 0.514 |
-| loop | 88 | 95% | 95% | 65% | 0% | 0.301 | 0.263 |
+| alloc | 56 | 5% | 5% | 0% | 2% | 2.325 | 2.306 |
+| arith | 96 | 100% | 100% | 0% | 0% | 1.408 | 1.964 |
+| bi_array | 214 | 99% | 99% | 11% | 99% | 0.677 | 0.348 |
+| bi_json | 66 | 100% | 100% | 33% | 33% | 0.557 | 0.996 |
+| bi_map | 12 | 33% | 33% | 0% | 0% | 2.815 | 3.707 |
+| bi_regexp | 154 | 83% | 83% | 47% | 47% | 0.356 | 0.597 |
+| bi_string | 62 | 84% | 84% | 35% | 68% | 0.315 | 0.552 |
+| call | 98 | 100% | 100% | 43% | 80% | 0.494 | 0.528 |
+| control | 104 | 94% | 94% | 63% | 94% | 0.270 | 0.468 |
+| loop | 88 | 75% | 75% | 57% | 20% | 0.233 | 0.432 |
 
 By measured time:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 1 µs | 78 | 100% | 100% | 51% | 0% | 0.063 | 0.263 |
-| 1 to 10 µs | 46 | 91% | 91% | 13% | 2% | 0.087 | 1.021 |
-| 10 to 100 µs | 217 | 100% | 100% | 51% | 68% | 0.310 | 0.501 |
-| 100 µs to 1 ms | 456 | 89% | 89% | 44% | 63% | 0.579 | 0.676 |
-| 1 ms or more | 153 | 100% | 100% | 75% | 75% | 0.522 | 0.386 |
+| under 1 µs | 78 | 97% | 97% | 46% | 3% | 0.230 | 0.558 |
+| 1 to 10 µs | 50 | 92% | 92% | 4% | 8% | 1.401 | 1.957 |
+| 10 to 100 µs | 201 | 99% | 99% | 17% | 65% | 0.932 | 0.433 |
+| 100 µs to 1 ms | 451 | 80% | 80% | 31% | 62% | 0.613 | 0.629 |
+| 1 ms or more | 170 | 82% | 82% | 51% | 75% | 0.434 | 0.468 |
 
 By load average while timed:
 
 | Group | Sides | Model inside | With engine inside | Linear inside | Weights inside | Model log error | Linear log error |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| under 10 | 36 | 94% | 94% | 28% | 61% | 0.584 | 0.839 |
-| 10 to 12 | 510 | 96% | 96% | 55% | 53% | 0.403 | 0.469 |
-| 12 to 14 | 326 | 91% | 91% | 52% | 72% | 0.509 | 0.496 |
-| 14 or more | 78 | 92% | 92% | 12% | 27% | 0.147 | 1.096 |
+| under 3 | 618 | 88% | 88% | 37% | 54% | 0.551 | 0.713 |
+| 3 to 10 | 332 | 84% | 84% | 21% | 63% | 0.799 | 0.377 |

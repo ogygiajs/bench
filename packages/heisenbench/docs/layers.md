@@ -165,8 +165,8 @@ the cell says `· below resolution` and the metric is not judged.
 
 The step table gives each changed case the odds that its step change shows up here, as a
 verdict of this rule: a model fitted on timed step changes ([feel-odds.md](feel-odds.md)). The
-changes were timed on a busy machine, so the odds lean low. They are words next to the counts;
-pass or fail never reads them.
+changes were timed on one quiet 4-core runner, so on another machine the odds can be off. They
+are words next to the counts; pass or fail never reads them.
 
 ### Estimated ns and time-led cases
 

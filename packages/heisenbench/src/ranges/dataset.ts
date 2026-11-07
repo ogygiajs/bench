@@ -18,10 +18,12 @@ import type { TrainChange } from './model.ts';
  *   code    stricter, the same code is never on both sides: a bench file of the history is one
  *           group over all its commits; a planted template is one group
  *
- * The data was timed on a busy machine (load average 7 to 20 on 16 cores). Each observation
- * carries its group's mean load; training weighs a row by `LOAD_REFERENCE / load`, so the quieter
- * groups count more, and the same code timed many times (an unchanged case at every commit)
- * counts once in all (`weight` below).
+ * Version 1 was timed on a busy machine (load average 7 to 20 on 16 cores), version 2 on a quiet
+ * one (2 to 4 on 4 cores, mostly the timing's own processes). Each observation carries its
+ * group's mean load; training weighs a row by `LOAD_REFERENCE / load`, so the quieter groups
+ * count more (on version 2 too: weighed alike, the held-out log error went from 0.046 to 0.053),
+ * and the same code timed many times (an unchanged case at every commit) counts once in all
+ * (`weight` below). A model trains on one version: the two machines' clocks differ.
  */
 
 export const COUNTS_SCHEMA = 'heisenbench-training-counts/1';

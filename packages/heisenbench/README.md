@@ -192,15 +192,15 @@ npx heisenbench diff base.json pr.json --repo .
 
 | Case | Steps | Δ | Odds it shows on the clock |
 | --- | ---: | ---: | ---: |
-| rank: twenty rows | 897 → 1,417 | +520 (+58.0%) | 57% |
+| rank: twenty rows | 897 → 1,417 | +520 (+58.0%) | 73% |
 
-<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from 475 timed changes (dataset v1). They were timed on a busy machine, so the odds lean low. Pass or fail never uses them.</sub>
+<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from 475 timed changes (dataset v2). They were timed on one machine, so on another the odds can be off. Pass or fail never uses them.</sub>
 
 By function:
 
 | Case | Function | Self steps | Δ | Δ allocs | Δ bytes | Δ inclusive |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| rank: twenty rows | `src/rank.ts > score` | 620 → 1,140 | +520 (+83.9%) ≈ +21 ns | 0 | 0 | +520 |
+| rank: twenty rows | `src/rank.ts > score` | 620 → 1,140 | +520 (+83.9%) ≈ +21 ns; model +50 ns, likely +8.2 to +307 | 0 | 0 | +520 |
 
 <details><summary>Where</summary>
 
@@ -513,13 +513,13 @@ display. Counts are still exact.
 **The ns next to a Δ** (`≈ +21 ns`) is an estimate: the change in each kind of operation times its
 fitted cost in ns. It is not a measurement. Only the time layer measures.
 
-**The odds it shows on the clock** (`57%` above) are a bet from a small model fitted on timed
+**The odds it shows on the clock** (`73%` above) are a bet from a small model fitted on timed
 changes: of step changes like this one, how many the time layer saw beyond noise. They were
-timed on a busy machine, so they lean low, and pass or fail never uses them.
-[docs/feel-odds.md](docs/feel-odds.md) has the model, its held-out scores and what the busy
-machine means.
+timed on one quiet 4-core runner, and pass or fail never uses them. This one is a bet the model
+loses: that very loop never showed on the clock, as the engine makes it nearly free.
+[docs/feel-odds.md](docs/feel-odds.md) has the model, its held-out scores and where it is weak.
 
-**The model next to the ns** (`model +18 ns, likely +2.3 to +150`) is a second estimate with a range,
+**The model next to the ns** (`model +50 ns, likely +8.2 to +307`) is a second estimate with a range,
 from small boosted trees trained on measured changes (`ranges.json`,
 [docs/calibration.md](docs/calibration.md#ranges-steps-to-ms-with-a-range)): on held-out commits,
 80% or more of measured times fell inside the range. It never changes a verdict.
@@ -747,6 +747,6 @@ handles, and 369 corpus files. What it found is fixed, each with a test in
   the diff.
 - [Calibration](docs/calibration.md): prices, weights, the quietness check, recounts, versions.
 - [Odds it shows on the clock](docs/feel-odds.md): the model behind the odds next to a step
-  change, its held-out scores, and why a busy machine makes them lean low.
+  change, its held-out scores, and the quiet runner its labels come from.
 - [Release receipts](docs/receipts.md): a release's counts that anyone can check by counting
   again, and the registry page that compares them.

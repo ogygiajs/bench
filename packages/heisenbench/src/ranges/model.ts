@@ -333,8 +333,10 @@ export function predict_change(
 	const steps = input_steps(context);
 	if (!(steps > 0) || delta_steps === 0) return { ns: 0, range: [0, 0], linear_ns: 0 };
 	const c = predict_range(m, context, prices);
-	// the share of the estimate that is not the cost of the call itself
-	const own = Math.max(0, 1 - (m.linear.case ?? 0) / c.linear_ns);
+	// the share of the estimate that is not the cost of the call itself; taken off the model's
+	// estimate, not the linear part's: where the linear part prices the changed kinds at 0 ns and
+	// keeps only the call's cost, the trees still say what the rest of the call costs
+	const own = Math.max(0, 1 - (m.linear.case ?? 0) / c.ns);
 	const ns = (delta_steps * c.ns * own) / steps;
 	const f = Math.exp(m.change_widen);
 	const lo = ns / f;

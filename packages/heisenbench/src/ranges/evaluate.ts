@@ -141,12 +141,14 @@ function time_bucket(ns: number): string {
 	return TIMES[4];
 }
 
-const LOADS = ['under 10', '10 to 12', '12 to 14', '14 or more'];
+// a quiet machine's loads (dataset 2: 2 to 4) and a busy one's (dataset 1: 7 to 20)
+const LOADS = ['under 3', '3 to 10', '10 to 12', '12 to 14', '14 or more'];
 function load_bucket(l: number): string {
-	if (l < 10) return LOADS[0];
-	if (l < 12) return LOADS[1];
-	if (l < 14) return LOADS[2];
-	return LOADS[3];
+	if (l < 3) return LOADS[0];
+	if (l < 10) return LOADS[1];
+	if (l < 12) return LOADS[2];
+	if (l < 14) return LOADS[3];
+	return LOADS[4];
 }
 
 function table(

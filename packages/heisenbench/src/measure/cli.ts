@@ -36,7 +36,7 @@ heisenbench calibrate weights [bench files...] [--root dir] [--out weights.json]
 heisenbench calibrate weights --points a.json,b.json [--out weights.json]     fit points measured before
 heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
 heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]     two point sets or two price files
-heisenbench calibrate ranges [--data dir] [--data-version 1] [--out ranges.json] [--seed 1] [--md evaluation.md]`;
+heisenbench calibrate ranges [--data dir] [--data-version 2] [--out ranges.json] [--seed 1] [--md evaluation.md]`;
 
 type Flags = Map<string, string>;
 

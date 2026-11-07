@@ -16,7 +16,8 @@ import type { RangesModel } from './model.ts';
  */
 
 export const DEFAULT_DATA_DIR = package_file('calibration/data/');
-export const DEFAULT_DATASET_VERSION = 1;
+/** Version 2 was timed on a quiet machine; version 1 (a busy one) stays for comparison. */
+export const DEFAULT_DATASET_VERSION = 2;
 
 export interface CalibrateRangesOptions {
 	data?: string;
