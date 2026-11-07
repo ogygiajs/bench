@@ -9,6 +9,7 @@ import {
 	is_svelte_module,
 	is_ts,
 	module_id,
+	module_specifier,
 	transform,
 	ts_to_js
 } from '../transform/index.ts';
@@ -48,14 +49,31 @@ const EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.svelte'];
  */
 const graph_commonjs = new Set<string>();
 
+/** Counted CommonJS files whose functions ran in a measuring window: these get fresh state. */
+const called_commonjs = new Set<string>();
+
+interface CallsByFile {
+	called(specifier: string): boolean;
+}
+
 /**
- * Drop the CommonJS files the bench graph loaded from `require.cache`, so the next copy of the
- * graph (fresh.ts) evaluates them again with module state of their own. Node caches a CommonJS
- * file by its path, whatever query the ES module that imports it carries.
+ * Drop from `require.cache` the counted CommonJS files whose code ran in a measuring window (once
+ * one has, from then on), so the next copy of the graph (fresh.ts) evaluates them again with
+ * module state of their own. Node caches a CommonJS file by its path, whatever query the ES
+ * module that imports it carries. Files whose functions never ran in a window (tables a
+ * dependency builds once when it loads, like the ARIA data Svelte's compiler imports: 300 files)
+ * stay shared: evaluating them again for every run is only garbage, and the GC it brings made
+ * a case that leans on weak caches count differently from one run to the next.
  */
 export function forget_commonjs(): void {
+	const rt = (globalThis as Record<symbol, CallsByFile | undefined>)[
+		Symbol.for('heisenbench.runtime')
+	];
 	const cache = module_cache();
-	for (const path of graph_commonjs) delete cache[path];
+	for (const path of graph_commonjs) {
+		if (!called_commonjs.has(path) && rt?.called(module_specifier(path))) called_commonjs.add(path);
+		if (called_commonjs.has(path)) delete cache[path];
+	}
 }
 
 function module_cache(): Record<string, unknown> {

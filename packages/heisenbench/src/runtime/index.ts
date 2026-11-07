@@ -220,7 +220,8 @@ export class Runtime {
 	// ------------------------------------------------------------ registration
 
 	/** CommonJS modules' counters by specifier (a null-prototype dictionary, not a Map). */
-	#by_specifier: Record<string, ReturnType<Runtime['module']>> = Object.create(null);
+	#by_specifier: Record<string, { m: ReturnType<Runtime['module']>; fns: number }> =
+		Object.create(null);
 
 	/**
 	 * The counters of a CommonJS module (transform `commonjs`), which cannot import a counter
@@ -228,7 +229,20 @@ export class Runtime {
 	 * graph per run evaluates it once per run), as the counter module of an ES module is.
 	 */
 	counters(specifier: string, meta_json: string): ReturnType<Runtime['module']> {
-		return (this.#by_specifier[specifier] ??= this.module(json_parse(meta_json) as ModuleMeta));
+		let hit = this.#by_specifier[specifier];
+		if (!hit) {
+			const meta = json_parse(meta_json) as ModuleMeta;
+			hit = this.#by_specifier[specifier] = { m: this.module(meta), fns: meta.functions.length };
+		}
+		return hit.m;
+	}
+
+	/** Whether a function of a CommonJS module (by specifier) was called since the last reset. */
+	called(specifier: string): boolean {
+		const hit = this.#by_specifier[specifier];
+		if (!hit) return false;
+		for (let i = hit.m.f; i < hit.m.f + hit.fns; i++) if (this.calls[i] > 0) return true;
+		return false;
 	}
 
 	module(meta: ModuleMeta): {
