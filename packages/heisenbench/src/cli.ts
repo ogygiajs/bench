@@ -26,6 +26,7 @@ import { coverage_command } from './coverage/cli.ts';
 import type { VerifyLayer } from './verify/index.ts';
 import { needs_bench_repo } from './own.ts';
 import { blame_command } from './blame/cli.ts';
+import { mutate_command } from './mutation/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -42,6 +43,13 @@ Counting (the counting build)
       [--repo dir] [--base sha] [--head sha] [--filter text] [--paths files.txt] [--min-ratio 0.02]
       [--max-recounts 60] [--budget-ms 600000] [--jobs n] [--work dir] [--out blame.json] [--md blame.md]
       [--weights app-weights.json[,real-weights.json]] [--requests-per-day n]   the change's real cost
+  heisenbench mutate <bench files...> --root dir --list sources.txt   performance mutants (2x,
+                                 quadratic, an allocation, a defeated cache) in every function of the
+                                 sources: which ones the bench cases notice, and a case for each miss
+      [--report base.json] [--operators double,quadratic,alloc,cache] [--sample 60|all] [--seed 1]
+      [--modules a.ts,b.ts] [--mutate-deps on|off] [--sizes 1,10,100] [--cap 2e9] [--records dir]
+      [--alias built-to-source.json] [--weights app-weights.json[,real-weights.json]]
+      [--jobs n] [--max-recounts 3000] [--budget-ms 3600000] [--work dir] [--out mutation.json] [--md mutation.md]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -308,7 +316,35 @@ const SPECS: Record<string, Spec> = {
 		args: [1, MANY],
 		files: true
 	},
-	verify: { values: ['layers', 'filter', 'jobs', 'md', 'json'], args: [0, 0] }
+	verify: { values: ['layers', 'filter', 'jobs', 'md', 'json'], args: [0, 0] },
+	mutate: {
+		values: [
+			'root',
+			'list',
+			'report',
+			'operators',
+			'sample',
+			'seed',
+			'modules',
+			'mutate-deps',
+			'sizes',
+			'cap',
+			'records',
+			'alias',
+			'weights',
+			'requests-per-day',
+			'deps',
+			'jobs',
+			'max-recounts',
+			'budget-ms',
+			'work',
+			'suggestions',
+			'out',
+			'md'
+		],
+		args: [1, MANY],
+		files: true
+	}
 };
 
 /** Options that take no value. */
@@ -332,13 +368,15 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	requests: 'positive',
 	'requests-per-day': 'positive',
 	'max-recounts': 'count',
-	'min-ratio': 'positive'
+	'min-ratio': 'positive',
+	suggestions: 'whole'
 };
 
 const CHOICES: Record<string, readonly string[]> = {
 	state: ['fresh', 'shared'],
 	check: ['on', 'off'],
-	scaled: ['on', 'off']
+	scaled: ['on', 'off'],
+	'mutate-deps': ['on', 'off']
 };
 
 function check_number(name: string, v: string): void {
@@ -544,6 +582,9 @@ async function main(argv: string[]): Promise<number> {
 	}
 	if (cmd === 'blame') {
 		return blame_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
+	}
+	if (cmd === 'mutate') {
+		return mutate_command(positional, flags, read_report, deps_of(flags.get('deps'), true));
 	}
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();

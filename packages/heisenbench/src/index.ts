@@ -29,6 +29,14 @@ export type {
 	RegressedCase as BlameCase
 } from './blame/index.ts';
 export { render_blame as renderBlame } from './blame/markdown.ts';
+export { mutation_score as mutationScore, MUTATION_SCHEMA } from './mutation/index.ts';
+export type {
+	MutationOptions,
+	MutationReport,
+	MutantResult,
+	FunctionResult as MutatedFunction
+} from './mutation/index.ts';
+export { render_mutation as renderMutation } from './mutation/markdown.ts';
 export { git_diff as gitDiff } from './diff/git.ts';
 export { code as markdownCode, cell as markdownCell } from './md.ts';
 export { env_mismatch as envMismatch, environment } from './report.ts';
