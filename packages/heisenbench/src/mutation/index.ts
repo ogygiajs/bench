@@ -88,6 +88,8 @@ export const MUTATION_BUDGET_MS = 60 * 60_000;
  */
 export const MUTATION_CAP = 5e8;
 const CHILD_LIMIT_MS = 15 * 60_000;
+/** A growth child's limit: CI's for `heisenbench growth` of one bench file (suites/ogygia run.ts). */
+export const GROWTH_LIMIT_MS = 5 * 60_000;
 /** Recounts a function may need beyond its control and one per mutant (growth of a quadratic mutant). */
 const GROWTH_RESERVE = 3;
 
@@ -554,9 +556,11 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 			if (job.growth || job.recorded) cost.growth++;
 			let error: string | null = null;
 			const t0 = Date.now();
+			const left = budget_ms - (Date.now() - started);
+			const own_limit = job.growth ? GROWTH_LIMIT_MS : CHILD_LIMIT_MS;
+			const limit = Math.min(own_limit, Math.max(60_000, left));
 			try {
 				lanes.put(lane, tree);
-				const left = budget_ms - (Date.now() - started);
 				error = await run_child(
 					lane,
 					{
@@ -587,7 +591,7 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 						root,
 						node_args,
 						env,
-						timeout_ms: Math.min(CHILD_LIMIT_MS, Math.max(60_000, left))
+						timeout_ms: limit
 					}
 				);
 			} catch (e) {
@@ -615,8 +619,13 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 			log(
 				`recount ${n}: ${what} of ${job.cases.length || 'every'} case(s) on ${tree.size === 0 ? 'the root' : [...tree.keys()].join(', ')}, ${Date.now() - t0} ms${error ? ` (${error})` : ''}`
 			);
-			// only a finished count is kept for later runs (an error from the clock is not the tree's)
-			if (error === null || !/did not finish|timed out|killed/.test(error))
+			// Kept for later runs, a growth past its fixed limit too; a count the run's own budget
+			// cut short is not the tree's answer.
+			if (
+				error === null ||
+				!/did not finish|killed/.test(error) ||
+				(job.growth && limit === own_limit)
+			)
 				writeFileSync(done, error ?? '');
 			return { report, twin, error };
 		})();
@@ -639,6 +648,8 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 		const incl = new Map<string, number>();
 		const line_steps = new Map<string, Map<number, number>>();
 		const dep_modules = new Set<string>();
+		/** Bench file -> the project's modules its cases run (where a new case for a module goes). */
+		const run_modules = new Map<string, Set<string>>();
 		for (const c of base.cases) {
 			if (c.error) continue;
 			const key = `${c.file} > ${c.name}`;
@@ -653,8 +664,10 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 				calls.set(id, (calls.get(id) ?? 0) + f.calls);
 				incl.set(id, (incl.get(id) ?? 0) + f.inclusive_steps);
 				if (package_of(f.module)) dep_modules.add(f.module);
+				else run_modules.set(c.file, (run_modules.get(c.file) ?? new Set()).add(f.module));
 			}
 		}
+		const runs = new Map([...run_modules].map(([b, s]) => [b, [...s].sort()]));
 
 		// 2. every function of the sources (and, asked, of the dependencies the cases run)
 		const source_files = o.sources.map((s) => resolve(given_root, s));
@@ -940,6 +953,13 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 								r.note = `${name_of(ran_away)} went past ${cap} steps at its smallest sizes with the mutant, and fitted ${class_of(b.cases.find((x) => x.name === name_of(ran_away)))} without it`;
 								return;
 							}
+						} else if (b && g1.error?.includes('did not finish')) {
+							// the one judgment the clock makes: CI's growth of a bench file has the
+							// same limit, and lists a file that runs past it
+							r.status = 'caught';
+							r.by = 'growth';
+							r.note = `growing it did not finish within ${GROWTH_LIMIT_MS / 60_000} min, CI's limit for growth; the original grew in time`;
+							return;
 						} else {
 							r.note = `growth did not count: ${g1.error ?? 'the base did not grow'}`;
 						}
@@ -1123,7 +1143,7 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 				.filter((m) => m.status === 'missed' || m.status === 'unreached')
 				.map((m) => m.operator);
 			const item = plan_of.get(f.id)!;
-			const s = missed.length < room ? suggest(f, item.plan, item.f, files, root) : null;
+			const s = missed.length < room ? suggest(f, item.plan, item.f, files, root, runs) : null;
 			if (s) f.suggestion = s.text;
 			missed.push({
 				id: f.id,

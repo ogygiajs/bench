@@ -31,12 +31,21 @@ function common_dirs(a: string, b: string): number {
 	return n;
 }
 
-/** The bench file nearest a module: the most directories in common, then name order. */
-function nearest_bench(module: string, benches: readonly string[]): string | null {
+/**
+ * The bench file nearest a module: the one whose cases run code closest to it (the most
+ * directories in common with a module they run), then the one closest itself, then name order.
+ */
+function nearest_bench(
+	module: string,
+	benches: readonly string[],
+	runs: ReadonlyMap<string, readonly string[]>
+): string | null {
 	let best: string | null = null;
 	let score = -1;
 	for (const b of [...benches].sort()) {
-		const s = common_dirs(module, b);
+		let near = 0;
+		for (const m of runs.get(b) ?? []) near = Math.max(near, common_dirs(module, m));
+		const s = near * 1000 + common_dirs(module, b);
 		if (s > score) {
 			best = b;
 			score = s;
@@ -86,9 +95,9 @@ function args_of(f: PlannedFunction): string {
 function source_of(coll: string, f: PlannedFunction): string {
 	const head = coll.split(/[.[]/)[0];
 	const i = f.params.findIndex((p) => p.replace(/^\.\.\./, '') === head);
-	if (i !== -1) return `argument ${i + 1} (\`${f.params[i]}\`)`;
-	if (head === 'this') return 'the object it is called on';
-	return `\`${head}\`, which it reads from outside`;
+	if (i !== -1) return `it comes in argument ${i + 1} (\`${f.params[i]}\`)`;
+	if (head === 'this') return 'it is on the object it is called on';
+	return `it is \`${head}\`, which it reads from outside`;
 }
 
 const name_of = (key: string) => key.slice(key.indexOf(' > ') + 3);
@@ -99,7 +108,9 @@ export function suggest(
 	plan: ModulePlan,
 	f: PlannedFunction,
 	benches: readonly string[],
-	root = ''
+	root = '',
+	/** Bench file -> the modules of the project its cases run. */
+	runs: ReadonlyMap<string, readonly string[]> = new Map()
 ): Suggestion | null {
 	const missed = (op: string) =>
 		fr.mutants.find(
@@ -108,7 +119,7 @@ export function suggest(
 	const top = !f.path.includes(' > ');
 	const name = f.path;
 	if (fr.cases.length === 0) {
-		const at = nearest_bench(plan.module, benches);
+		const at = nearest_bench(plan.module, benches, runs);
 		const loop = f.loops.find((l) => l.coll !== null) ?? null;
 		// a nested function or a method is reached through the top-level binding it lives in
 		const outer = top ? name : name.split(' > ')[0];
@@ -126,7 +137,7 @@ export function suggest(
 				: `\tsetup: () => ({ /* what ${outer} needs */ })${loop ? ',' : ''}`,
 			...(loop
 				? [
-						`\t// grows ${source_of(loop.coll!, f)}, the collection its loop at line ${loop.line} walks`,
+						`\t// grow \`${loop.coll}\`, the collection its loop at line ${loop.line} walks: ${source_of(loop.coll!, f)}`,
 						`\tscale: (ctx, k) => ({ ...ctx /* with ${loop.coll} k times longer */ })`
 					]
 				: []),
@@ -179,7 +190,7 @@ export function suggest(
 				`// ${file_of(fr.cases.find((k) => name_of(k) === hot) ?? fr.cases[0])}`,
 				`bench('${hot}', fn, {`,
 				'\tsetup,',
-				`\t// grow ${source_of(coll, f)} of \`${name}\` k times`,
+				`\t// grow \`${coll}\` k times: ${source_of(coll, f)} of \`${name}\``,
 				`\tscale: (ctx, k) => ({ ...ctx /* ${coll} k times longer */ })`,
 				'});',
 				'```'

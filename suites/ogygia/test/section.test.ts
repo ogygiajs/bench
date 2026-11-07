@@ -366,3 +366,32 @@ test('growth from recorded calls: a full run lists its findings; a PR with none 
 	);
 	assert.match(failed, /\*\*Growth from recorded calls failed\*\*: `the packages did not build`/);
 });
+
+test('the mutation score: a full run shows Heisenbench markdown, or one line when it failed', () => {
+	const run = (error: string | null) => ({
+		markdown:
+			'#### Mutation score: what the benchmarks would miss\n\nBenchmarks catch 8% of 2x slowdowns.\n',
+		error,
+		totals: {},
+		functions: 10,
+		reached: 2,
+		evaluated: 2,
+		missed: [],
+		cost: null,
+		seconds: 1
+	});
+	const full = (mutation: ReturnType<typeof run>) =>
+		render_full_summary(
+			result({
+				meta: { ...result({}).meta, kind: 'main', pr: null, base: null, merge_base: null },
+				selection: select_all(['x.bench.ts'], 'a full run'),
+				mutation
+			})
+		);
+	assert.match(full(run(null)), /#### Mutation score[\s\S]*Benchmarks catch 8% of 2x slowdowns/);
+	assert.match(
+		full(run('heisenbench mutate exited 2')),
+		/\*\*The mutation score failed\*\*: `heisenbench mutate exited 2`/
+	);
+	assert.doesNotMatch(render_pr_section(result({})), /Mutation score/);
+});
