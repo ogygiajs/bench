@@ -34,6 +34,7 @@ import { prove_command } from './prove/cli.ts';
 import { contracts_command } from './contracts/cli.ts';
 import { upgrade_command } from './upgrade/cli.ts';
 import { upstream_command } from './upstream/cli.ts';
+import { feel_command } from './models/cli.ts';
 
 const HELP = `heisenbench: count the work a function does, per line, the same on every run.
 
@@ -129,6 +130,10 @@ ship the calibration corpus or the planted cases)
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
   heisenbench verify [--layers steps,elision,leak,engine,growth,contract,search,app,time,trend] [--filter text]
       [--jobs n] [--md table.md] [--json rows.json]
+  heisenbench feel train [--data-version 1] [--seed 1] [--out feel.json] [--md eval.md]
+                                 fit the odds a step change shows up on the clock from the
+                                 training dataset (calibration/data/), with its held-out scores
+  heisenbench feel check         fit them again: exit 1 unless feel.json comes out byte for byte
 
 Every command that loads bench files (run, health, growth, search, audit, time, blame, record,
 prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
@@ -424,6 +429,7 @@ const SPECS: Record<string, Spec> = {
 		files: true
 	},
 	verify: { values: ['layers', 'filter', 'jobs', 'md', 'json'], args: [0, 0] },
+	feel: { values: ['data-version', 'seed', 'data', 'out', 'md'], args: [1, 1] },
 	prove: {
 		values: [
 			'candidate',
@@ -476,7 +482,8 @@ const NUMBERS: Record<string, 'positive' | 'count' | 'whole' | 'integer'> = {
 	variants: 'whole',
 	'tolerance-steps': 'whole',
 	'setup-tolerance': 'whole',
-	proposals: 'count'
+	proposals: 'count',
+	'data-version': 'count'
 };
 
 const CHOICES: Record<string, readonly string[]> = {
@@ -659,6 +666,7 @@ async function main(argv: string[]): Promise<number> {
 	const app = await app_command(cmd, positional, flags);
 	if (app !== null) return app;
 	if (cmd === 'verify') return verify_command(flags);
+	if (cmd === 'feel') return feel_command(positional, flags);
 	if (cmd === 'contracts') return contracts_command(positional, flags);
 	if (cmd === 'prove') return prove_command(positional, flags);
 	const coverage = await coverage_command(cmd, positional, flags);

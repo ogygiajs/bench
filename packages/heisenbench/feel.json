@@ -1,0 +1,100 @@
+{
+	"schema": "heisenbench-feel/1",
+	"dataset": {
+		"version": 1,
+		"counts": "training-counts-1.json",
+		"times": "training-times-1.json",
+		"counts_hash": "cda5349027fd2059",
+		"times_hash": "3a0f60028d9a5335",
+		"prices": {
+			"version": 2,
+			"hash": "962cde1a4aa179a5"
+		},
+		"pairs": 475,
+		"changed": 186,
+		"beyond_noise": 76,
+		"load": {
+			"min": 7.16,
+			"mean": 12.1596,
+			"max": 19.75,
+			"cores": 16
+		}
+	},
+	"seed": 1,
+	"l2": 1,
+	"features": [
+		"steps_moved",
+		"steps_size",
+		"steps_delta",
+		"faster",
+		"builtin_share",
+		"call_share",
+		"alloc_share"
+	],
+	"mean": [0.378885, 5.36257, 4.21398, 0.376344, 0.23166, 0.0634606, 0.110138],
+	"scale": [0.687133, 1.24182, 1.41444, 0.484468, 0.384065, 0.157036, 0.215954],
+	"weights": [1.4654, -1.2037, 2.07332, -0.343414, 0.323356, -0.629911, -0.565618],
+	"bias": -0.636106,
+	"evaluation": {
+		"folds": 5,
+		"groups": 79,
+		"rows": 186,
+		"positives": 76,
+		"model": {
+			"auc": 0.904665,
+			"brier": 0.126882
+		},
+		"baseline": {
+			"auc": 0.5,
+			"brier": 0.591398
+		},
+		"all_pairs": {
+			"rows": 475,
+			"model": {
+				"auc": 0.973717,
+				"brier": 0.0496841
+			},
+			"baseline": {
+				"auc": 0.862155,
+				"brier": 0.231579
+			}
+		},
+		"reliability": [
+			{
+				"from": 0,
+				"to": 0.2,
+				"rows": 80,
+				"predicted": 0.0771344,
+				"observed": 0.0625
+			},
+			{
+				"from": 0.2,
+				"to": 0.4,
+				"rows": 24,
+				"predicted": 0.291842,
+				"observed": 0.333333
+			},
+			{
+				"from": 0.4,
+				"to": 0.6,
+				"rows": 33,
+				"predicted": 0.504492,
+				"observed": 0.636364
+			},
+			{
+				"from": 0.6,
+				"to": 0.8,
+				"rows": 15,
+				"predicted": 0.716615,
+				"observed": 0.733333
+			},
+			{
+				"from": 0.8,
+				"to": 1,
+				"rows": 34,
+				"predicted": 0.940718,
+				"observed": 0.911765
+			}
+		]
+	}
+}

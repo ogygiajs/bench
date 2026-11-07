@@ -3,6 +3,7 @@ import { growth_label, is_superlinear } from '../growth/fit.ts';
 import type { GrowthClass } from '../growth/fit.ts';
 import { render_measure } from '../measure/markdown.ts';
 import { cell, code } from '../md.ts';
+import { odds_text } from '../models/feel.ts';
 
 /** Marker of the Heisenbench section in the shared PR comment (upserted by section). */
 export const SECTION_MARKER = '<!-- heisenbench:section -->';
@@ -181,17 +182,28 @@ function case_table(d: DiffResult, names: ReadonlySet<string>): string[] {
 	const sorted = [...rows].sort(
 		(a, b) => Math.abs(b.pr_steps - b.base_steps) - Math.abs(a.pr_steps - a.base_steps)
 	);
-	const out = ['| Case | Steps | Δ |', '| --- | ---: | ---: |'];
+	const feel = d.feel && Object.keys(d.feel.odds).length > 0 ? d.feel : null;
+	const out = feel
+		? ['| Case | Steps | Δ | Odds it shows on the clock |', '| --- | ---: | ---: | ---: |']
+		: ['| Case | Steps | Δ |', '| --- | ---: | ---: |'];
 	for (const c of sorted.slice(0, MAX_ROWS)) {
 		const delta = c.pr_steps - c.base_steps;
+		const p = feel?.odds[c.name];
+		const odds = feel ? ` ${p === undefined ? '' : odds_text(p)} |` : '';
 		out.push(
-			`| ${cell(c.name)} | ${fmt(c.base_steps)} → ${fmt(c.pr_steps)} | ${signed(delta)}${pct(c.base_steps, delta)} |`
+			`| ${cell(c.name)} | ${fmt(c.base_steps)} → ${fmt(c.pr_steps)} | ${signed(delta)}${pct(c.base_steps, delta)} |${odds}`
 		);
 	}
 	if (sorted.length > MAX_ROWS)
 		out.push('', `${sorted.length - MAX_ROWS} more changed cases are in the JSON result.`);
+	if (feel) out.push('', feel_note(feel));
 	out.push('', 'By function:', '');
 	return out;
+}
+
+/** What the odds column is, in one line: a guess from timed changes, never pass or fail. */
+export function feel_note(f: { dataset: number; pairs: number }): string {
+	return `<sub>Odds it shows on the clock: how likely the time layer is to see this step change beyond noise, guessed from ${f.pairs.toLocaleString('en-US')} timed changes (dataset v${f.dataset}). They were timed on a busy machine, so the odds lean low. Pass or fail never uses them.</sub>`;
 }
 
 function share(n: number): string {
