@@ -69,17 +69,24 @@ In this repository:
    side, on a 4-core runner a PR with 11 bench files spent per tree about 2 minutes on engine
    health, 2.4 on growth and 25 seconds on counting, then 5.4 minutes on timing.
 
-   Counting, growth and the worst-case search pass `--deps devalue,svelte,magic-string`
-   (`COUNTED_DEPS` in `suites/ogygia/src/run.ts`): ogygia's dependencies that do real work on the
-   measured paths are counted like ogygia's own code, and blamed under their package names
-   (`devalue/src/stringify.js > stringify`). devalue is the page seed, Svelte is server rendering
-   and the compiler ogygia's transforms call, magic-string is every source rewrite. The fuzzer
-   checks all three instrumented against plain. Before this, `page seed: the devalue lane` read 63
-   steps for 3.1 ms of work; it now reads 19.7 million. On ogygia `5f7efdc`, counting them adds 22
-   million steps to the serialize file (49 to 71 million) and 9 million to the compiler file (11 to
-   20 million), and about a second to that file's run; the other files are unchanged, and two full
-   runs give the same counts. Engine health stays on ogygia's own functions: what V8 does with
-   Svelte's compiler is not ogygia's to fix.
+   Counting, growth and the worst-case search count every dependency, Heisenbench's default, and
+   blame each under its name and version (`acorn@8.18.0/dist/acorn.mjs > Parser`). Until
+   `COUNTED_DEPS` was dropped, only devalue, Svelte and magic-string were counted, and Svelte's
+   template parser handed its work to acorn uncounted: it calls `acorn.parseExpressionAt` once per
+   expression with the whole file, and acorn's `Parser` constructor splits the file up to that
+   point into lines. A compiler fix read 33 times less work while its wall time fell 1.9 times.
+   On ogygia `57882cc`, counting every dependency changes 8 of the 57 cases, all compiler and
+   markup cases: `transformHost: a route page with twenty islands` goes from 7.9 to 29.2 million
+   steps (66% acorn), `de-barrel` from 59 thousand to 3 million (98% rolldown's JavaScript side).
+   The growth case `transformHost: a route page as its island count grows` is quadratic with
+   acorn's `Parser` the function with the most steps.
+
+   It costs little: on an M4 Max, the 11 files one after another took 10.9 s to count (9.1 s with
+   the three packages, 8.3 s with none), and 74.8 s to grow (72.4 s with none). Two checkouts at
+   different depths give the same 1,709 functions (1,407 of them in dependencies) and steps for
+   the compiler file. Engine health stays on ogygia's own functions (`heisenbench health` leaves
+   dependencies out unless `--deps` names them): what V8 does with Svelte's compiler is not
+   ogygia's to fix.
 
 7. **The diff.** `diffReports` and `diffSections` with `git diff -M --unified=0` between the merge
    base and the head.
@@ -190,7 +197,8 @@ The `heisenbench` section, in order:
    with its percent and the estimated ns, Δ allocations, Δ bytes, Δ inclusive steps.
 4. **Where.** Collapsed: the case and the lines the change sits on, with Δ steps, allocations and
    bytes, and "new code" for lines inside a changed hunk. A line that changed the same way in
-   several cases is one row.
+   several cases is one row. Under it, for the changed cases that count a dependency, self steps
+   by package: which package's steps changed, and its share of the case (`acorn@8.18.0`, 66%).
 5. **Leaks, elided allocations, time-led cases**, when there are any.
 6. **Engine.** New deopts, lost optimizations, inline caches that got worse, per case and line.
    Cases where V8 did not do the same thing twice are listed as unstable.
