@@ -112,9 +112,15 @@ export async function measure_layers(report: Report, o: MeasureOptions): Promise
 				continue;
 			}
 			c.measure = { ...c.measure, leak: l.result };
-			o.log?.(
-				`leaks   ${c.name}  ${l.result.leaked ? 'LEAKS' : 'ok'}  ${l.result.bytes_per_call} B/call`
-			);
+			const v = l.result;
+			const verdict = v.leaked
+				? 'LEAKS'
+				: !v.grows
+					? 'ok'
+					: v.source
+						? 'ok (grows, but few objects stay held)'
+						: 'ok (grows, but no source variable holds it)';
+			o.log?.(`leaks   ${c.name}  ${verdict}  ${v.bytes_per_call} B/call (floor ${v.threshold})`);
 		}
 	}
 	return report;

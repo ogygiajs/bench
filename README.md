@@ -23,13 +23,15 @@ line got slower, with no repeats and no noise floor. Engine health, time, real b
 growth and a worst-case search run next to the count and cover what counting cannot see.
 
 On every ogygia PR, Abax writes the first section of the benchmark comment. It counts from source,
-so it does not wait for the published preview the app benchmark needs. `abax verify` checks 32 planted cases on every change to this
+so it does not wait for the published preview the app benchmark needs. `abax verify` checks 34 planted cases on every change to this
 repository. [packages/abax/README.md](packages/abax/README.md) has the details, the limits and
 the numbers.
 
 ## Run it
 
-You need Node 22.18 or newer and pnpm. Scripts are TypeScript run by plain `node`.
+You need Node 26.4 or newer and pnpm. Scripts are TypeScript run by plain `node`. CI runs the
+tests on Node 26.4.0 and on the newest 26. It builds and measures the apps on Node 22, the Node
+the published app numbers come from; Abax itself does not run on Node 22.
 
 ```bash
 pnpm install

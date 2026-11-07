@@ -170,7 +170,7 @@ for (const name of fixtures) {
 				assert.equal(leak.leaked, true, JSON.stringify(leak));
 				assert.deepEqual(leak.source, expect.leak);
 				assert.equal(d.measure?.leaks.length, 1);
-				assert.ok(md.includes('**Leaks**') && md.includes('`seen`'), md);
+				assert.ok(md.includes('**Leaks**') && md.includes(`\`${expect.leak.variable}\``), md);
 			}
 		}
 	});

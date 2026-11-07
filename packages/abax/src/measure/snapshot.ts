@@ -138,56 +138,94 @@ export class Snapshot {
 	}
 
 	/**
-	 * Shortest strong path from the root (node 0) to `target`, as steps root -> ... -> target.
-	 * Weak edges and the snapshot's own bookkeeping (shortcut edges) are not retainers.
+	 * A node that holds objects for the engine, not for the program: compiled code and what hangs
+	 * off it (bytecode, constant pools, feedback vectors, inline caches), hidden classes and their
+	 * descriptors, allocation sites. Clean code makes these hold a few new objects as V8 compiles
+	 * and re-tiers it; a program never reads them.
 	 */
-	retainer_path(target: number): { nodes: number[]; steps: Step[] } | null {
+	engine_holder(n: number): boolean {
+		const t = this.type(n);
+		if (t === 'code' || t === 'object shape') return true;
+		const name = this.name(n);
+		return name.startsWith('system / Feedback') || name.startsWith('system / AllocationSite');
+	}
+
+	/**
+	 * Shortest strong paths from the root (node 0) to every node, as one tree (breadth first).
+	 * Weak edges, the snapshot's own bookkeeping (shortcut edges), roots that hold an object only
+	 * while some code runs, and engine holders (see `engine_holder`) retain nothing here.
+	 * `order` lists the reached nodes parents first.
+	 */
+	retainer_tree(): RetainerTree {
 		const parent = new Int32Array(this.node_count).fill(-1);
-		const via_type = new Map<number, string>();
-		const via_name = new Map<number, string>();
+		const via = new Int32Array(this.node_count).fill(-1);
+		const order = new Int32Array(this.node_count);
+		const ef = this.#ef;
 		parent[0] = 0;
-		let frontier = [0];
-		while (frontier.length > 0 && parent[target] === -1) {
-			const next: number[] = [];
-			for (const n of frontier) {
-				if (this.type(n) === 'synthetic' && TRANSIENT_ROOTS.has(this.name(n))) continue;
-				for (const [type, name, to] of this.edges(n)) {
-					if (type === 'weak' || type === 'shortcut' || parent[to] !== -1) continue;
-					parent[to] = n;
-					via_type.set(to, type);
-					via_name.set(to, name);
-					next.push(to);
-				}
+		order[0] = 0;
+		let head = 0;
+		let tail = 1;
+		while (head < tail) {
+			const n = order[head++];
+			if (this.type(n) === 'synthetic' && TRANSIENT_ROOTS.has(this.name(n))) continue;
+			if (this.engine_holder(n)) continue;
+			for (let e = this.#first_edge[n]; e < this.#first_edge[n + 1]; e++) {
+				const type = this.#edge_types[this.#edges[e * ef + this.#e_type]];
+				if (type === 'weak' || type === 'shortcut') continue;
+				const to = this.#edges[e * ef + this.#e_to] / this.#nf;
+				if (parent[to] !== -1) continue;
+				parent[to] = n;
+				via[to] = e;
+				order[tail++] = to;
 			}
-			frontier = next;
 		}
-		if (parent[target] === -1) return null;
+		return { parent, via, order: order.subarray(0, tail) };
+	}
+
+	/** Type and name of edge `e` (an index as `RetainerTree.via` holds). */
+	edge(e: number): [string, string] {
+		const ef = this.#ef;
+		const type = this.#edge_types[this.#edges[e * ef + this.#e_type]];
+		const raw = this.#edges[e * ef + this.#e_name];
+		return [type, type === 'element' || type === 'hidden' ? String(raw) : this.#strings[raw]];
+	}
+
+	/** The path from the root to `target` in a retainer tree, as steps root -> ... -> target. */
+	path(tree: RetainerTree, target: number): { nodes: number[]; steps: Step[] } | null {
+		if (tree.parent[target] === -1) return null;
 		const nodes: number[] = [];
-		for (let n = target; n !== 0; n = parent[n]) nodes.push(n);
+		for (let n = target; n !== 0; n = tree.parent[n]) nodes.push(n);
 		nodes.reverse();
 		const steps: Step[] = [];
 		for (let i = 0; i < nodes.length; i++) {
 			const n = nodes[i];
 			const nx = nodes[i + 1];
-			steps.push({
-				type: this.type(n),
-				name: this.kind(n),
-				edge_type: nx === undefined ? '' : (via_type.get(nx) ?? ''),
-				edge: nx === undefined ? '' : (via_name.get(nx) ?? '')
-			});
+			const [edge_type, edge] = nx === undefined ? ['', ''] : this.edge(tree.via[nx]);
+			steps.push({ type: this.type(n), name: this.kind(n), edge_type, edge });
 		}
 		return { nodes, steps };
 	}
 
-	/** Closures whose context is `ctx` (the functions that keep a context's variables alive). */
-	closures_of(ctx: number): number[] {
-		const out: number[] = [];
+	/** Every context and the closures whose context it is (they keep its variables alive). */
+	context_closures(): Map<number, number[]> {
+		const out = new Map<number, number[]>();
 		for (let n = 0; n < this.node_count; n++) {
 			if (this.type(n) !== 'closure') continue;
 			for (const [type, name, to] of this.edges(n)) {
-				if (to === ctx && type === 'internal' && name === 'context') out.push(n);
+				if (type !== 'internal' || name !== 'context') continue;
+				const list = out.get(to);
+				if (list) list.push(n);
+				else out.set(to, [n]);
 			}
 		}
 		return out;
 	}
+}
+
+export interface RetainerTree {
+	/** Parent of each node on its shortest strong path from the root; -1 when none reaches it. */
+	parent: Int32Array;
+	/** The edge from the parent (an index for `Snapshot.edge`), -1 for the root and unreached. */
+	via: Int32Array;
+	order: Int32Array;
 }

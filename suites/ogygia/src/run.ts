@@ -27,6 +27,15 @@ import type { GroupResult } from './spawn.ts';
 export const ABAX_DIR = fileURLToPath(new URL('../../../packages/abax/', import.meta.url));
 export const ABAX_CLI = join(ABAX_DIR, 'src', 'cli.ts');
 
+/**
+ * ogygia's dependencies that do real work on the measured paths, counted like ogygia's own code
+ * and blamed under their package names: devalue (the page seed), Svelte (server rendering and the
+ * compiler ogygia's transforms call) and magic-string (every source rewrite). The fuzzer checks
+ * all three instrumented against plain. Counting and growth count them; engine health stays on
+ * ogygia's own functions.
+ */
+export const COUNTED_DEPS = ['devalue', 'svelte', 'magic-string'];
+
 /** A bench file whose step never landed in its report (failed to load, or Abax crashed). */
 export interface LoadError {
 	file: string;
@@ -131,11 +140,12 @@ async function abax(
 	measure: string | null,
 	check: boolean
 ): Promise<string | null> {
+	const deps = ['--deps', COUNTED_DEPS.join(',')];
 	const extra =
 		command === 'growth'
-			? ['--scaled', 'on']
-			: command === 'run' && measure
-				? ['--measure', measure]
+			? ['--scaled', 'on', ...deps]
+			: command === 'run'
+				? [...deps, ...(measure ? ['--measure', measure] : [])]
 				: command === 'health' && !check
 					? ['--check', 'off']
 					: [];

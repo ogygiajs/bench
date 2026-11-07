@@ -211,32 +211,62 @@ reported, never flagged.
 
 ## Leaks
 
-Does the retained heap grow with every call? In a child with `--expose-gc`:
+Does the retained heap grow with every call? Clean code moves the heap too: V8 compiles and
+re-tiers it, fills inline caches and feedback vectors, and two full GCs leave a few KB either way.
+Over 1,000 calls that reads as 2 to 20 B a call, up or down. So a leak needs three kinds of
+evidence, and clean code can give none of them. In a child with `--expose-gc`:
 
-1. One warm-up round, then 6 rounds of 1,000 calls. After each round, two full GCs and the used
-   heap. The slope of heap over calls is the retained bytes per call. The case grows when the slope
-   is at least 4 B per call and the heap went up in all rounds but at most one (a cache that fills
-   in the first rounds is not a trend).
-2. Only then: a heap snapshot, 2 more rounds, GC, a second snapshot. Objects in the second that
-   are newer than everything in the first were made by those rounds and are still held. They are
-   grouped by type; the largest group is the top retained type.
-3. For one of them, the shortest strong retainer chain from the GC roots, read back to the first
-   variable a closure or the module keeps alive. That gives the variable, the function and the
-   line.
+1. **Above this case's noise.** Three warm-up rounds of 1,000 calls (N), with a run of full GCs
+   after the last two (V8 drops the bytecode of functions that sat unused through several GCs,
+   such as the ones that loaded the bench file; inside a measured round that is a one-off drop of
+   up to 6 MB). Then rounds of N, N, 2N and 4N calls. After each round, two full GCs and the used
+   heap, so the heap is read at N, 2N, 4N and 8N calls. The first two rounds do the same work (an
+   A/A pair): what their growth differs by is this case's noise. The case's floor is that noise
+   spread over the 8N calls, or 4 B per call when larger. Growth per call over the 8N calls must
+   reach the floor.
+2. **Linear in calls.** A leak keeps about the same bytes per call from the start to 2N, 4N and 8N
+   calls: each must be within a factor 2 of the 8N one. The first N calls can read far off (a hash
+   table the earlier calls filled may double inside them, or not), so they only need to grow by 4 B
+   per call. A backing store that doubles makes a real leak wobble inside these bounds; noise, a
+   cache that fills once, or code V8 compiles late does not stay inside them.
+3. **Held by a variable of the code under test.** Only then: a heap snapshot, 2 more rounds of N,
+   GC, a second snapshot. Objects in the second that are newer than everything in the first were
+   made by those rounds and are still held. Each gets its shortest strong retainer chain from the
+   GC roots, where compiled code, feedback vectors, inline caches, hidden classes and allocation
+   sites hold nothing. Read back from the object, the first variable that a function of a source
+   module keeps alive (a module `let` or `const`, or one a closure captured) owns it. Objects no
+   such variable owns belong to the engine, the bench file or a dependency, and are never a leak.
+   The owned objects are grouped by variable and type. The largest group is a leak when it holds
+   at least one object per 4 calls; its variable, the function that uses it, and the declaration
+   line are reported.
 
-The planted leak in `abax verify` keeps every row in a module-level array:
+A leak held only by a global property (`globalThis.x = ...`) has no owning variable and is not
+reported. The log line gives the floor next to the growth, and says when a case grew but step 3
+found nothing to blame:
 
 ```
-leaks   rank: twenty rows  LEAKS  3407.16 B/call
+leaks   rank: twenty rows  LEAKS  3406.76 B/call (floor 11.39)
+leaks   transformHost: a route page with twenty islands, server leg  ok  10.83 B/call (floor 5.42)
 ```
+
+That transformHost case is the kind the old rule flagged on clean code (10.5 B per call in one
+full run). Its bytes per call from the start to N, 2N, 4N and 8N calls were 58, 36, 22 and 11: a
+cache that fills once, not growth linear in calls. Cases whose first rounds free megabytes get a
+high floor (up to about 750 B per call on ogygia main); a leak smaller than that in those cases
+is not seen.
+
+The two planted leaks in `abax verify` keep every row: one in a module-level array, one in a
+closure cache keyed by the row object.
 
 ```md
 **Leaks** (retained heap grows with every call):
 
-- `rank: twenty rows`: 3407.16 B per call, 40.211 (string) per call held by `seen` (`src/rank.ts:14`, kept growing by `rank`)
+- `rank: twenty rows`: 3406.76 B per call, 40 (string) per call held by `seen` (`lib.ts:14`, kept growing by `rank`)
+- `rank: twenty rows`: 3888.2 B per call, 40 (string) per call held by `cache` (`lib.ts:15`, kept growing by `memo > <anonymous>`)
 ```
 
-Its twin keeps only the last row and is not flagged.
+Their twins (only the last row kept; the cache keyed by row id, twenty entries whatever the
+calls) are not flagged. On ogygia main, two full runs of all 57 cases flag none.
 
 ## Growth
 
