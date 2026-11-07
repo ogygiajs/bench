@@ -22,6 +22,7 @@ import type { LoadError } from './run.ts';
 import { FLAG_RATIO, flagged } from './search.ts';
 import type { FullSearchRun, SearchRun } from './search.ts';
 import type { Selection } from './select.ts';
+import type { TrendRun } from './trend.ts';
 import type { WeightRun } from './weights.ts';
 
 export const RESULT_SCHEMA = 'ogygia-heisenbench/1';
@@ -40,6 +41,8 @@ export const CAPS = {
 	search: 5,
 	search_full: 20,
 	weights: 5,
+	creeps: 10,
+	trend_steps: 8,
 	failed: 15,
 	full_rows: 200
 } as const;
@@ -85,6 +88,8 @@ export interface Result {
 	recorded?: RecordedSummary | null;
 	/** A PR: the hunks that made each regressed case slower (absent or null: none regressed, or off). */
 	blame?: BlameRun | null;
+	/** A full run: slow creep in each case's steps over main's earlier full runs (trend.ts). */
+	trend?: TrendRun | null;
 }
 
 export interface RecordedSummary {
@@ -284,6 +289,60 @@ export function full_search_lines(s: FullSearchRun): string[] {
 	if (found.length > CAPS.search_full)
 		lines.push('', `${found.length - CAPS.search_full} more findings are in result.json.`);
 	lines.push('');
+	return lines;
+}
+
+function pct_text(ratio: number): string {
+	const p = ratio * 100;
+	return `${p < 0 ? '−' : '+'}${Math.abs(p).toFixed(1)}%`;
+}
+
+/**
+ * Slow creep over main's full runs: a line per creeping case, then the commits where cases took
+ * a step (each PR's own comment shows those). Nothing when the run was not given a history.
+ */
+export function trend_lines(t: TrendRun): string[] {
+	if (t.error) return [`**Trend over main failed**: ${code(one_line(t.error))}`, ''];
+	if (t.runs.length < 2) return t.note ? [`**Trend over main**: ${markdownCell(t.note)}.`, ''] : [];
+	const head = `**Trend over main** (${plural(t.runs.length, 'full run')} of main, ${short(t.runs[0])} to ${short(t.runs[t.runs.length - 1])}, ${plural(t.cases, 'case')})`;
+	const lines: string[] = [];
+	if (t.creeps.length === 0) lines.push(`${head}: no case is creeping.`, '');
+	else {
+		lines.push(`${head}: steps that rose in small moves, none of them a step of 2% or more:`, '');
+		for (const c of t.creeps.slice(0, CAPS.creeps)) {
+			const span = `${pct_text(c.ratio)} over ${plural(c.commits, 'commit')}, in ${plural(c.rises, 'rise')}`;
+			const counter =
+				c.counter_changes > 0
+					? `; ${c.counter_changes} of the rises came with a newer Heisenbench`
+					: '';
+			if (c.status === 'reverted') {
+				lines.push(
+					`- steps of ${code(c.case)} rose from ${short(c.start)} (${span}${counter}), given back at ${short(c.reverted_at)}`
+				);
+				continue;
+			}
+			const now = c.status === 'rising' ? 'still rising' : `to ${short(c.end)}, still there`;
+			lines.push(
+				`- ${c.status === 'rising' ? '⚠️ ' : ''}steps of ${code(c.case)} started rising at ${short(c.start)} (${span}; ${now}${counter})`
+			);
+		}
+		if (t.creeps.length > CAPS.creeps)
+			lines.push(`- and ${t.creeps.length - CAPS.creeps} more (in result.json)`);
+		lines.push('');
+	}
+	if (t.steps.length > 0) {
+		const shown = t.steps.slice(-CAPS.trend_steps).map((s) => {
+			const what = [s.up > 0 ? `${s.up} up` : '', s.down > 0 ? `${s.down} down` : '']
+				.filter(Boolean)
+				.join(' and ');
+			return `${short(s.sha)} ${what}${s.counter_changed ? ' (a newer Heisenbench too)' : ''}`;
+		});
+		const rest = t.steps.length - shown.length;
+		lines.push(
+			`Cases that took a step, 2% or more in one commit (each PR's comment has its own): ${shown.join(', ')}${rest > 0 ? `, and ${rest} older commits` : ''}.`,
+			''
+		);
+	}
 	return lines;
 }
 
@@ -533,6 +592,7 @@ export function render_full_summary(r: Result): string {
 	}
 	// The price audit: a part only when some price is suspect.
 	if (r.head?.audit) lines.push(renderAudit(r.head.audit, { quiet: true }));
+	if (r.trend) lines.push(...trend_lines(r.trend));
 	if (r.full_search) lines.push(...full_search_lines(r.full_search));
 	lines.push(...recorded_lines(r));
 	return lines.join('\n').trimEnd() + '\n';

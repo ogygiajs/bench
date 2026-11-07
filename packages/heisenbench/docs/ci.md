@@ -206,6 +206,48 @@ it. A `publish-weights` job checks the artifact (schema, the commit) and stores 
 `results` branch. A manual run with `app_weights` counts them too and keeps them as an artifact
 only.
 
+### Slow creep across main
+
+A PR that adds 1% is easy to wave through; five of them are 5%. So a main or nightly run also
+reads main's earlier full runs from the `results` branch (`heisenbench/main/<sha>.json`, a
+blobless clone, so only the runs it reads are fetched), puts them in ogygia's first-parent order
+with this run as the newest, at most 60 runs, and runs each case's steps through Heisenbench's
+change-point model (`@bench/heisenbench/trend`). The summary gets one line per creeping case:
+
+```
+- ⚠️ steps of `<case>` started rising at `<sha>` (+5.1% over 9 commits, in 5 rises; still rising)
+```
+
+and one line naming the commits where cases took a step instead (2% or more in one commit, which
+that PR's own comment and blame already showed). It is report-only: no count, verdict or gate
+changes.
+
+The model. Steps are exact, so a series moves only when a commit changes the code a case runs:
+what looks like noise is real code churn. The series is the log of the steps (a rise is a ratio)
+cut into flat and sloped pieces by exact penalized least squares, the objective PELT solves,
+computed by optimal partitioning since a series is a few hundred points at most. A cut costs
+β = 2·ln n and a slope γ = ln n (the Bayesian information criterion: each number the fit uses
+must buy back ln n of fit), with misfit in units of σ = 0.5%. One commit that moves the steps by
+2% or more is a step, never part of a creep. Inside each run of rising pieces the creep is the
+span, from a small rise to a small rise, whose sum beats churn the most; it is reported when that
+sum is 2% or more, comes from 3 commits or more, and is at least 4.5 churn deviations
+(sum / (churn · √moves), where churn is the root mean square of the case's small moves outside
+every rising stretch, never below 0.1%). The span is the best of about n²/2, so the bar sits well
+above the usual 2 or 3. Every number is an option of `detect_trend`.
+
+On simulated series (`packages/heisenbench/test/trend.test.ts`, 40 commits each): churn alone
+(0.2%, 0.5% or 1% on every commit, or 0.6% on one commit in five) shows a creep in 2 of 800
+series; eight 1% rises on 0.3% churn are found at their first commit for 173 of 200 seeds and
+within one commit for 194. The model takes 118 ms for 57 cases of 300 commits each. `heisenbench verify --layers trend` checks the
+planted series: a flat series and a single step say no creep, five 1% PRs among flat commits are
+found at the first of them, and a creep then a revert, a creep on churn and two separate creeps
+come out as planted.
+
+A change of the counter (a newer Heisenbench, or another Node) can move steps too. The model does
+not guess which moves were the counter's; each step and creep says when the counter changed with
+it. A run that was not given a history (`--history`) says nothing; a history that is not there,
+or a single run so far, is one line.
+
 Every main push has its own concurrency group, and the nightly run has another, so no full run
 cancels or replaces another (GitHub keeps only one waiting run per group, so a shared group would
 drop pushes). Full runs can overlap; `heisenbench/main/latest.json` and `heisenbench/main/app-weights.json` move
@@ -345,7 +387,10 @@ Options: `--repo` (default the ogygia repository on GitHub), `--work` (clones an
 `--weights app-weights.json` (rank a PR by those weights), `--real-weights real-weights.json` (and by
 real cost on that traffic), `--requests-per-day <n>`, `--search changed|all|off` (default
 `changed` for a PR, `off` for a full run; the nightly run passes `all`), `--search-budget
-<seconds>` (default 240 for a PR, 1800 for a full run, `0` turns the search off). On an M4 Max,
+<seconds>` (default 240 for a PR, 1800 for a full run, `0` turns the search off), `--history <dir>`
+(a full run: the `results` branch, a checkout or a blobless clone, for the trend over main). The
+trend alone, on the runs the history already holds:
+`node suites/ogygia/src/trend-cli.ts --repo <ogygia clone> --history <dir>`. On an M4 Max,
 the planted router PR (2 bench files on both trees, then timed) took 62 seconds with both trees
 already installed.
 
