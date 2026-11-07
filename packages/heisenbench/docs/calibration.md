@@ -210,3 +210,15 @@ refuses to mix them.
 The real-world check (`suites/ogygia/src/correlate.ts --summarize --prices <file>`) recounts its
 stored measurements with any price file, so a new calibration can be judged on the same commits
 before it is committed.
+
+## Training data
+
+ogygia's history is too short to learn from: a few dozen commits, and a handful whose steps
+changed. `suites/ogygia/src/training.ts` adds planted pairs (slowdowns, speedups and harmless
+edits built from the answer keys, at a few sizes) to the replayed history and measures both the
+same way: counts, engine health and input size of each side, then both sides timed in turns and
+judged by the time layer's noise rule. The labeled pairs (step change, and whether time changed
+beyond noise) are in `calibration/data/training-counts-<v>.json` (exact, the same bytes on every
+run) and `training-times-<v>.json` (every sample and the machine's load while it was timed).
+[calibration/data/training.md](../calibration/data/training.md) has the fields and the command
+that regenerates them. Nothing in a count or the gate reads them.
