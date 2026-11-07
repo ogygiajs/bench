@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { TraceMap, originalPositionFor } from '@jridgewell/trace-mapping';
 import { instrument } from '../src/transform/instrument.ts';
 import { compile_svelte } from '../src/transform/index.ts';
@@ -348,6 +349,17 @@ test('compiled .svelte output maps back to the .svelte lines', () => {
 		assert.deepEqual(lines, [3, 4, 7], generate);
 		assert.ok(r.meta.file.endsWith('List.svelte'));
 	}
+});
+
+test('a .svelte file compiles with its project’s svelte.config.js compiler options', () => {
+	const file = fileURLToPath(new URL('./fixtures/svelte-async/Greeting.svelte', import.meta.url));
+	const source = readFileSync(file, 'utf8');
+	// its project turns on experimental.async: the top-level await compiles
+	const c = compile_svelte(source, file, 'server');
+	assert.ok(c.code.includes('hello'));
+	// the same component in a project without that option is the error the project would see
+	const elsewhere = fileURLToPath(new URL('./fixtures/svelte/Greeting.svelte', import.meta.url));
+	assert.throws(() => compile_svelte(source, elsewhere, 'server'), /experimental\.async/);
 });
 
 test('the loader instruments .svelte components it renders', async () => {
