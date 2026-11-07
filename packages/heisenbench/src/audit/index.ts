@@ -86,7 +86,11 @@ export async function run_audit(o: AuditOptions): Promise<AuditReport> {
 		}
 		// a case past the step cap was grown on a ladder of other sizes: not the sizes timed
 		if (g.sizes.join(',') !== sizes.join(',')) {
-			failed.push({ file: g.file, name: g.name, error: `exceeded the step cap at ${g.capped_at}x` });
+			failed.push({
+				file: g.file,
+				name: g.name,
+				error: `exceeded the step cap at ${g.capped_at}x`
+			});
 			continue;
 		}
 		const t = rounds.get(key);
