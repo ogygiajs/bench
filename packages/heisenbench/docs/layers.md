@@ -239,11 +239,20 @@ evidence, and clean code can give none of them. In a child with `--expose-gc`:
    made by those rounds and are still held. Each gets its shortest strong retainer chain from the
    GC roots, where compiled code, feedback vectors, inline caches, hidden classes and allocation
    sites hold nothing. Read back from the object, the first variable that a function of a source
-   module keeps alive (a module `let` or `const`, or one a closure captured) owns it. Objects no
-   such variable owns belong to the engine, the bench file or a dependency, and are never a leak.
-   The owned objects are grouped by variable and type. The largest group is a leak when it holds
-   at least one object per 4 calls; its variable, the function that uses it, and the declaration
-   line are reported.
+   module or of a dependency keeps alive (a module `let` or `const`, or one a closure captured)
+   owns it. Objects no such variable owns belong to the engine or the bench file, and are never a
+   leak. The owned objects are grouped by variable and type. The largest group is a leak when it
+   holds at least one object per 4 calls; its variable, the function that uses it, and the
+   declaration line are reported, and for a dependency its package (`name@version`, as the
+   counting build names it) and how the variable holds the objects (`names → table → [44193]`:
+   a Map's table and an entry).
+
+A dependency's cache is the code's leak as much as its own: the code calls it on every request.
+It meets the same three rules, so a dependency's cache that fills once or stays bounded is not
+one. `test/measure.test.ts` plants two (a CommonJS package's module-level `Map` with a key per
+call, an ES module package's module-level array pushed per call) and their bounded twins (20
+keys, 20 entries): the two are found with their package, variable, function and line, the twins
+do not even grow.
 
 A leak held only by a global property (`globalThis.x = ...`) has no owning variable and is not
 reported. The log line gives the floor next to the growth, and says when a case grew but step 3
@@ -505,10 +514,32 @@ The split is acorn's (counted since dependencies are counted by default):
 on a prefix of the template that grows with it. `split` is priced per character (366 + 18.5 n),
 but what it costs follows the parts it makes. Timed on its own on 40,000 characters of code with a
 line break every 23, it took 0.45x its price; on 48,000 characters with a separator every 4, 2.3x.
-The audit saw acorn's long lines at 0.1x. A price per part would fix it; that is a calibration
-change and is left for one.
+The audit saw acorn's long lines at 0.1x.
 
-The old pricing flags these four cases in both of its runs, and today's prices flag only
+Prices v3 price `split` per part (154 + 125 parts) and five more built-ins by their size terms
+([calibration/results.md](../calibration/results.md#size-terms-prices-v3-2026-11-07)). One full
+audit of all 11 files on ogygia `01dc5b9` (29 cases, 5 rounds), judged with each price file on the
+same points and times:
+
+| Prices | Misfit ≥ 15% | Findings                                   | `transformHost` (growing)          |
+| ------ | -----------: | ------------------------------------------ | ---------------------------------- |
+| v2     |            7 | `split` on `transformHost`, 0.17x          | misfit 0.384, suspect `split`      |
+| v3     |            8 | `Object.entries` on `lift_document`, 0.19x | misfit 0.308, `engine`, no suspect |
+
+On `transformHost` split is 18% of the steps at 100x instead of 91%; time grows with exponent
+1.69 against steps 1.87, which the engine model explains (the 100x template outgrows the caches,
+as `match_path`'s table does), and no price is blamed. The largest kind there now is Svelte's
+`template.slice(0, start).replace(/\S/g, ' ')` before each snippet's parameters, one match per
+character of the prefix: timed alone, 7.1 ns a match against 11.5 priced, inside the 4x bar.
+
+The v3 finding was there before, hidden: `lift_document`'s `replace` with a callback was priced
+per character, and priced by its matches it shrinks, so the `Object.entries` beside it stands out.
+`Object.keys`, `values`, `entries` and `assign` are priced n² because the calibration's objects
+turn into dictionary mode from 64 keys (`Object.entries` takes 40 ns on 16 keys, 4.4 µs on 64,
+362 µs on 4,096: linear from 64 on, with a step at the switch). That price is the next to fix,
+with calibration objects that stay in fast mode beside ones that do not.
+
+The old pricing flags these four cases in both of its runs, and the v2 prices flag only
 `split` in both of theirs (and nothing at all in four earlier runs that counted only devalue,
 Svelte and magic-string). 22 cases miss time by less than 15%. Of the other seven, none is a
 suspect in any run:

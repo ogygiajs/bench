@@ -29,6 +29,15 @@ Each built-in's times are fitted as `ns = base + k × f(n)` for `f` in const, n,
 with `base, k ≥ 0`, by relative least squares so small sizes count as much as large ones. The
 simplest model within 0.02 R² of the best wins. Then ns become steps through the step time.
 
+A built-in with size terms ([how-counting-works.md](how-counting-works.md#built-ins)) is timed
+at several shapes per size: `split` on the same characters with a separator every 2, 8, 32 and
+256 of them, and with a line break regex every 8 and 64; `replace` with a few matches or many,
+replaced by a string and by a callback; `join` on numbers and on strings of 8 and 64 characters.
+Each size term the shapes vary is one more column, `ns = base + k × f(n) + Σ kₜ × t`, fitted the
+same way; a term the fit puts at 0 stays out of the price. R² is taken on the log scale, as the
+fit is relative: on the raw scale the largest calls are all of R², and a `join` priced by its
+numbers alone, 30x too low on a join of long strings, scored 0.998.
+
 | Built-in                 | Seed (v1)      | Calibrated (v2) |
 | ------------------------ | -------------- | --------------- |
 | `Map.prototype.get`      | 6              | 24.5            |
