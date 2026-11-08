@@ -47,6 +47,22 @@ export interface Finding {
 	delta: Stats;
 	/** The allocations it adds are elided by the engine (real bytes did not grow): not a regression. */
 	elided?: boolean;
+	/** A new or removed function whose code moved to or from a caller (FunctionChange `moved`). */
+	moved?: MovedCode;
+}
+
+/**
+ * Code that moved between functions: a caller's lines taken out into a new function, or a removed
+ * function's lines put back into its caller. The new (or removed) function's own steps are the
+ * caller's old ones, so alone each row reads like a large change; together they cost `net_steps`.
+ */
+export interface MovedCode {
+	/** `from`: code came into this function from `with`; `to`: code left it for `with`. */
+	role: 'from' | 'to';
+	/** The functions (ids) on the other side of the move. */
+	with: string[];
+	/** The self-step change of every function in the move together. */
+	net_steps: number;
 }
 
 export interface FunctionChange {
@@ -65,6 +81,8 @@ export interface FunctionChange {
 		calls: number;
 	};
 	findings: Finding[];
+	/** Its code moved to or from another function of the case (moved_code). */
+	moved?: MovedCode;
 }
 
 export interface DiffResult {
@@ -502,9 +520,9 @@ function diff_case(
 			? context_path(b.path)
 			: context_path(outer) + context_path(b.path.slice(at));
 	};
-	const accept = (b: FunctionReport, p: FunctionReport): void => {
-		const moved = context_path(b.path) !== context_path(p.path);
-		pairs.push([b, p, moved ? b.path : null]);
+	const accept = (b: FunctionReport, p: FunctionReport, across = false): void => {
+		const moved = across || context_path(b.path) !== context_path(p.path);
+		pairs.push([b, p, moved ? (across ? b.id : b.path) : null]);
 		matched_base.add(b.id);
 		matched_pr.add(p.id);
 		pr_path_of.set(b.id, p.path);
@@ -539,6 +557,26 @@ function diff_case(
 		for (const c of candidates) {
 			if (!matched_base.has(c.b.id) && !matched_pr.has(c.p.id)) accept(c.b, c.p);
 		}
+	}
+	// A function moved to another module, where git saw no rename (a file split in two): the same
+	// body, the only one of that body left on either side, and its name or a body of a few blocks.
+	const left_base = unmatched_base.filter((b) => !matched_base.has(b.id));
+	const left_pr = unmatched_pr.filter((p) => !matched_pr.has(p.id));
+	const body = (f: FunctionReport): string => `${f.kind} ${f.shape.join(',')}`;
+	const tally = (list: FunctionReport[]): Map<string, number> => {
+		const m = new Map<string, number>();
+		for (const f of list) m.set(body(f), (m.get(body(f)) ?? 0) + 1);
+		return m;
+	};
+	const base_bodies = tally(left_base);
+	const pr_bodies = tally(left_pr);
+	const leaf = (f: FunctionReport): string => context_path(f.path).split(' > ').pop()!;
+	for (const b of [...left_base].sort((x, y) => depth(x) - depth(y))) {
+		if (matched_base.has(b.id) || base_bodies.get(body(b)) !== 1) continue;
+		const p = left_pr.find((x) => body(x) === body(b));
+		if (!p || matched_pr.has(p.id) || pr_bodies.get(body(p)) !== 1) continue;
+		if (p.module === paths.pr_module(b.module)) continue;
+		if (leaf(b) === leaf(p) || b.shape.length >= 4) accept(b, p, true);
 	}
 	const still_base = unmatched_base.filter((b) => !matched_base.has(b.id));
 
@@ -608,7 +646,96 @@ function diff_case(
 		});
 		changes.push(change);
 	}
+	moved_code(changes, base, pr);
 	return { changes, renames };
+}
+
+/**
+ * Marks code that moved between functions (MovedCode). A new function the PR calls from a function
+ * whose own steps went down holds code that function lost; a removed function the base called from
+ * one whose own steps went up was put back into it. A new function called from another new one
+ * moves with it (code taken out two levels deep). Each group of functions linked so is one move,
+ * and its net is the sum of their self-step changes.
+ */
+function moved_code(changes: FunctionChange[], base: CaseReport, pr: CaseReport): void {
+	const callers_of = (c: CaseReport): Map<string, string[]> => {
+		const m = new Map<string, string[]>();
+		for (const e of c.edges) {
+			if (e.from === e.to) continue;
+			const list = m.get(e.to);
+			if (list) list.push(e.from);
+			else m.set(e.to, [e.from]);
+		}
+		return m;
+	};
+	const id_of = (c: FunctionChange): string => (c.pr ?? c.base)!.id;
+	const pr_side = new Map<string, FunctionChange>();
+	const base_side = new Map<string, FunctionChange>();
+	for (const c of changes) {
+		if (c.pr) pr_side.set(c.pr.id, c);
+		if (c.base) base_side.set(c.base.id, c);
+	}
+	const links: Array<[FunctionChange, FunctionChange]> = [];
+	const link = (moved: FunctionChange, callers: string[] | undefined, side: typeof pr_side) => {
+		const sign = Math.sign(moved.delta.self_steps);
+		for (const from of callers ?? []) {
+			const k = side.get(from);
+			if (!k || k === moved) continue;
+			const same_kind = (k.base === null) === (moved.base === null);
+			// a caller on both sides gave up (or took in) what the moved function has
+			if (k.base && k.pr ? Math.sign(k.delta.self_steps) === -sign : same_kind)
+				links.push([moved, k]);
+		}
+	};
+	const pr_callers = callers_of(pr);
+	const base_callers = callers_of(base);
+	for (const c of changes) {
+		if (!c.base && c.pr && c.delta.self_steps > 0) link(c, pr_callers.get(c.pr.id), pr_side);
+		else if (c.base && !c.pr && c.delta.self_steps < 0)
+			link(c, base_callers.get(c.base.id), base_side);
+	}
+	if (links.length === 0) return;
+	const parent = new Map<FunctionChange, FunctionChange>();
+	const find = (c: FunctionChange): FunctionChange => {
+		let r = c;
+		while (parent.has(r)) r = parent.get(r)!;
+		if (r !== c) parent.set(c, r);
+		return r;
+	};
+	const partners = new Map<FunctionChange, Set<string>>();
+	for (const [a, b] of links) {
+		const ra = find(a);
+		const rb = find(b);
+		if (ra !== rb) parent.set(ra, rb);
+		for (const [x, y] of [
+			[a, b],
+			[b, a]
+		]) {
+			const set = partners.get(x) ?? new Set<string>();
+			set.add(id_of(y));
+			partners.set(x, set);
+		}
+	}
+	const net = new Map<FunctionChange, number>();
+	// a move has a function on both sides: new functions calling each other are only new code
+	const anchored = new Set<FunctionChange>();
+	for (const c of partners.keys()) {
+		net.set(find(c), (net.get(find(c)) ?? 0) + c.delta.self_steps);
+		if (c.base && c.pr) anchored.add(find(c));
+	}
+	for (const [c, ids] of partners) {
+		if (!anchored.has(find(c))) continue;
+		// new code (a new function, or a caller that took a removed one in) came from its partners
+		const gained = c.base === null || (c.pr !== null && c.delta.self_steps > 0);
+		c.moved = {
+			role: gained ? 'from' : 'to',
+			with: [...ids].sort(),
+			net_steps: round(net.get(find(c))!)
+		};
+		for (const f of c.findings) {
+			if (f.kind === 'new function' || f.kind === 'removed function') f.moved = c.moved;
+		}
+	}
 }
 
 export function diff_reports(

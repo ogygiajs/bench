@@ -4,7 +4,15 @@ import { LineMap, check_rev, parse_diff } from '../src/diff/git.ts';
 import { diff_reports, shape_similarity } from '../src/diff/index.ts';
 import { render_markdown } from '../src/diff/markdown.ts';
 import { growth_verdict, odds_disagree } from '../src/growth/fit.ts';
+import { report_of } from '../src/report.ts';
 import type { CaseReport, FunctionReport, Report } from '../src/report.ts';
+import { spawnSync } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { temp_dir } from './helpers.ts';
+
+const CLI = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
 
 const DIFF = `diff --git a/src/a.ts b/src/a.ts
 index 1111111..2222222 100644
@@ -441,4 +449,92 @@ test('a changed case gets its own line: steps base to PR and the percent of the 
 	);
 	// the function's own percent is still in the function table
 	assert.match(md, /\| walk \| `a\.ts > f` \| 100 → 125 \| \+25 \(\+25\.0%\)/);
+});
+
+test('a report written under the engine former name reads as one of this version', () => {
+	const dir = temp_dir('heisenbench-old-report-');
+	const old = (self: number) => ({
+		...report([fn('a.ts', 'f', self)]),
+		schema: 'abax-report/1',
+		growth: { schema: 'abax-growth/1', sizes: [1, 10, 100], cases: [] }
+	});
+	const read = report_of(JSON.parse(JSON.stringify(old(10))));
+	assert.equal(read?.schema, 'heisenbench-report/1');
+	assert.equal(read?.growth?.schema, 'heisenbench-growth/1');
+	assert.equal(report_of({ schema: 'something-else/1', cases: [] }), null);
+	writeFileSync(join(dir, 'base.json'), JSON.stringify(old(10)));
+	writeFileSync(join(dir, 'pr.json'), JSON.stringify(report([fn('a.ts', 'f', 12)])));
+	const r = spawnSync(process.execPath, [CLI, 'diff', 'base.json', 'pr.json'], {
+		cwd: dir,
+		encoding: 'utf8'
+	});
+	assert.equal(r.status, 0, r.stderr);
+	assert.match(r.stdout, /\| case \| `a\.ts > f` \| 10 → 12 \| \+2 \(\+20\.0%\)/);
+});
+
+test('code moved out of a caller into a new function reads as moved, with the net change', () => {
+	const call = (r: Report, from: string, to: string) => {
+		r.cases[0].edges.push({ from, to, count: 1 });
+		return r;
+	};
+	const base = report([fn('a.ts', 'walk', 20_000), fn('a.ts', 'visit', 50, 40)]);
+	call(base, 'a.ts > walk', 'a.ts > visit');
+	const pr = report([
+		fn('a.ts', 'walk', 9_251),
+		fn('a.ts', 'walk_tail', 10_761, 30),
+		fn('a.ts', 'visit', 50, 40)
+	]);
+	call(call(pr, 'a.ts > walk', 'a.ts > walk_tail'), 'a.ts > walk_tail', 'a.ts > visit');
+	const d = diff_reports(base, pr);
+	const tail = d.changes.find((c) => c.function === 'walk_tail')!;
+	assert.deepEqual(tail.moved, { role: 'from', with: ['a.ts > walk'], net_steps: 12 });
+	const walk = d.changes.find((c) => c.function === 'walk')!;
+	assert.deepEqual(walk.moved, { role: 'to', with: ['a.ts > walk_tail'], net_steps: 12 });
+	const md = render_markdown(d);
+	assert.match(
+		md,
+		/\| case \| `a\.ts > walk_tail` \(code moved from `walk`\) \| 0 → 10,761 \| \+10,761; net \+12 with the moved code \|/
+	);
+	assert.match(
+		md,
+		/\| `a\.ts > walk` \(code moved to `walk_tail`\) \| 20,000 → 9,251 \| -10,749 \(-53\.7%\); net \+12/
+	);
+	assert.match(md, /\| new function \(code moved from `walk`\) \| `a\.ts:30` \|/);
+
+	// a function put back into its caller: the removed one moved into it
+	const inlined = diff_reports(pr, base);
+	assert.deepEqual(inlined.changes.find((c) => c.function === 'walk_tail')!.moved, {
+		role: 'to',
+		with: ['a.ts > walk'],
+		net_steps: -12
+	});
+
+	// new code that no caller lost is new code, also when two new functions call each other
+	const grown = report([
+		fn('a.ts', 'walk', 20_000),
+		fn('a.ts', 'extra', 300, 30),
+		fn('a.ts', 'extra_inner', 70, 35),
+		fn('a.ts', 'visit', 50, 40)
+	]);
+	call(
+		call(call(grown, 'a.ts > walk', 'a.ts > visit'), 'a.ts > walk', 'a.ts > extra'),
+		'a.ts > extra',
+		'a.ts > extra_inner'
+	);
+	assert.ok(diff_reports(base, grown).changes.every((c) => c.moved === undefined));
+});
+
+test('a function moved to another module with its body pairs as a rename', () => {
+	const body = (module: string, line: number): FunctionReport => ({
+		...fn(module, 'escape_attr', 90, line),
+		shape: [4, 7, 3, 9]
+	});
+	const base = report([fn('a.ts', 'render', 10), body('a.ts', 20)]);
+	const pr = report([fn('a.ts', 'render', 10), body('escape.ts', 1)]);
+	const d = diff_reports(base, pr);
+	assert.deepEqual(d.findings, []);
+	assert.deepEqual(
+		d.renames.map((r) => [r.from, r.to]),
+		[['a.ts > escape_attr', 'escape.ts > escape_attr']]
+	);
 });

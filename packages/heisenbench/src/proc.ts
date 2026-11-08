@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { with_conditions } from './loader/conditions-env.ts';
 
 /*
  * Child processes Heisenbench starts (measure layers, engine health, the counted app server), and the
@@ -114,7 +115,8 @@ export function run_process(
 		const child = track(
 			spawn(cmd, args, {
 				cwd: o.cwd,
-				env: o.env ?? process.env,
+				// `--conditions` reaches every process this one starts (conditions-env.ts)
+				env: with_conditions(o.env ?? process.env),
 				stdio: ['ignore', 'pipe', 'pipe'],
 				detached: POSIX
 			})

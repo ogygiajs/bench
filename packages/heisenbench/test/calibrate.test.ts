@@ -9,6 +9,7 @@ import type { PricePoint } from '../src/calibrate/prices.ts';
 import { FEATURES, fit_weights, load_weights, write_weights } from '../src/calibrate/weights.ts';
 import type { CorpusPoint } from '../src/calibrate/weights.ts';
 import { calibrate_prices, calibrate_weights } from '../src/calibrate/index.ts';
+import { INPUTS } from '../src/calibrate/inputs.ts';
 import { estimate_case, with_measured } from '../src/calibrate/estimate.ts';
 import { load_prices } from '../src/prices.ts';
 import type { Prices } from '../src/prices.ts';
@@ -53,6 +54,19 @@ test('built-in curves: the simplest model that fits', () => {
 	const flat = fit_curve(pts(() => 12));
 	assert.equal(flat.model, 'const');
 	assert.ok(Math.abs(flat.base_ns - 12) < 1e-6);
+	// a built-in held to the curves its work has: a bend from fast keys to dictionary keys is
+	// the wide_keys term, never a square
+	const wide = (n: number) => Math.max(0, n - 32);
+	const keys = [4, 8, 16, 32, 64, 256, 1024, 4096].map((n): PricePoint => ({
+		key: 'x',
+		n,
+		terms: [0, 0, 0, 0, 0, wide(n)],
+		ns: 7 + 0.3 * n + 13 * wide(n)
+	}));
+	const held = fit_curve(keys, INPUTS['Object.keys'].models);
+	assert.notEqual(held.model, 'n2');
+	assert.ok(Math.abs(held.terms_ns!.wide_keys! - 13) < 0.5);
+	assert.deepEqual(INPUTS['Object.entries'].models, ['const', 'n']);
 });
 
 test('prices.json: same layout when written back; the version goes up only on a change', () => {

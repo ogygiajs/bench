@@ -157,6 +157,39 @@ export interface Report {
 	cache?: CacheSummary;
 }
 
+/** The name the engine had before it was Heisenbench: its files' schemas start with it. */
+const FORMER_PREFIX = 'abax-';
+
+/**
+ * `abax-engine/1` -> `heisenbench-engine/1`: a schema written under the former name, as it is now
+ * called. The formats did not change with the name, only the prefix. Anything else is returned as it is.
+ */
+export function current_schema(schema: unknown): unknown {
+	return typeof schema === 'string' && schema.startsWith(FORMER_PREFIX)
+		? 'heisenbench-' + schema.slice(FORMER_PREFIX.length)
+		: schema;
+}
+
+/**
+ * A parsed report, read the way this version names it: a report the engine wrote under its
+ * former name (`abax-report/1`, its sections `abax-engine/1`, `abax-growth/1`...) has the same
+ * fields, so only the schemas are renamed. Null when `json` is no report of either name.
+ */
+export function report_of(json: unknown): Report | null {
+	if (json === null || typeof json !== 'object') return null;
+	const r = json as Record<string, unknown>;
+	if (current_schema(r.schema) !== REPORT_SCHEMA) return null;
+	if (r.schema === REPORT_SCHEMA) return json as Report;
+	r.schema = REPORT_SCHEMA;
+	for (const v of Object.values(r)) {
+		if (v !== null && typeof v === 'object' && 'schema' in v) {
+			const section = v as { schema: unknown };
+			section.schema = current_schema(section.schema);
+		}
+	}
+	return json as Report;
+}
+
 export interface LoadError {
 	file: string;
 	error: string;

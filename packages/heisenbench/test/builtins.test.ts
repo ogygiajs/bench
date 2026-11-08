@@ -245,3 +245,40 @@ export function tokens(html: string): number {
 	const includes = fn_of(r, 'has').builtins[0];
 	assert.equal(includes.steps, cost('String.prototype.includes', 12 - 4 + 7));
 });
+
+test('Object.keys, values, entries and assign are linear in the keys: a wide object is no square', async () => {
+	const m = await load_module(`export function walk(o: Record<string, number>) {
+	const k = Object.keys(o);
+	const v = Object.values(o);
+	const e = Object.entries(o);
+	const c = Object.assign({}, o);
+	return [k, v, e, c];
+}
+`);
+	const charged = async (n: number) => {
+		const o: Record<string, number> = {};
+		for (let i = 0; i < n; i++) o['k' + i] = i;
+		const r = await measure(() => m.walk(o as never), true);
+		const f = fn_of(r, 'walk');
+		const by = Object.fromEntries(f.builtins.map((b) => [b.name, b.steps]));
+		assert.equal(f.units!['bi.Object.keys.wide_keys'] ?? 0, Math.max(0, n - 32));
+		return by as Record<'keys' | 'values' | 'entries' | 'assign', number>;
+	};
+	const at_1k = await charged(1_000);
+	const at_10k = await charged(10_000);
+	const at_100k = await charged(100_000);
+	for (const name of ['keys', 'values', 'entries', 'assign'] as const) {
+		// ten times the keys, about ten times the steps (a square would be a hundred)
+		for (const [small, big] of [
+			[at_1k, at_10k],
+			[at_10k, at_100k]
+		]) {
+			const ratio = big[name] / small[name];
+			assert.ok(ratio > 9 && ratio < 11, `${name}: x${ratio.toFixed(2)} for ten times the keys`);
+		}
+	}
+	// a small object, in V8's fast mode, is cheap per key; its keys count as wide past 32
+	const small = await charged(8);
+	assert.equal(small.keys, cost('Object.keys', 8));
+	assert.equal(at_1k.keys, cost('Object.keys', 1_000, { wide_keys: 1_000 - 32 }));
+});

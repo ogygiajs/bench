@@ -1,4 +1,4 @@
-import type { CaseSummary, DiffResult, Finding, FunctionChange } from './index.ts';
+import type { CaseSummary, DiffResult, Finding, FunctionChange, MovedCode } from './index.ts';
 import { growth_label, is_superlinear } from '../growth/fit.ts';
 import { pct as odds_pct } from '../growth/odds.ts';
 import type { GrowthClass } from '../growth/fit.ts';
@@ -42,23 +42,39 @@ export function shown(f: Finding): boolean {
 
 /** A "Where" row after its case cell: the same text in two cases is one change, said once. */
 function finding_cells(f: Finding): string {
-	return `${f.kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${bytes_cell(f.delta.bytes, f.elided === true)} |`;
+	const kind = f.moved ? `${f.kind} (${moved_text(f.module, f.moved)})` : f.kind;
+	return `${kind} | ${code(`${f.module}:${f.line}`)} | ${signed(f.delta.steps)} | ${signed(f.delta.allocations)} | ${bytes_cell(f.delta.bytes, f.elided === true)} |`;
 }
 
 function cases_cell(cases: string[]): string {
 	return cases.length === 1 ? cell(cases[0]) : `${cell(cases[0])} and ${cases.length - 1} more`;
 }
 
+/** The functions on the other side of a move, by path when they are in the same module. */
+function moved_text(module: string, m: MovedCode): string {
+	const names = m.with.map((id) =>
+		code(id.startsWith(module + ' > ') ? id.slice(module.length + 3) : id)
+	);
+	return `code moved ${m.role} ${names.join(', ')}`;
+}
+
+/** The weight a change is ranked by: a move by what it cost in all, not by the steps it carried. */
+function rank_steps(c: FunctionChange): number {
+	return Math.abs(c.moved ? c.moved.net_steps : c.delta.self_steps);
+}
+
 function change_row(c: FunctionChange, ns?: number, model?: RangeValue): string {
 	const base = c.base ? c.base.self_steps : 0;
 	const pr = c.pr ? c.pr.self_steps : 0;
 	const name = c.renamed_from ? `${c.function} (was ${c.renamed_from})` : c.function;
+	const moved = c.moved ? ` (${moved_text(c.module, c.moved)})` : '';
+	const net = c.moved ? `; net ${signed(c.moved.net_steps)} with the moved code` : '';
 	// the weights' estimate, then the range model's (ranges/): extra text, never the verdict
 	const est =
 		(ns === undefined ? '' : ` ≈ ${signed(ns, ' ns')}`) +
 		(model ? `${ns === undefined ? ' ≈' : ';'} model ${range_text(model, true)}` : '');
 	const elided = c.findings.some((f) => f.elided);
-	return `| ${cell(c.case)} | ${code(`${c.module} > ${name}`)} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${est} | ${signed(c.delta.allocations)} | ${bytes_cell(c.delta.bytes, elided)} | ${signed(c.delta.inclusive_steps)} |`;
+	return `| ${cell(c.case)} | ${code(`${c.module} > ${name}`)}${moved} | ${fmt(base)} → ${fmt(pr)} | ${signed(c.delta.self_steps)}${pct(base, c.delta.self_steps)}${net}${est} | ${signed(c.delta.allocations)} | ${bytes_cell(c.delta.bytes, elided)} | ${signed(c.delta.inclusive_steps)} |`;
 }
 
 /**
@@ -124,9 +140,7 @@ export function render_markdown(d: DiffResult): string {
 			'| Case | Function | Self steps | Δ | Δ allocs | Δ bytes | Δ inclusive |',
 			'| --- | --- | ---: | ---: | ---: | ---: | ---: |'
 		);
-		const sorted = [...flagged].sort(
-			(a, b) => Math.abs(b.delta.self_steps) - Math.abs(a.delta.self_steps)
-		);
+		const sorted = [...flagged].sort((a, b) => rank_steps(b) - rank_steps(a));
 		for (const c of sorted.slice(0, MAX_ROWS)) lines.push(change_row(c, ns_of(c), model_of(c)));
 		if (sorted.length > MAX_ROWS)
 			lines.push('', `${sorted.length - MAX_ROWS} more changed functions are in the JSON result.`);

@@ -322,7 +322,9 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
   `exports` can hand a bench another build than the app gets. `--conditions svelte` (or
   `svelte,browser`) adds them for the code under test, in every process the command starts.
   Heisenbench's own imports keep Node's conditions (its parser's `browser` build does not run in
-  Node, which is why `NODE_OPTIONS=--conditions=browser` breaks it).
+  Node, which is why `NODE_OPTIONS=--conditions=browser` breaks it). The loader that applies them
+  stays out of the `NODE_OPTIONS` the code under test reads, so a package that checks
+  `process.env.NODE_OPTIONS` counts the same with `--conditions` as the user's own flags give it.
 - A type imported without `type` (`import { Rule, apply } from './rules.js'`, where `Rule` is an
   `export type`). Node's type stripping keeps that import and the module would not link ("does
   not provide an export named 'Rule'"); a named import that nothing in the module reads is

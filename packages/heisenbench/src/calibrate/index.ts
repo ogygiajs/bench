@@ -2,6 +2,7 @@ import { run_child } from '../measure/spawn.ts';
 import { package_file } from '../own.ts';
 import { DEFAULT_SIZES, fit_curve, prices_from_fits, priced_keys, write_prices } from './prices.ts';
 import type { CurveFit, PricePoint } from './prices.ts';
+import { INPUTS } from './inputs.ts';
 import { fit_weights, measure_corpus, write_weights } from './weights.ts';
 import type { CorpusPoint, Weights } from './weights.ts';
 import { machine_info } from './points.ts';
@@ -103,7 +104,7 @@ export async function calibrate_prices(o: CalibratePricesOptions = {}): Promise<
 	for (const key of keys) {
 		const pts = points.filter((p) => p.key === key);
 		if (pts.length === 0) continue;
-		fits[key] = fit_curve(pts);
+		fits[key] = fit_curve(pts, INPUTS[key]?.models);
 		const terms = Object.entries(fits[key].terms_ns ?? {})
 			.map(([t, ns]) => `, ${t} ${ns.toFixed(3)} ns`)
 			.join('');
