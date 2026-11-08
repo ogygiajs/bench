@@ -130,6 +130,7 @@ export function render_prove(r: ProveReport): string {
 		out.push(`<details><summary>The patch (${v.kind}; \`git apply\` it)</summary>`, '');
 		out.push('```diff', r.diff.trimEnd(), '```', '', '</details>', '');
 	}
+	for (const n of r.child.notes ?? []) out.push(`Note: ${n}`, '');
 	for (const e of r.child.errors) out.push(`Error: ${e}`, '');
 	return out.join('\n');
 }
@@ -154,5 +155,6 @@ export function prove_lines(r: ProveReport): string {
 			lines.push(
 				`           ${String(row.k).padStart(4)}x  size ${fmt(row.size).padStart(10)}  ${row.original ? fmt(row.original.steps) : '-'} -> ${row.candidate ? fmt(row.candidate.steps) : '-'} steps`
 			);
+	for (const n of r.child.notes ?? []) lines.push(`           note: ${n}`);
 	return lines.join('\n');
 }

@@ -234,7 +234,7 @@ export function compile_svelte(
 	return { code: out.js.code, map: map as unknown as SourceMapInput };
 }
 
-const SVELTE_CONFIGS = ['svelte.config.js', 'svelte.config.mjs'];
+export const SVELTE_CONFIGS = ['svelte.config.js', 'svelte.config.mjs'];
 /** Each directory's nearest svelte.config `compilerOptions` (null: none above it). */
 const svelte_options_of = new Map<string, Record<string, unknown> | null>();
 

@@ -1435,8 +1435,12 @@ The candidate is a file of top-level declarations. Each replaces the declaration
 name in the module (all its overloads); a name the module does not have is added before the
 first one replaced. So a candidate can be one function, the function and a helper it needs, or
 the whole fixed module (declarations that did not change change nothing). An import is accepted
-only when the module already has it word for word. The function must be top level; a fix inside
-a closure is proven through the function that holds it.
+only when the module already has it word for word. The function is a top-level one, or a method
+of a top-level class (`'Cache > get'`, `'Cache > static of'`): its candidate is then the class,
+and a recorded `this` (a clone of the instance's fields) is rebuilt on each side's own class, so
+the method reaches the class's other methods and getters. A fix inside a closure is proven
+through the function that holds it. An async function is compared on what its promise settles
+to.
 
 **Same behavior.** The original and the candidate run on the counting build, one fresh copy of
 each input per side:
@@ -1445,7 +1449,11 @@ each input per side:
   sample files), `heisenbench record`'s, and the bench cases of `--bench`, recorded at 1x, 10x
   and 100x when a case declares `scale`
 - the three largest of them grown by the generic scaler at 1x, 10x and 100x, one argument at a
-  time
+  time, up to 4,000,000 units of input (characters, elements, entries and keys): an argument
+  that would grow past it stops at the largest factor that fits, and the report says so (a
+  page-sized input at 100x ran the child out of memory)
+- an input nested deeper than 1,000 levels is counted and not kept (a deep walk's 100x): no
+  process with Node's default stack could read it back
 - seeded edge cases of each recorded input's shape, one change each: an array empty, of one
   element, with its first element twice more, every element twice, reversed, sorted, shuffled,
   with ties; a string empty, of one character, doubled, with accented, combining and astral
@@ -1529,16 +1537,23 @@ ready for `git apply`. Exit 0 when proven, 3 when proven at scale, 1 when reject
 ### Where a candidate runs
 
 A candidate's code runs only in a child process, on the counting build, under Node's permission
-model: reads under the project root and Heisenbench, a write to its one result file, native
-addons (the parser the transform uses is one), and nothing else: no network, no child
-processes, no workers, no inspector. Every call has a step cap: the original's 10¹⁰ (`--cap`), the
+model: reads under the project root and Heisenbench, the `node_modules` of every directory
+above the root and the packages they link to (a package of a workspace has its dependencies
+there), the `package.json` and `svelte.config.js` files above it (the loader looks for them),
+a write to its one result file, native addons (the parser the transform uses is one), and
+nothing else: no network, no child processes, no workers, no inspector. Every call has a step cap: the original's 10¹⁰ (`--cap`), the
 candidate's 20 times the original's steps on that input plus 10⁶, so a candidate that loops
 forever is stopped where it loops. Before it runs, its source is checked: it may not read
 `process`, `require`, `module`, `globalThis`, `global`, `self`, `window`, `fetch`, `WebSocket`,
-`eval`, `Function`, `WebAssembly` and the like as variables, may not import (an import the module
+`eval`, `Function`, `WebAssembly` and the like as globals, may not import (an import the module
 already has excepted), use `import()` or `import.meta`, and may not name `constructor` or
-`__proto__` as a property or in a string (they reach the Function constructor from any value).
-The check is syntactic: a name built at run time (`x['con' + 'structor']`) passes it, and the
+`__proto__` as a property or as a string used as a key (`x['constructor']`,
+`Reflect.get(x, '__proto__')`: they reach the Function constructor from any value). The check
+follows scopes: a local the candidate declares (`const frames = rows.length`) is its own, not the
+global. What reaches nothing passes: `typeof window`, a property of the global object that is no
+way out itself (`globalThis.trustedTypes`, never `globalThis.process` or `globalThis[k]`), a class
+method's `this.constructor`, and a string that only guards a key (`k === '__proto__'`). The
+check is syntactic: a name built at run time (`x['con' + 'structor']`) passes it, and the
 permissions stop what it reaches (`test/prove.test.ts` plants one that tries to write a file).
 
 ### Proposals

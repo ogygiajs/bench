@@ -136,7 +136,8 @@ Proving a faster version (on demand, not in PR CI)
   heisenbench prove <module> <function> --candidate <file> --records dir[,dir] [--bench files]
                                  proven (the same on every recorded, grown and edge-case input, no
                                  input costlier), proven at scale (the same, cheaper at scale,
-                                 costlier on small inputs: exit 3) or rejected (exit 1)
+                                 costlier on small inputs: exit 3) or rejected (exit 1); the
+                                 function is top level or a class method ('Cache > get')
       [--root dir] [--deps all|none|a,b] [--sizes 1,10,100] [--cap 1e10] [--variants 160]
       [--edge shapes|all] [--seed 1] [--tolerance 5] [--tolerance-steps 256]
       [--setup-tolerance pct]   opt-in: proven at scale within it is proven

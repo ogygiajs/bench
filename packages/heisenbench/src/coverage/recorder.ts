@@ -53,6 +53,13 @@ export interface FunctionRecord {
 	 * sample files.
 	 */
 	sizes?: { sized: number; min: number; max: number };
+	/**
+	 * An async function: each sample's output is what its promise settled to. A replay, which is
+	 * synchronous, cannot compare one; prove and recorded growth await it.
+	 */
+	async?: true;
+	/** Calls whose inputs or output nested deeper than MAX_SAMPLE_DEPTH: counted, never kept. */
+	too_deep?: number;
 }
 
 /**
@@ -125,6 +132,43 @@ function same_result(a: Sample, b: Sample): boolean {
 	return b.out !== NOT_CLONED && a.out !== NOT_CLONED && isDeepStrictEqual(a.out, b.out);
 }
 
+/**
+ * Levels of nesting a kept sample may have. A process with Node's default stack reads a value
+ * back (`v8.deserialize`, `structuredClone`) to about 3,000 levels, and a recording is read in
+ * another process than the one that wrote it: a deeper input (a 100x deep walk) is counted in
+ * `too_deep`, never kept, so every reader can load the file.
+ */
+export const MAX_SAMPLE_DEPTH = 1000;
+
+/** Whether `v` nests deeper than `limit` levels: walked without recursion, within a visit budget. */
+export function deeper_than(v: unknown, limit: number, budget = 200_000): boolean {
+	const todo: Array<[unknown, number]> = [[v, 0]];
+	const seen = new Set<object>();
+	while (todo.length > 0) {
+		const [x, d] = todo.pop()!;
+		if (x === null || typeof x !== 'object' || ArrayBuffer.isView(x)) continue;
+		// `d` objects hold this one: it is level d + 1
+		if (d >= limit) return true;
+		if (seen.has(x)) continue;
+		seen.add(x);
+		// a wide value spends the budget: its depth is then left to the clone
+		if (seen.size > budget) return false;
+		let kids: unknown[];
+		try {
+			kids =
+				x instanceof Map
+					? [...x.keys(), ...x.values()]
+					: x instanceof Set
+						? [...x]
+						: Object.values(x);
+		} catch {
+			continue;
+		}
+		for (const k of kids) todo.push([k, d + 1]);
+	}
+	return false;
+}
+
 /** structuredClone, keeping functions that close over nothing and Node modules (portable.ts). */
 function clone(v: unknown): unknown {
 	if (v === globalThis) return undefined;
@@ -181,14 +225,35 @@ export class Recorder {
 	 */
 	#busy = false;
 
-	enter(id: string, args: ArrayLike<unknown>, this_value: unknown): Frame | null {
+	enter(id: string, args: ArrayLike<unknown>, this_value: unknown, is_async = false): Frame | null {
 		if (this.replaying || this.#busy) return null;
 		this.#busy = true;
 		try {
+			if (is_async) this.#record(id).async = true;
 			return this.#enter(id, args, this_value);
 		} finally {
 			this.#busy = false;
 		}
+	}
+
+	/**
+	 * An async function's return: its output is what the promise settles to, recorded when it
+	 * does, and the call ends then (record-transform.ts). Without a frame, the value as it is.
+	 */
+	out_async(f: Frame | null, v: unknown): unknown {
+		if (!f) return v;
+		return Promise.resolve(v).then(
+			(x) => {
+				this.out(f, x);
+				this.exit(f);
+				return x;
+			},
+			(e: unknown) => {
+				this.fail(f, e);
+				this.exit(f);
+				throw e;
+			}
+		);
 	}
 
 	#enter(id: string, args: ArrayLike<unknown>, this_value: unknown): Frame | null {
@@ -199,6 +264,10 @@ export class Recorder {
 		const new_band = sizes !== null && bands.size < SIZE_BANDS && !bands.has(size_band(sum(sizes)));
 		const faithful = this.#faithful(id);
 		if (faithful >= this.max_samples && !new_band) return null;
+		if (deeper_than([Array.from(args), this_value], MAX_SAMPLE_DEPTH)) {
+			rec.too_deep = (rec.too_deep ?? 0) + 1;
+			return null;
+		}
 		let a = clone(Array.from(args));
 		let t = clone(this_value);
 		let stood = false;
@@ -255,7 +324,11 @@ export class Recorder {
 			const was = this.#busy;
 			this.#busy = true;
 			try {
-				const o = f.stood ? undefined : clone(v);
+				const deep = !f.stood && deeper_than(v, MAX_SAMPLE_DEPTH);
+				if (deep) f.rec.too_deep = (f.rec.too_deep ?? 0) + 1;
+				let o: unknown;
+				if (deep) o = NOT_CLONED;
+				else o = f.stood ? undefined : clone(v);
 				if (o === NOT_CLONED) f.bad = true;
 				else f.out = o;
 			} finally {
@@ -337,7 +410,14 @@ export class Recorder {
 }
 
 export function load_records(path: string): FunctionRecord[] {
-	return deserialize(readFileSync(path)) as FunctionRecord[];
+	try {
+		return deserialize(readFileSync(path)) as FunctionRecord[];
+	} catch (e) {
+		if (!(e instanceof RangeError)) throw e;
+		throw new Error(
+			`heisenbench: ${path} holds an input nested too deep for this process to read back; record it again with this version, which keeps no sample deeper than ${MAX_SAMPLE_DEPTH} levels`
+		);
+	}
 }
 
 const G = Symbol.for('heisenbench.recorder');
@@ -389,7 +469,7 @@ export function replay(
 				out.push({ ...base, status: r.uncloneable > 0 ? 'not cloneable' : 'no samples' });
 				continue;
 			}
-			if (typeof fn !== 'function') {
+			if (typeof fn !== 'function' || r.async) {
 				out.push({ ...base, status: 'not replayable' });
 				continue;
 			}

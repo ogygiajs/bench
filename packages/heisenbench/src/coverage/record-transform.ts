@@ -15,8 +15,10 @@ import { load_prices } from '../prices.ts';
  *
  * where every `return X` of the function itself becomes `return R.out($r, X)`. An arrow function has
  * no `arguments`: its parameters are passed instead (when they are plain names; an arrow with a
- * destructured or rest parameter is not recorded). Async functions, generators and functions that
- * read `new.target` are not recorded: their output is not a value at return.
+ * destructured or rest parameter is not recorded). An async function's output is what its promise
+ * settles to: `return X` becomes `return R.out_async($r, X)`, which records the value (or the
+ * rejection) and ends the call when it settles. Generators and functions that read `new.target`
+ * are not recorded: their output is not a value at return.
  *
  * Function identity is the counting transform's (`Router > match`): the transform lists the module's
  * functions with their start positions, and this transform wraps the nodes that start there.
@@ -145,10 +147,12 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 
 	const wrap = (fn: Node, path: string): void => {
 		const id = `${o.id} > ${path}`;
-		if (fn.async === true || fn.generator === true) {
-			skipped.push({ id, reason: fn.async === true ? 'async' : 'generator' });
+		if (fn.generator === true) {
+			skipped.push({ id, reason: fn.async === true ? 'async generator' : 'generator' });
 			return;
 		}
+		// an async function's output is what its promise settles to: recorded then (out_async)
+		const is_async = fn.async === true;
 		const body = fn.body as Node;
 		const params = (fn.params as Node[]) ?? [];
 		const is_arrow = fn.type === 'ArrowFunctionExpression';
@@ -190,22 +194,27 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 		// recorder can give back a function's original source (recorder.ts `original_source`):
 		// code that serializes a function with toString() (an inline script) still gets its own.
 		const inj = (text: string) => INJECTED_OPEN + text + INJECTED_CLOSE;
-		const head = `const ${r}=__heisenbench_rec.enter(${JSON.stringify(id)},${args},${self});try{`;
-		const tail = `}catch(${e}){__heisenbench_rec.fail(${r},${e});throw ${e}}finally{__heisenbench_rec.exit(${r})}`;
+		const head = `const ${r}=__heisenbench_rec.enter(${JSON.stringify(id)},${args},${self}${is_async ? ',true' : ''});try{`;
+		// An async function settles after it returns: its promise records the output and ends the
+		// call (out_async), and a throw before that ends it in the catch. A sync one ends in finally.
+		const out = is_async ? 'out_async' : 'out';
+		const tail = is_async
+			? `return __heisenbench_rec.out_async(${r},undefined)}catch(${e}){__heisenbench_rec.fail(${r},${e});__heisenbench_rec.exit(${r});throw ${e}}`
+			: `}catch(${e}){__heisenbench_rec.fail(${r},${e});throw ${e}}finally{__heisenbench_rec.exit(${r})}`;
 		if (body.type === 'BlockStatement') {
 			const stmts = (body.body as Node[]) ?? [];
 			let first = 0;
 			while (first < stmts.length && typeof stmts[first].directive === 'string') first++;
 			const at = first > 0 ? stmts[first - 1].end : body.start + 1;
 			s.appendLeft(at, inj(head));
-			s.prependRight(body.end - 1, inj(tail));
+			s.prependRight(body.end - 1, inj(is_async ? `;${tail}` : tail));
 			for (const ret of returns) {
 				const arg = ret.argument as Node | null;
 				if (arg) {
-					s.appendLeft(arg.start, inj(`__heisenbench_rec.out(${r},`));
+					s.appendLeft(arg.start, inj(`__heisenbench_rec.${out}(${r},`));
 					s.prependRight(arg.end, inj(')'));
 				} else {
-					s.appendLeft(ret.start + 6, inj(` __heisenbench_rec.out(${r},undefined)`));
+					s.appendLeft(ret.start + 6, inj(` __heisenbench_rec.${out}(${r},undefined)`));
 				}
 			}
 		} else {
@@ -215,8 +224,8 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 			const rt = fn.returnType as Node | null;
 			if (rt) from = Math.max(from, rt.end);
 			const arrow = find_token(code, '=>', from) + 2;
-			s.appendLeft(arrow, inj(`{${head}return __heisenbench_rec.out(${r},(`));
-			s.prependRight(fn.end, inj(`))${tail}}`));
+			s.appendLeft(arrow, inj(`{${head}return __heisenbench_rec.${out}(${r},(`));
+			s.prependRight(fn.end, inj(`))${is_async ? `;${tail}` : tail}}`));
 		}
 		wrapped.push(id);
 	};

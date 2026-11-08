@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { relative, resolve } from 'node:path';
 import { UsageError } from '../usage.ts';
+import { MAX_SAMPLE_DEPTH } from '../coverage/recorder.ts';
 import { prove_candidate, read_candidate, samples_of, target_of } from './index.ts';
 import type { ProveOptions, ProveReport, VerdictKind } from './index.ts';
 import {
@@ -73,8 +74,14 @@ export async function prove_command(
 	// the SDK is found (or its absence said) before any input is read
 	const proposer =
 		propose && !provider ? await claude_provider(flags.get('model') ?? DEFAULT_MODEL) : null;
-	const { samples, calls } = await samples_of(o, t);
-	console.log(`prove    ${t.id}: ${samples.length} recorded inputs (of ${calls} recorded calls)`);
+	const { samples, calls, too_deep } = await samples_of(o, t);
+	const deep =
+		too_deep > 0
+			? `; ${too_deep} nested deeper than ${MAX_SAMPLE_DEPTH} levels, not kept: the scales below them are`
+			: '';
+	console.log(
+		`prove    ${t.id}: ${samples.length} recorded inputs (of ${calls} recorded calls${deep})`
+	);
 	const out = flags.get('out') ?? 'heisenbench-prove.json';
 	const md = flags.get('md');
 	if (!propose) {
