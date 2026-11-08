@@ -63,7 +63,7 @@ export function render_mutation(r: MutationReport): string {
 	lines.push(
 		`${mutation_headline(r)} ${r.sample.functions} functions; ${sampled}; the ${r.sample.functions - r.sample.reached} no case runs miss every mutant.`,
 		'',
-		'Caught: the step table of a PR comment would show it (exact counts, so any change shows); a quadratic mutant is caught only when growth flags a class change (a case with `scale`, or growth from recorded calls).',
+		'Caught: the step table of a PR comment would show it (exact counts, so any change shows); a quadratic mutant is caught only when growth flags it (a case with `scale` whose class changes or whose added steps grow quadratically, or growth from recorded calls).',
 		''
 	);
 	const ops = r.operators;

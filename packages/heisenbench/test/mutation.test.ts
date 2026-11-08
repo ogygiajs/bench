@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { MutationReport } from '../src/mutation/index.ts';
 import { stratified_sample } from '../src/mutation/index.ts';
+import { GROWTH_SCHEMA, added_growth, diff_growth } from '../src/growth/index.ts';
+import type { GrowthCase, GrowthReport } from '../src/growth/index.ts';
 import { make_mutant, plan_module, rewrite } from '../src/mutation/operators.ts';
 import { fingerprint, twin_difference } from '../src/mutation/twin.ts';
 import type { TwinSummary } from '../src/mutation/twin.ts';
@@ -287,4 +289,108 @@ test('sampling: stratified by key, at least one per stratum, the same for the sa
 	assert.equal([...s1].filter((x) => x.startsWith('a')).length, 9);
 	assert.equal([...s1].filter((x) => x.startsWith('b')).length, 1);
 	assert.notDeepEqual([...stratified_sample(items, (x) => x[0], 10, 8)], [...s1]);
+});
+
+test('a case already quadratic still catches a quadratic mutant by the steps it adds; --import loads a preload in every recount', () => {
+	const dir = temp_dir('heisenbench-mutate-');
+	write_files(dir, {
+		'package.json': JSON.stringify({ name: 'mixed', type: 'module' }),
+		// `#mixed` is an alias only the preload knows
+		'preload.ts': `import { registerHooks } from 'node:module';
+registerHooks({
+	resolve(specifier, context, next) {
+		if (specifier === '#mixed') return next(new URL('./lib/mixed.ts', import.meta.url).href, context);
+		return next(specifier, context);
+	}
+});
+`,
+		'lib/mixed.ts': `export function count_pairs(xs: number[]): number {
+	let n = 0;
+	for (let i = 0; i < xs.length; i++) for (let j = i + 1; j < xs.length; j++) if (xs[i] < xs[j]) n++;
+	return n;
+}
+
+export function total(xs: number[]): number {
+	let s = 0;
+	for (const x of xs) s += x;
+	return s;
+}
+`,
+		'mixed.bench.ts': `import { bench } from ${BENCH_API};
+import { count_pairs, total } from '#mixed';
+
+const list = (n: number) => Array.from({ length: n }, (_, i) => (i * 7) % 13);
+bench('pairs and a total', ({ xs }) => count_pairs(xs) + total(xs), {
+	setup: () => ({ xs: list(20) }),
+	scale: (_ctx, k) => ({ xs: list(20 * k) })
+});
+`,
+		'sources.txt': 'lib/mixed.ts\n'
+	});
+	const run = (extra: string[]) =>
+		spawnSync(
+			process.execPath,
+			[
+				CLI,
+				'mutate',
+				'mixed.bench.ts',
+				'--root',
+				dir,
+				'--list',
+				join(dir, 'sources.txt'),
+				'--sample',
+				'all',
+				'--operators',
+				'quadratic',
+				'--jobs',
+				'2',
+				'--out',
+				join(dir, '..', 'mixed.mutation.json'),
+				...extra
+			],
+			{ cwd: dir, encoding: 'utf8', timeout: 300_000 }
+		);
+	const without = run([]);
+	assert.notEqual(without.status, 0, 'without the preload the bench file does not load');
+	const r = run(['--import', 'preload.ts']);
+	assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`);
+	const report = JSON.parse(
+		readFileSync(join(dir, '..', 'mixed.mutation.json'), 'utf8')
+	) as MutationReport;
+	const q = report.functions
+		.find((f) => f.path === 'total')!
+		.mutants.find((m) => m.operator === 'quadratic')!;
+	assert.deepEqual(q.growth, [
+		{ case: 'pairs and a total', base: 'quadratic', mutant: 'quadratic' }
+	]);
+	assert.equal(q.status, 'caught');
+	assert.equal(q.by, 'growth');
+});
+
+test('growth diff: a quadratic pass added under a case quadratic already is a finding', () => {
+	const grown = (steps: number[], cls: 'quadratic' | 'linear' = 'quadratic') =>
+		({
+			name: 'c',
+			file: 'x.bench.ts',
+			sizes: [1, 10, 100],
+			steps,
+			class: cls,
+			exponent: 2,
+			error: null
+		}) as unknown as GrowthCase;
+	const report = (c: GrowthCase): GrowthReport => ({
+		schema: GROWTH_SCHEMA,
+		sizes: [1, 10, 100],
+		cases: [c]
+	});
+	const base = grown([400, 40_000, 4_000_000]);
+	assert.equal(added_growth(base, grown([420, 42_000, 4_200_000]))?.class, 'quadratic');
+	assert.equal(added_growth(base, grown([420, 40_200, 4_002_000])), null, 'a linear addition');
+	assert.equal(added_growth(base, grown([400, 40_000, 4_000_000])), null, 'nothing added');
+	const d = diff_growth(report(base), report(grown([420, 42_000, 4_200_000])));
+	assert.equal(d.findings.length, 1);
+	assert.match(d.findings[0].text, /the steps the PR adds grow quadratic \(exponent 2\.00\)/);
+	const linear = diff_growth(report(base), report(grown([420, 40_200, 4_002_000])));
+	assert.deepEqual(linear.findings, []);
+	assert.equal(linear.same.length, 1, 'more steps of the same class, as before');
 });

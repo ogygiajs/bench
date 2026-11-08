@@ -73,5 +73,6 @@ export async function mutate_command(
 	console.log('\n' + md);
 	const out = flags.get('out');
 	if (out) writeFileSync(out, JSON.stringify(result, null, '\t') + '\n');
-	return 0;
+	// a bench file that did not load, or a case that threw, scored nothing: a failure, as in `run`
+	return (result.load_errors ?? []).length > 0 || (result.failed_cases ?? []).length > 0 ? 1 : 0;
 }

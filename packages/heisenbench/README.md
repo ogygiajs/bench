@@ -449,9 +449,9 @@ ship the calibration corpus, the training dataset or the planted cases, and from
 commands say so and stop. It does ship the fitted `feel.json`.
 
 Every command that loads bench files (`run`, `health`, `growth`, `search`, `audit`, `time`,
-`blame`, `record`, `prove`) takes `--import <file>[,<file>]`: a preload imported before the
+`blame`, `mutate`, `record`, `prove`) takes `--import <file>[,<file>]`: a preload imported before the
 bench files, in that process and in every process it starts (engine health, time, real bytes
-and leak children, blame's recounts). A preload that registers a resolve hook
+and leak children, blame's and mutate's recounts). A preload that registers a resolve hook
 ([`module.registerHooks`](https://nodejs.org/api/module.html#customization-hooks)) maps the
 imports only a bundler knows, like ogygia's `virtual:ogygia/*` and `$app/*`:
 
