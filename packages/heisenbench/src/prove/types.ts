@@ -118,4 +118,6 @@ export interface ProveChildResult {
 		from_size: number;
 	} | null;
 	errors: string[];
+	/** What the proof left out and why (a grown input past the size cap), in words. */
+	notes?: string[];
 }

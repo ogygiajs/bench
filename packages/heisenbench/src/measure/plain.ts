@@ -148,11 +148,12 @@ export function register_plain(config: PlainConfig): void {
 			// offset); the rest is the same compile the counting build used.
 			const ts = is_own_typescript(path);
 			const plain = is_plain_source(path, cfg.roots);
-			// a dependency: `import.meta.env` defined, as a production build defines it
-			if (!plain && !ts) return with_env(next(url, context), path);
+			// a dependency: `import.meta.env` defined, as a production build defines it (a
+			// component of a package is compiled like the project's own: Node cannot load one)
+			if (!plain && !ts && !is_svelte_module(path)) return with_env(next(url, context), path);
 			if (is_svelte_module(path)) {
 				const { code, map } = executed_code(path, readFileSync(path, 'utf8'), cfg.svelte);
-				const js = code + expose_suffix(code, path, 'js');
+				const js = plain ? code + expose_suffix(code, path, 'js') : code;
 				return { format: 'module', source: js + inline_map(map!), shortCircuit: true };
 			}
 			if (ts) {

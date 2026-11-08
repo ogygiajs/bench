@@ -91,8 +91,58 @@ test('recording keeps inputs as they came in and outputs as they left', async ()
 	// nested closures are recorded too
 	assert.equal(recs.get('outer > inner')!.calls, 2);
 	assert.equal(recs.get('nothing')!.samples[0].out, undefined);
-	// async functions are not recorded (their output is a promise)
+	// an async function is recorded when it is called and awaited (below)
 	assert.equal(recs.has('later'), false);
+});
+
+test('an async function is recorded with what its promise settles to, a rejection too', async () => {
+	recorder.reset();
+	const dir = temp_dir('heisenbench-rec-');
+	const r = record_transform(
+		`export async function later(x) {
+	await null;
+	if (x < 0) throw new RangeError('negative ' + x);
+	if (x === 0) return;
+	return x * 2;
+}
+export const arrow = async (a) => a + 1;
+export async function guarded(p) {
+	try {
+		return p;
+	} catch {
+		return 'caught';
+	}
+}
+`,
+		{ filename: join(dir, 'a.js'), id: 'a.js' }
+	);
+	assert.deepEqual(r.skipped, []);
+	write_files(dir, { 'a.js': r.code });
+	const m = (await import(pathToFileURL(join(dir, 'a.js')).href)) as Record<
+		string,
+		(...a: unknown[]) => Promise<unknown>
+	>;
+	assert.equal(await m.later(3), 6);
+	assert.equal(await m.later(0), undefined);
+	await assert.rejects(m.later(-1), /negative -1/);
+	assert.equal(await m.arrow(1), 2);
+	// a returned promise that rejects is not caught by the function's own catch, as before
+	await assert.rejects(m.guarded(Promise.reject(new Error('late'))), /late/);
+	const recs = new Map(recorder.records().map((x) => [x.id, x]));
+	const later = recs.get('a.js > later')!;
+	assert.equal(later.async, true);
+	assert.deepEqual(
+		later.samples.map((s) => [s.args, s.out, s.threw?.message]),
+		[
+			[[3], 6, undefined],
+			[[0], undefined, undefined],
+			[[-1], undefined, 'negative -1']
+		]
+	);
+	assert.deepEqual(recs.get('a.js > arrow')!.samples[0].out, 2);
+	// a synchronous replay cannot wait for one
+	const replayed = replay([later], { 'a.js > later': m.later });
+	assert.equal(replayed[0].status, 'not replayable');
 });
 
 test('replay: reproduced, hidden state, not cloneable, not replayable', async () => {
@@ -140,12 +190,12 @@ test('targets: only the named functions are wrapped; the rest say why', () => {
 		id: 'pkg/dist/mod.js',
 		targets: new Set(['add', 'later', 'missing'])
 	});
-	assert.deepEqual(r.wrapped, ['pkg/dist/mod.js > add']);
-	assert.deepEqual(r.skipped, [
-		{ id: 'pkg/dist/mod.js > later', reason: 'async' },
-		{ id: 'pkg/dist/mod.js > missing', reason: 'not found' }
-	]);
-	assert.match(r.code, /export const __heisenbench_rec_fns = \{"pkg\/dist\/mod\.js > add":add\}/);
+	assert.deepEqual(r.wrapped, ['pkg/dist/mod.js > add', 'pkg/dist/mod.js > later']);
+	assert.deepEqual(r.skipped, [{ id: 'pkg/dist/mod.js > missing', reason: 'not found' }]);
+	assert.match(
+		r.code,
+		/export const __heisenbench_rec_fns = \{"pkg\/dist\/mod\.js > add":add,"pkg\/dist\/mod\.js > later":later\}/
+	);
 });
 
 test('class constructors are left alone: a derived one may not read `this` before super()', async () => {

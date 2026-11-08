@@ -204,6 +204,33 @@ export function handle(mod: Record<string, unknown>, path: string): Function | n
 	return typeof h === 'function' ? h : null;
 }
 
+/**
+ * A function of a module by its path: a top-level one (`f`, as `handle`), or a method of a
+ * top-level class (`Cache > get`, `Cache > static of`). A method comes with the prototype its
+ * receiver is rebuilt on: a recorded `this` is a clone, a plain object of the instance's fields,
+ * and its methods and getters are the class's (null for a top-level function or a static method).
+ */
+export function callable(
+	mod: Record<string, unknown>,
+	path: string
+): { fn: Function; proto: object | null } | null {
+	const at = path.indexOf(' > ');
+	if (at === -1) {
+		const fn = handle(mod, path);
+		return fn ? { fn, proto: null } : null;
+	}
+	const cls = handle(mod, path.slice(0, at));
+	const member = path.slice(at + 3);
+	const is_static = member.startsWith('static ');
+	const name = is_static ? member.slice('static '.length) : member;
+	if (!cls || !IDENT.test(name) || name === 'constructor') return null;
+	const owner = is_static ? cls : (cls.prototype as object | undefined);
+	if (!owner) return null;
+	const fn = Object.getOwnPropertyDescriptor(owner, name)?.value;
+	if (typeof fn !== 'function') return null;
+	return { fn, proto: is_static ? null : owner };
+}
+
 function sum(xs: readonly number[]): number {
 	let s = 0;
 	for (const x of xs) s += x;

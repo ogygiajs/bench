@@ -13,6 +13,7 @@ import {
 	ts_to_js
 } from '../transform/index.ts';
 import { OWN_DIR } from '../own.ts';
+import { register_source_resolve } from '../loader/resolve.ts';
 import { record_transform } from './record-transform.ts';
 import { SIZE_BANDS, load_records, replay, size_band } from './recorder.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
@@ -100,6 +101,8 @@ export function merge_records(lists: ReadonlyArray<readonly FunctionRecord[]>): 
 			m.calls += r.calls;
 			m.uncloneable += r.uncloneable;
 			m.inconsistent += r.inconsistent;
+			if (r.async) m.async = true;
+			if (r.too_deep) m.too_deep = (m.too_deep ?? 0) + r.too_deep;
 			if (r.sizes) {
 				if (!m.sizes) m.sizes = { ...r.sizes };
 				else {
@@ -173,6 +176,9 @@ export function register_record_hooks(
 	expose_under?: string
 ): void {
 	const prefix = expose_under === undefined ? null : expose_under.replace(/\/?$/, '/');
+	// first, so the hooks below see `./x.js` resolved to `./x.ts` and `./core` to `./core.ts`,
+	// as the counting loader does (loader/resolve.ts)
+	register_source_resolve();
 	registerHooks({
 		load(url, context, next) {
 			if (!url.startsWith('file:')) return next(url, context);
@@ -185,7 +191,8 @@ export function register_record_hooks(
 				/\.(m?[jt]s|svelte)$/.test(file) &&
 				!file.endsWith('.d.ts');
 			if (!t && !own) {
-				if (!is_svelte_module(file) || file.includes('/node_modules/')) {
+				// a component of a package is compiled like the project's own (Node cannot load one)
+				if (!is_svelte_module(file)) {
 					const r = next(url, context);
 					if (r.source == null || r.format !== 'module' || file.startsWith(OWN_DIR)) return r;
 					const src =

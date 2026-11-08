@@ -7,9 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { serialize } from 'node:v8';
 import type { FunctionRecord, Sample } from '../src/coverage/recorder.ts';
+import { deeper_than } from '../src/coverage/recorder.ts';
 import { CandidateError, prove_candidate, target_of } from '../src/prove/index.ts';
 import type { ProveOptions, ProveReport } from '../src/prove/index.ts';
 import { first_difference } from '../src/prove/equal.ts';
+import { fitting_factors } from '../src/prove/run.ts';
 import { unsafe_reason } from '../src/prove/safety.ts';
 import { SpliceError, splice } from '../src/prove/splice.ts';
 import { unified_diff } from '../src/prove/diff.ts';
@@ -300,16 +302,60 @@ test('prove: candidate code that reaches outside the runtime is refused before i
 		["require('node:fs')", 'it names `require`'],
 		["import('node:fs')", 'it has a dynamic import()'],
 		["fetch('http://x')", 'it names `fetch`'],
-		['globalThis.x', 'it names `globalThis`'],
+		['globalThis', 'it names `globalThis`'],
+		['globalThis.process.env', 'it names `globalThis.process`'],
+		['(globalThis as any)[name]', 'it names `globalThis` with a computed key'],
 		["(() => 0).constructor('return 1')", 'it uses the property `constructor`'],
-		["({})['constructor']", 'a string in it names `constructor`'],
+		['this.constructor.constructor', 'it uses the property `constructor`'],
+		["({})['constructor']", 'a string in it names `constructor` as a key'],
+		["Reflect.get({}, '__proto__')", 'a string in it names `__proto__` as a key'],
 		["eval('1')", 'it names `eval`'],
 		['import.meta.url', 'it has import.meta or new.target']
 	];
 	for (const [expr, why] of refused) {
-		const src = `export function f(): unknown {\n\treturn ${expr};\n}\n`;
+		const src = `export function f(name: string): unknown {\n\treturn ${expr};\n}\n`;
 		assert.equal(unsafe_reason('a.ts', src), why, expr);
 	}
+	// scope-aware: a local named like a global is the candidate's own; the global itself is not
+	const local = `export function count(rows: number[]): number {
+	const frames = rows.length;
+	let self = 0;
+	for (const process of rows) self += process;
+	return frames + self;
+}
+`;
+	assert.equal(unsafe_reason('a.ts', local), null);
+	assert.equal(
+		unsafe_reason('a.ts', `function frames() { return 1; }\nexport const n = frames();\n`),
+		null
+	);
+	assert.equal(
+		unsafe_reason(
+			'a.ts',
+			`export function f(): number {\n\t{ const process = 1; }\n\treturn process.exitCode;\n}\n`
+		),
+		'it names `process`',
+		'a local of another block does not reach this reference'
+	);
+	// what a class reaches through its own names: a global object's harmless property, its
+	// own constructor, `typeof` of a global, and a string that only guards a key
+	const cls = `export class Core {
+	tt(): unknown {
+		return (globalThis as unknown as { trustedTypes?: unknown }).trustedTypes;
+	}
+	again(): Core {
+		const Ctor = this.constructor as new () => Core;
+		return new Ctor();
+	}
+	browser(): boolean {
+		return typeof window !== 'undefined';
+	}
+	safe(k: string): boolean {
+		return k === '__proto__' || k === 'constructor' || k === 'prototype';
+	}
+}
+`;
+	assert.equal(unsafe_reason('a.ts', cls), null);
 	// a property is not the global of that name; types never run
 	assert.equal(
 		unsafe_reason(
@@ -452,12 +498,12 @@ test('prove --propose: every proposal is proven like a hand-written one; only pr
 	const t = target_of(o.root, o.module, o.fn);
 	const p = stub([
 		WRONG_ON_DUPLICATES,
-		LINEAR.replace('let n = 0;', 'let n = globalThis.n ?? 0;'),
+		LINEAR.replace('let n = 0;', 'let n = globalThis.process.exitCode ?? 0;'),
 		HOISTED
 	]);
 	const out = await run_proposals(o, t, samples(), p, { count: 3, send_inputs: false });
 	assert.match(out[0].outcome, /^rejected: behaves differently on \d+ of \d+ inputs$/);
-	assert.equal(out[1].outcome, 'the candidate is refused: it names `globalThis`');
+	assert.equal(out[1].outcome, 'the candidate is refused: it names `globalThis.process`');
 	assert.equal(out[1].report, null);
 	assert.equal(out[2].outcome, 'proven');
 	assert.equal(out[2].report!.verdict.proven, true);
@@ -621,4 +667,209 @@ test('heisenbench prove --propose: without a key it says how to set one and does
 			e.stderr.includes('Nothing was sent and nothing was run.')
 	);
 	assert.equal(existsSync(join(dir, 'heisenbench-prove.json')), false);
+});
+
+test('heisenbench prove: a class method, recorded from a bench, with its receiver rebuilt on the class', async () => {
+	const dir = temp_dir('heisenbench-prove-');
+	const bench_api = JSON.stringify(fileURLToPath(new URL('../src/bench.ts', import.meta.url)));
+	const cls = (body: string) => `export class Index {
+	words: string[];
+	constructor(words: string[]) {
+		this.words = words;
+	}
+	key(w: string): string {
+		return w.toLowerCase();
+	}
+	/** How many words appear more than once, by key. */
+	repeated(): number {
+${body}
+	}
+}
+`;
+	write_files(dir, {
+		'package.json': '{ "type": "module" }',
+		'src/index.ts': cls(`		let n = 0;
+		for (let i = 0; i < this.words.length; i++) {
+			for (let j = 0; j < i; j++) {
+				if (this.key(this.words[i]) === this.key(this.words[j])) {
+					n++;
+					break;
+				}
+			}
+		}
+		return n;`),
+		'fast.ts': cls(`		const seen = new Set<string>();
+		let n = 0;
+		for (const w of this.words) {
+			const k = this.key(w);
+			if (seen.has(k)) n++;
+			else seen.add(k);
+		}
+		return n;`),
+		'wrong.ts': cls(`		return new Set(this.words).size === this.words.length ? 0 : 1;`),
+		'index.bench.ts': `import { bench } from ${bench_api};
+import { Index } from './src/index.ts';
+const words = (n: number) => Array.from({ length: n }, (_, i) => (i % 3 === 0 ? 'A' : 'a') + (i % 7));
+bench('repeated', ({ ix }) => ix.repeated(), { setup: () => ({ ix: new Index(words(24)) }) });
+`
+	});
+	const prove_args = (file: string) => [
+		CLI,
+		'prove',
+		'src/index.ts',
+		'Index > repeated',
+		'--candidate',
+		file,
+		'--bench',
+		'index.bench.ts',
+		'--out',
+		'p.json'
+	];
+	const ok = await run(process.execPath, prove_args('fast.ts'), { cwd: dir }).catch(
+		(e: { code: number; stdout: string; stderr: string }) => e
+	);
+	const report = JSON.parse(readFileSync(join(dir, 'p.json'), 'utf8')) as ProveReport;
+	assert.equal(report.function, 'src/index.ts > Index > repeated', JSON.stringify(ok));
+	assert.ok(report.verdict.inputs.by_kind.recorded > 0, 'the bench case recorded calls');
+	// the receiver has the class's methods: `this.key` runs, nothing throws on either side
+	assert.ok(report.child.inputs.every((i) => i.original.threw === null && !i.candidate?.threw));
+	assert.equal(report.verdict.inputs.differing, 0, report.verdict.reason);
+	assert.ok(['proven', 'proven at scale'].includes(report.verdict.kind), report.verdict.reason);
+	assert.deepEqual(report.replaced, ['Index']);
+	await assert.rejects(
+		run(process.execPath, prove_args('wrong.ts'), { cwd: dir }),
+		(e: { code: number; stdout: string }) => e.code === 1 && /^REJECTED /m.test(e.stdout)
+	);
+	// the nested functions of a method are still not a target
+	assert.throws(
+		() => target_of(dir, join(dir, 'src/index.ts'), 'Index > repeated > map:0'),
+		/is nested/
+	);
+});
+
+test('heisenbench prove: an async function, recorded from a bench, compared on what it settles to', async () => {
+	const dir = temp_dir('heisenbench-prove-');
+	const bench_api = JSON.stringify(fileURLToPath(new URL('../src/bench.ts', import.meta.url)));
+	write_files(dir, {
+		'package.json': '{ "type": "module" }',
+		'src/load.ts': `export async function distinct(ids: number[]): Promise<number[]> {
+	await null;
+	const out: number[] = [];
+	for (const id of ids) if (!out.includes(id)) out.push(id);
+	return out;
+}
+`,
+		'fast.ts': `export async function distinct(ids: number[]): Promise<number[]> {
+	await null;
+	const seen = new Set<number>();
+	const out: number[] = [];
+	for (const id of ids) {
+		if (seen.has(id)) continue;
+		seen.add(id);
+		out.push(id);
+	}
+	return out;
+}
+`,
+		'wrong.ts': `export async function distinct(ids: number[]): Promise<number[]> {
+	await null;
+	return [...new Set(ids)].sort((a, b) => a - b);
+}
+`,
+		'load.bench.ts': `import { bench } from ${bench_api};
+import { distinct } from './src/load.ts';
+const ids = (n: number) => Array.from({ length: n }, (_, i) => (i * 7) % 11);
+bench('distinct', ({ xs }) => distinct(xs), { setup: () => ({ xs: ids(40) }) });
+`
+	});
+	const prove_args = (file: string) => [
+		CLI,
+		'prove',
+		'src/load.ts',
+		'distinct',
+		'--candidate',
+		file,
+		'--bench',
+		'load.bench.ts',
+		'--out',
+		'p.json'
+	];
+	await run(process.execPath, prove_args('fast.ts'), { cwd: dir }).catch(() => null);
+	const report = JSON.parse(readFileSync(join(dir, 'p.json'), 'utf8')) as ProveReport;
+	assert.ok(report.verdict.inputs.by_kind.recorded > 0, report.verdict.reason);
+	assert.equal(report.verdict.inputs.differing, 0, report.verdict.reason);
+	await assert.rejects(
+		run(process.execPath, prove_args('wrong.ts'), { cwd: dir }),
+		(e: { code: number; stdout: string }) => e.code === 1 && /^REJECTED /m.test(e.stdout)
+	);
+});
+
+test('heisenbench prove: a recording too deep to read back is kept out, the scales below it are proven', async () => {
+	const dir = temp_dir('heisenbench-prove-');
+	const bench_api = JSON.stringify(fileURLToPath(new URL('../src/bench.ts', import.meta.url)));
+	const total = (body: string) => `export interface Link { v: number; next: Link | null }
+export function total(l: Link | null): number {
+${body}
+}
+`;
+	write_files(dir, {
+		'package.json': '{ "type": "module" }',
+		'src/chain.ts': total('\tlet s = 0;\n\tfor (let x = l; x; x = x.next) s += x.v;\n\treturn s;'),
+		'same.ts': total(
+			'\tlet s = 0;\n\tfor (let x = l; x !== null; x = x.next) s += x.v;\n\treturn s;'
+		),
+		// a chain of 100 links grown to 1,000 and 10,000: both grown ones are past the cap (the
+		// 1,000 links sit inside the arguments' array), and main crashed reading them back
+		'chain.bench.ts': `import { bench } from ${bench_api};
+import { total, type Link } from './src/chain.ts';
+const chain = (n: number): Link | null => {
+	let l: Link | null = null;
+	for (let i = 0; i < n; i++) l = { v: i, next: l };
+	return l;
+};
+bench('total', ({ l }) => total(l), {
+	setup: () => ({ l: chain(100) }),
+	scale: (_c, k) => ({ l: chain(100 * k) })
+});
+`
+	});
+	const r = await run(
+		process.execPath,
+		[
+			CLI,
+			'prove',
+			'src/chain.ts',
+			'total',
+			'--candidate',
+			'same.ts',
+			'--bench',
+			'chain.bench.ts',
+			'--out',
+			'p.json'
+		],
+		{ cwd: dir }
+	).catch((e: { stdout: string; stderr: string; code: number }) => e);
+	assert.match(
+		r.stdout,
+		/^prove {4}src\/chain\.ts > total: \d+ recorded inputs \(of 3 recorded calls; 2 nested deeper than 1000 levels, not kept/m,
+		r.stderr
+	);
+	const report = JSON.parse(readFileSync(join(dir, 'p.json'), 'utf8')) as ProveReport;
+	assert.equal(report.verdict.inputs.differing, 0);
+	assert.equal(report.verdict.inputs.by_kind.recorded, 1);
+	assert.ok(report.verdict.inputs.by_kind.grown > 0, 'the kept one is grown instead');
+	assert.equal(deeper_than({ a: { b: { c: 1 } } }, 2), true);
+	assert.equal(deeper_than({ a: { b: { c: 1 } } }, 3), false);
+});
+
+test('prove: a grown input past the size cap stops at the largest factor that fits, and says so', () => {
+	assert.deepEqual(fitting_factors([1, 10, 100], 1_000), { sizes: [1, 10, 100], note: null });
+	const cut = fitting_factors([1, 10, 100], 65_000, 4_000_000);
+	assert.deepEqual(cut.sizes, [1, 10, 61]);
+	assert.match(
+		cut.note!,
+		/^100x would hold 6,500,000 or more units of input, past the cap of 4,000,000; grown to 61x instead$/
+	);
+	// nothing fits but the input as it is: no growth at all
+	assert.deepEqual(fitting_factors([1, 10, 100], 3_000_000, 4_000_000).sizes, [1]);
 });

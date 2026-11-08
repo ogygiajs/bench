@@ -8,7 +8,7 @@ import { fit_growth, fit_noisy } from '../growth/fit.ts';
 import { count_ladder } from '../growth/index.ts';
 import type { GrowthPoint } from '../growth/index.ts';
 import { Measurer } from '../growth/measure.ts';
-import { handle, top_lines } from '../growth/recorded.ts';
+import { callable, top_lines } from '../growth/recorded.ts';
 import { arg_sizes, scale_input, size_kind } from '../growth/scale.ts';
 import { register_heisenbench } from '../loader/register.ts';
 import { build_case_report } from '../report.ts';
@@ -48,6 +48,34 @@ interface Ran {
 	out: unknown;
 	after: { self: unknown; args: unknown[] };
 	report: CaseReport | null;
+}
+
+/**
+ * The size a grown argument may reach (growth/scale.ts units: characters, elements, entries and
+ * keys). A page-sized input at 100x, copied for each side and walked by the function, takes more
+ * memory than the child has: past this, the factors stop at the largest that fits.
+ */
+export const MAX_GROWN_SIZE = 4_000_000;
+
+/**
+ * The growth factors an argument of `size` is grown to: those whose grown size fits under
+ * MAX_GROWN_SIZE, and the largest factor that fits in place of the ones cut, with a note saying so.
+ */
+export function fitting_factors(
+	factors: readonly number[],
+	size: number,
+	max = MAX_GROWN_SIZE
+): { sizes: number[]; note: string | null } {
+	const kept = factors.filter((k) => size * k <= max);
+	if (kept.length === factors.length) return { sizes: [...factors], note: null };
+	const cut = factors.filter((k) => size * k > max);
+	const largest = Math.floor(max / size);
+	const sizes = largest > Math.max(1, ...kept) ? [...kept, largest] : kept;
+	const fmt = (n: number) => n.toLocaleString('en-US');
+	return {
+		sizes,
+		note: `${cut.map((k) => `${k}x`).join(', ')} would hold ${fmt(size * cut[0])} or more units of input, past the cap of ${fmt(max)}; grown to ${sizes.length > 0 ? `${sizes[sizes.length - 1]}x` : 'no factor'} instead`
+	};
 }
 
 /** A candidate may take this many times the original's steps on an input before it is stopped. */
@@ -93,6 +121,20 @@ function serve_candidate(
 	return url;
 }
 
+/** The function proven, and the prototype a method's receiver is rebuilt on (growth/recorded.ts `callable`). */
+type Callee = { fn: Function; proto: object | null };
+
+/**
+ * A method's receiver: the recorded `this` (a clone, a plain object of the instance's fields) on
+ * the prototype of the class that side runs, the original's or the candidate's, so the method
+ * reaches the class's other methods and getters as on the instance it was recorded on.
+ */
+function receiver(self: unknown, proto: object | null): unknown {
+	if (proto === null || self === null || typeof self !== 'object') return self;
+	if (Object.getPrototypeOf(self) !== Object.prototype) return self;
+	return Object.setPrototypeOf(self, proto);
+}
+
 class Runner {
 	m: Measurer;
 	module: string;
@@ -103,12 +145,13 @@ class Runner {
 
 	/** One call of `fn` on a fresh copy of `input`, counted under `cap`. */
 	async run(
-		fn: Function,
+		callee: Callee,
 		input: { args: unknown[]; this_value: unknown },
 		cap: number
 	): Promise<Ran> {
+		const fn = callee.fn;
 		const ctx = {
-			self: revive(structuredClone(input.this_value)),
+			self: receiver(revive(structuredClone(input.this_value)), callee.proto),
 			args: revive(structuredClone(input.args)) as unknown[],
 			out: undefined as unknown
 		};
@@ -173,8 +216,20 @@ class Runner {
 	}
 }
 
-/** Where the two runs' behavior first differs, or null. A run past its cap decides nothing. */
+/**
+ * Where the two runs' behavior first differs, or null. A run past its cap decides nothing. Values
+ * nested too deep to walk are not shown the same: that is a difference, never a pass.
+ */
 function behavior_difference(o: Ran, c: Ran): string | null {
+	try {
+		return difference_of(o, c);
+	} catch (e) {
+		if (!(e instanceof RangeError)) throw e;
+		return 'the results nest too deep to compare (the call stack ran out walking them)';
+	}
+}
+
+function difference_of(o: Ran, c: Ran): string | null {
 	if (o.side.capped || c.side.capped) return null;
 	const ot = o.side.threw;
 	const ct = c.side.threw;
@@ -232,14 +287,14 @@ export async function run_prove(job: ProveJob): Promise<ProveChildResult> {
 		string,
 		unknown
 	>;
-	const orig = handle(orig_mod, job.path);
-	if (!orig) throw new Error(`heisenbench: ${job.module} has no top-level function ${job.path}`);
-	let cand: Function | null = null;
+	const what = job.path.includes(' > ') ? 'class method' : 'top-level function';
+	const orig = callable(orig_mod, job.path);
+	if (!orig) throw new Error(`heisenbench: ${job.module} has no ${what} ${job.path}`);
+	let cand: Callee | null = null;
 	if (cand_url) {
 		const mod = (await import(cand_url)) as Record<string, unknown>;
-		cand = handle(mod, job.path);
-		if (!cand)
-			throw new Error(`heisenbench: the candidate module has no top-level function ${job.path}`);
+		cand = callable(mod, job.path);
+		if (!cand) throw new Error(`heisenbench: the candidate module has no ${what} ${job.path}`);
 	}
 	const r = new Runner(job.root, job.module);
 	const seen = new Set<string>();
@@ -297,7 +352,10 @@ export async function run_prove(job: ProveJob): Promise<ProveChildResult> {
 		if (!bases.some((b) => size_of(b) === s.size)) bases.push(s.i);
 	}
 	const curves: ProveGrowth[] = [];
-	for (const b of bases) curves.push(...(await grow(job, r, orig, cand, b, pair_grown)));
+	const note = (s: string): void => {
+		(result.notes ??= []).push(s);
+	};
+	for (const b of bases) curves.push(...(await grow(job, r, orig, cand, b, pair_grown, note)));
 	curves.sort((a, b) => b.original.power - a.original.power || a.argument - b.argument);
 	result.growth = curves[0] ?? null;
 	async function pair_grown(input: Input, o: Ran, c: Ran | null): Promise<void> {
@@ -384,16 +442,19 @@ export async function run_prove(job: ProveJob): Promise<ProveChildResult> {
 async function grow(
 	job: ProveJob,
 	r: Runner,
-	orig: Function,
-	cand: Function | null,
+	orig: Callee,
+	cand: Callee | null,
 	base: Input,
-	record: (input: Input, o: Ran, c: Ran | null) => Promise<void>
+	record: (input: Input, o: Ran, c: Ran | null) => Promise<void>,
+	note: (line: string) => void
 ): Promise<ProveGrowth[]> {
 	const sizes = arg_sizes(base.args).sizes;
 	const tried: ProveGrowth[] = [];
 	for (let i = 0; i < base.args.length; i++) {
 		const kind = size_kind(base.args[i]);
 		if (!(sizes[i] > 1) || kind === 'size') continue;
+		const factors = fitting_factors(job.sizes, sizes[i]);
+		if (factors.note) note(`argument ${i} of ${base.label}: ${factors.note}`);
 		const make = (k: number): Input => {
 			const args = structuredClone(base.args);
 			args[i] = scale_input(args[i], k);
@@ -407,7 +468,7 @@ async function grow(
 		const runs = new Map<number, { input: Input; o: Ran }>();
 		let ladder: Awaited<ReturnType<typeof count_ladder>>;
 		try {
-			ladder = await count_ladder(job.sizes, async (k): Promise<GrowthPoint> => {
+			ladder = await count_ladder(factors.sizes, async (k): Promise<GrowthPoint> => {
 				const input = make(k);
 				const o = await r.run(orig, input, job.cap);
 				if (o.side.capped) throw new StepCapError(job.cap, job.cap);
@@ -470,8 +531,8 @@ async function grow(
 async function shrink(
 	job: ProveJob,
 	r: Runner,
-	orig: Function,
-	cand: Function,
+	orig: Callee,
+	cand: Callee,
 	differing: Array<{ input: Input; size: number; difference: string }>
 ): Promise<NonNullable<ProveChildResult['minimal']>> {
 	const first = [...differing].sort((a, b) => a.size - b.size)[0];

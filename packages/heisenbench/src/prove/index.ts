@@ -1,11 +1,13 @@
 import {
 	existsSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	realpathSync,
 	rmSync,
 	writeFileSync
 } from 'node:fs';
+import { SVELTE_CONFIGS } from '../transform/index.ts';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { deserialize, serialize } from 'node:v8';
@@ -111,16 +113,22 @@ export interface Target {
 	path: string;
 }
 
+/** `Class > method` or `Class > static method`: a method of a top-level class. */
+const METHOD_PATH = /^[A-Za-z_$][\w$]* > (?:static )?[A-Za-z_$][\w$]*$/;
+
 export function target_of(root: string, module: string, fn: string): Target {
 	const file = resolve(module);
 	if (!existsSync(file)) throw new Error(`heisenbench prove: no such module ${module}`);
 	const id = relative(resolve(root), file).split(sep).join('/');
 	if (id.startsWith('..'))
 		throw new Error(`heisenbench prove: ${module} is not under --root ${root}`);
-	const path = fn.includes(' > ') ? fn.slice(fn.indexOf(' > ') + 3) : fn;
-	if (fn.includes(' > ') && fn.slice(0, fn.indexOf(' > ')) !== id)
-		throw new Error(`heisenbench prove: ${fn} is not in ${id}`);
-	if (path.includes(' > '))
+	// a full id (`src/a.ts > f`), or a path in the module (`f`, `Cache > get`)
+	const head = fn.includes(' > ') ? fn.slice(0, fn.indexOf(' > ')) : null;
+	const names_module = head !== null && (head.includes('/') || /\.[cm]?[jt]sx?$/.test(head));
+	if (names_module && head !== id) throw new Error(`heisenbench prove: ${fn} is not in ${id}`);
+	const path = names_module ? fn.slice(head!.length + 3) : fn;
+	// a method of a top-level class (`Cache > get`, `Cache > static of`): its candidate is the class
+	if (path.includes(' > ') && !METHOD_PATH.test(path))
 		throw new Error(
 			`heisenbench prove: ${fn} is nested; prove the top-level function that holds it (${path.split(' > ')[0]}) with a candidate for it`
 		);
@@ -517,7 +525,7 @@ export function traffic_words(tr: TrafficSizes): string {
 export async function samples_of(
 	o: ProveOptions,
 	t: Target
-): Promise<{ samples: Sample[]; calls: number }> {
+): Promise<{ samples: Sample[]; calls: number; too_deep: number }> {
 	const lists: FunctionRecord[][] = [];
 	for (const dir of o.records ?? []) lists.push(read_record_dir(dir));
 	if (o.bench && o.bench.length > 0) {
@@ -539,7 +547,7 @@ export async function samples_of(
 		}
 	}
 	const r = merge_records(lists).find((x) => x.id === t.id);
-	return { samples: r?.samples ?? [], calls: r?.calls ?? 0 };
+	return { samples: r?.samples ?? [], calls: r?.calls ?? 0, too_deep: r?.too_deep ?? 0 };
 }
 
 function job_dir(): string {
@@ -556,6 +564,56 @@ function deps_root(): string {
 		if (up === dir) return found;
 		dir = up;
 	}
+}
+
+/** Files the loader reads above a module, wherever it is: the package scope and Svelte's options. */
+const UPWARD_FILES = ['package.json', ...SVELTE_CONFIGS];
+
+/**
+ * What the project's code may need to read outside its root, when it is a package of a
+ * workspace: the `node_modules` of every directory above it (a pnpm workspace keeps every
+ * dependency in the top one), the packages its own `node_modules` link to (a sibling of the
+ * workspace), and the package.json and svelte.config files of every directory above it, which
+ * the loader looks for (a module's package scope, a component's compiler options). Never the
+ * sources of the directories above.
+ */
+export function project_reads(root: string): string[] {
+	const out: string[] = [];
+	const real = realpathSync(root);
+	const linked = (nm: string): void => {
+		let entries: string[];
+		try {
+			entries = readdirSync(nm);
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			const names = e.startsWith('@')
+				? (() => {
+						try {
+							return readdirSync(join(nm, e)).map((x) => join(e, x));
+						} catch {
+							return [];
+						}
+					})()
+				: [e];
+			for (const n of names) {
+				try {
+					out.push(realpathSync(join(nm, n)));
+				} catch {
+					// a link to nothing
+				}
+			}
+		}
+	};
+	linked(join(real, 'node_modules'));
+	for (let d = dirname(real); ; d = dirname(d)) {
+		for (const f of UPWARD_FILES) out.push(join(d, f));
+		const nm = join(d, 'node_modules');
+		if (existsSync(nm)) out.push(realpathSync(nm));
+		if (dirname(d) === d) break;
+	}
+	return out;
 }
 
 /**
@@ -580,7 +638,8 @@ async function child(
 				realpathSync(PACKAGE_DIR),
 				realpathSync(OWN_DIR),
 				realpathSync(deps_root()),
-				dir
+				dir,
+				...project_reads(sandbox.root)
 			])
 		];
 		flags.push(
