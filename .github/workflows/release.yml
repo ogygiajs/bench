@@ -38,9 +38,10 @@ jobs:
         with:
           # all history, so changesets can link each changelog entry to its commit and PR
           fetch-depth: 0
-          # SHIP_TOKEN (a fine-grained token, not GITHUB_TOKEN): the version PR it opens and pushes
-          # then runs CI like any PR, so the `ship` label can merge it
-          token: ${{ secrets.SHIP_TOKEN || github.token }}
+          # GITHUB_TOKEN: the version PR it opens runs no CI (GitHub starts no workflow for its
+          # pushes), which is fine, as the PR only bumps versions and changelogs. A person merges it;
+          # that push to main is what publishes.
+          token: ${{ github.token }}
       - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
@@ -57,4 +58,4 @@ jobs:
           pr-title: 'chore: update versions'
           create-github-releases: true
           # the action refuses a GITHUB_TOKEN env that differs from this input
-          github-token: ${{ secrets.SHIP_TOKEN || github.token }}
+          github-token: ${{ github.token }}
