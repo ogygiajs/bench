@@ -12,6 +12,7 @@ import {
 } from '../transform/index.ts';
 import { load_prices } from '../prices.ts';
 import { OWN_DIR, PACKAGE_DIR } from '../own.ts';
+import { CONDITIONS_ENV, parse_conditions } from '../loader/conditions-env.ts';
 import { normalize, sha256 } from './normalize.ts';
 import type { LineTable } from './normalize.ts';
 import type { IoOp } from './capture.ts';
@@ -26,6 +27,7 @@ import type { IoOp } from './capture.ts';
  *   node       Node, V8, platform and arch: Node's built-in modules are code counted code calls,
  *              and a report records which Node counted it
  *   options    --deps, --state, svelte output: they change what is counted
+ *   conditions --conditions: the build of a package the code under test resolves to
  *   flags      Node's flags (NODE_OPTIONS, execArgv) with the content of every preload they name,
  *              NODE_ENV, and the `import.meta.env` the project sets (transform/env.ts)
  *   modules    every module the process loaded, by kind:
@@ -350,6 +352,8 @@ export function global_parts(o: KeyOptions, hasher: TreeHasher): Record<string, 
 		prices: load_prices().hash,
 		node: [process.version, process.versions.v8, process.platform, process.arch],
 		options: { deps: o.deps, svelte: o.svelte, fresh: o.fresh },
+		// `--conditions`: which build of a package the code under test gets
+		conditions: parse_conditions(process.env[CONDITIONS_ENV]),
 		flags: node_flags(o.root, hasher),
 		node_env: process.env.NODE_ENV ?? null,
 		// what `import.meta.env` reads (dependencies and .svelte files are keyed by their bytes)

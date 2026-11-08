@@ -3,7 +3,7 @@ import { case_key } from '../cases.ts';
 import { context_path } from '../identity.ts';
 import { load_prices } from '../prices.ts';
 import { recount_units } from '../recount.ts';
-import { REPORT_SCHEMA } from '../report.ts';
+import { report_of } from '../report.ts';
 import type { CaseReport, Report } from '../report.ts';
 import { normalize, sha256 } from '../cache/normalize.ts';
 import { Git } from './git.ts';
@@ -65,18 +65,26 @@ export function run_of(json: unknown, source: string): HistoryRun | null {
 	const o = json as {
 		schema?: string;
 		head?: Report | null;
-		meta?: { sha?: string; heisenbench?: string | null; bench?: string | null; node?: string };
+		meta?: {
+			sha?: string;
+			heisenbench?: string | null;
+			/** The counter's commit in a run file written under the engine's former name. */
+			abax?: string | null;
+			bench?: string | null;
+			node?: string;
+		};
 	};
-	const report = o.schema === REPORT_SCHEMA ? (json as Report) : o.head;
-	if (!report || report.schema !== REPORT_SCHEMA || !Array.isArray(report.cases)) return null;
+	const whole = report_of(json);
+	const report = whole ?? report_of(o.head);
+	if (!report || !Array.isArray(report.cases)) return null;
 	const sha = o.meta?.sha ?? report.git?.sha;
 	if (!sha) return null;
-	const engine = o.schema === REPORT_SCHEMA ? null : (o.meta?.heisenbench ?? null);
+	const engine = whole ? null : (o.meta?.heisenbench ?? o.meta?.abax ?? null);
 	return {
 		sha,
 		report: slim(report),
 		counter: `${engine ?? '?'} ${report.node ?? o.meta?.node ?? '?'}`,
-		bench: o.schema === REPORT_SCHEMA ? null : (o.meta?.bench ?? null),
+		bench: whole ? null : (o.meta?.bench ?? null),
 		source
 	};
 }

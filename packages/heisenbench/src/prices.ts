@@ -44,10 +44,27 @@ export type BuiltinModel = 'const' | 'n' | 'n_log_n' | 'n2';
  *   callbacks  calls a built-in makes into the code (a `replace` callback, `Array.from`'s mapFn)
  *   values     values `JSON.parse` builds or `JSON.stringify` visits
  *   items      elements a `join` turns into text (the ones that are not strings already)
+ *   wide_keys  keys of an object past the first WIDE_OBJECT_KEYS (`Object.keys`, `entries`,
+ *              `values`, `assign`): V8 keeps a wider object as a dictionary, and reads each
+ *              of its keys about ten times slower. Both costs are linear in the keys.
  *
  * The order is fixed: it is the order of the runtime's unit slots (units.ts BUILTIN_TERMS).
  */
-export const SIZE_TERMS = ['parts', 'matches', 'callbacks', 'values', 'items'] as const;
+export const SIZE_TERMS = [
+	'parts',
+	'matches',
+	'callbacks',
+	'values',
+	'items',
+	'wide_keys'
+] as const;
+
+/**
+ * Keys an object has before `wide_keys` counts them. V8 turns an object into a dictionary past
+ * about 20 keys added one by one and past about 100 from a literal or `JSON.parse`; 32 sits
+ * between the two (a count must not depend on how V8 built the object).
+ */
+export const WIDE_OBJECT_KEYS = 32;
 
 export type SizeTerm = (typeof SIZE_TERMS)[number];
 

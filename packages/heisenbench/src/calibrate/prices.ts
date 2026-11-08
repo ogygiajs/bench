@@ -56,13 +56,17 @@ function term(model: BuiltinModel, n: number): number {
  * Fits `ns = base + k f(n) + sum_t k_t t` for each model f; the size terms that vary in the points
  * (a built-in with size terms, timed at several shapes per size) are columns of every model. The
  * columns are scaled to unit size before the fit: per-call ns and per-character ns differ by
- * orders of magnitude, and so do their columns.
+ * orders of magnitude, and so do their columns. `models` are the curves the built-in's work can
+ * follow (inputs.ts `models`), every model by default.
  */
-export function fit_curve(points: PricePoint[]): CurveFit {
+export function fit_curve(
+	points: PricePoint[],
+	models: readonly BuiltinModel[] = MODELS
+): CurveFit {
 	const used = SIZE_TERMS.map((_, i) => points.some((p) => (p.terms?.[i] ?? 0) > 0));
 	const extra = (p: PricePoint): number[] =>
 		SIZE_TERMS.flatMap((_, i) => (used[i] ? [p.terms?.[i] ?? 0] : []));
-	const fits = MODELS.map((model) => {
+	const fits = models.map((model) => {
 		const cols = points.map((p) =>
 			model === 'const' ? [1, ...extra(p)] : [1, term(model, p.n), ...extra(p)]
 		);

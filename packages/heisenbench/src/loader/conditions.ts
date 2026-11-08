@@ -1,6 +1,12 @@
 import { registerHooks } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { OWN_DIR } from '../own.ts';
+import {
+	CONDITIONS_ENV,
+	names_loader,
+	parse_conditions,
+	without_loader
+} from './conditions-env.ts';
 
 /*
  * `--conditions svelte,browser`: the export conditions a bundler resolves packages with, for the
@@ -14,26 +20,14 @@ import { OWN_DIR } from '../own.ts';
  * those load make in turn (a dependency of Heisenbench's is its own too). A package both load is
  * Heisenbench's when Heisenbench loaded it first.
  *
- * The CLI sets HEISENBENCH_CONDITIONS and imports this module, in its process and, through
- * NODE_OPTIONS, in every process it starts (cli.ts `conditions`).
+ * The CLI sets HEISENBENCH_CONDITIONS and imports this module; every process it starts gets this
+ * module as its first preload (conditions-env.ts `with_conditions`), and here it leaves that
+ * process's NODE_OPTIONS again: the code under test never reads the engine's own flags.
  */
 
-export const CONDITIONS_ENV = 'HEISENBENCH_CONDITIONS';
+export { CONDITIONS_ENV, parse_conditions } from './conditions-env.ts';
 
 const REGISTERED = Symbol.for('heisenbench.resolve.conditions');
-
-/** `svelte, browser` -> ['svelte', 'browser']. */
-export function parse_conditions(list: string | undefined): string[] {
-	if (list === undefined) return [];
-	return [
-		...new Set(
-			list
-				.split(',')
-				.map((c) => c.trim())
-				.filter(Boolean)
-		)
-	];
-}
 
 /**
  * The conditions an import resolves with: `conditions` added to Node's, unless the importer is
@@ -82,3 +76,10 @@ export function register_conditions(conditions: readonly string[]): void {
 }
 
 register_conditions(parse_conditions(process.env[CONDITIONS_ENV]));
+
+// A preload of a process Heisenbench started: out of what the code under test reads, as if never set.
+if (names_loader(process.env.NODE_OPTIONS)) {
+	const options = without_loader(process.env.NODE_OPTIONS!);
+	if (options === '') delete process.env.NODE_OPTIONS;
+	else process.env.NODE_OPTIONS = options;
+}

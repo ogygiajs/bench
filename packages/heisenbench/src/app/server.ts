@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { CaseReport } from '../report.ts';
 import { own_file } from '../own.ts';
 import { track } from '../proc.ts';
+import { with_conditions } from '../loader/conditions-env.ts';
 import type { UnstableFunction } from './stability.ts';
 import type { LoadedModules } from './types.ts';
 
@@ -87,7 +88,7 @@ export class CountedServer {
 			fork(CHILD, [], {
 				cwd: o.cwd,
 				execArgv: ['--no-warnings'],
-				env: { ...process.env, NODE_ENV: 'production' },
+				env: with_conditions({ ...process.env, NODE_ENV: 'production' }),
 				stdio: ['ignore', 'pipe', 'pipe', 'ipc']
 			})
 		);

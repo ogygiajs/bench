@@ -311,3 +311,32 @@ bench('fails', () => fails());
 	assert.equal(missing.code, 2);
 	assert.match(missing.out, /--import nope\.ts: no such file/);
 });
+
+test('--conditions keeps the engine own options out of the NODE_OPTIONS the code under test reads', () => {
+	const dir = temp_dir('heisenbench-sources-');
+	write_files(dir, {
+		'package.json': '{ "type": "module" }',
+		// a package that reads NODE_OPTIONS, at load and per call, and does work by its length
+		'src/lib.ts': `const AT_LOAD = process.env.NODE_OPTIONS ?? '';
+export function options(): number {
+	const now = process.env.NODE_OPTIONS ?? '';
+	let n = 0;
+	for (const part of (AT_LOAD + ' ' + now).split(' ')) n += part.length;
+	return n;
+}
+`,
+		'bench/lib.bench.ts': `import { bench } from ${API};
+import { options } from '../src/lib.ts';
+bench('options', () => options());
+`
+	});
+	const steps = (args: string[]) => {
+		const r = heisenbench(['run', 'bench/lib.bench.ts', '--out', 'r.json', ...args], dir);
+		assert.equal(r.code, 0, r.out);
+		const report = JSON.parse(readFileSync(join(dir, 'r.json'), 'utf8')) as Report;
+		return report.cases[0].totals.steps;
+	};
+	const plain = steps([]);
+	assert.equal(steps(['--conditions', 'svelte']), plain);
+	assert.equal(steps(['--svelte', 'client']), plain, 'client output adds the browser condition');
+});

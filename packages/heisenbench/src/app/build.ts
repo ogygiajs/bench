@@ -12,6 +12,7 @@ import {
 import { join, resolve } from 'node:path';
 import type { CountedPluginOptions } from './vite.ts';
 import { own_file } from '../own.ts';
+import { with_conditions } from '../loader/conditions-env.ts';
 
 /*
  * A counted build of an installed app (spec 8): a copy of the app's sources next to a link to its
@@ -108,11 +109,12 @@ export async function counted_build(o: CountedBuildOptions): Promise<CountedBuil
 	const vite = join(dir, 'node_modules', '.bin', 'vite');
 	const t0 = performance.now();
 	o.log?.(`  counted build of ${app}`);
-	await run(vite, ['build', '--config', COUNTED_CONFIG, '--logLevel', 'warn'], dir, {
-		...process.env,
-		...o.env,
-		NODE_ENV: 'production'
-	});
+	await run(
+		vite,
+		['build', '--config', COUNTED_CONFIG, '--logLevel', 'warn'],
+		dir,
+		with_conditions({ ...process.env, ...o.env, NODE_ENV: 'production' })
+	);
 	const ms = Math.round(performance.now() - t0);
 	const server_dir = join(dir, '.svelte-kit', 'output', 'server');
 	if (!existsSync(join(server_dir, 'index.js'))) {

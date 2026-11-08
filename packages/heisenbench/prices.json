@@ -1,5 +1,5 @@
 {
-	"version": 3,
+	"version": 4,
 	"note": "Op prices are the seed prices (a step is one simple op). Built-in prices are calibrated: each built-in's time over sizes, in steps of `calibration.step_ns` (two consecutive calibrations agreed; see calibration/results.md). Changing any number changes steps on both sides of a comparison, so PR and base are always counted with the same file.",
 	"calibration": {
 		"date": "2026-11-06",
@@ -108,10 +108,10 @@
 		"JSON.stringify": { "model": "n", "base": 204, "k": 11 },
 		"JSON.parse": { "model": "n", "base": 400, "k": 11 },
 		"structuredClone": { "model": "n", "base": 3120, "k": 105 },
-		"Object.keys": { "model": "n2", "base": 75, "k": 0.046875 },
-		"Object.values": { "model": "n2", "base": 180, "k": 0.21875 },
-		"Object.entries": { "model": "n2", "base": 325, "k": 0.265625 },
-		"Object.assign": { "model": "n2", "base": 856, "k": 0.28125 },
+		"Object.keys": { "model": "const", "base": 72, "k": 0, "terms": { "wide_keys": 137 } },
+		"Object.values": { "model": "n", "base": 31.75, "k": 13.75, "terms": { "wide_keys": 702 } },
+		"Object.entries": { "model": "n", "base": 40.25, "k": 21, "terms": { "wide_keys": 861 } },
+		"Object.assign": { "model": "n", "base": 69, "k": 44.5, "terms": { "wide_keys": 896 } },
 		"Object.fromEntries": { "model": "n_log_n", "base": 1450, "k": 62.75 },
 		"Map.prototype.get": { "model": "const", "base": 24.5, "k": 0 },
 		"Map.prototype.set": { "model": "const", "base": 41, "k": 0 },

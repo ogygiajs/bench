@@ -5,6 +5,9 @@
  * against is the size the runtime charges for (builtins.ts `builtin_size`), measured on the call.
  */
 
+import { WIDE_OBJECT_KEYS } from '../prices.ts';
+import type { BuiltinModel } from '../prices.ts';
+
 export interface BuiltinInput {
 	self: unknown;
 	args: unknown[];
@@ -20,6 +23,14 @@ export interface InputMaker {
 	fresh?: boolean;
 	/** How many shapes `make` has (default 1). */
 	shapes?: number;
+	/**
+	 * The curves the built-in's work can follow (default: every model). A built-in whose time
+	 * bends over the timed sizes for a reason its work does not have is held to the curves it
+	 * has: an object past a few dozen keys turns into a dictionary, slower per key, so
+	 * `Object.keys` over 16 to 4096 keys fits n² best, and priced so it reads a wide object
+	 * quadratically while it does one pass over the keys.
+	 */
+	models?: BuiltinModel[];
 }
 
 /** `n` characters with `sep` after every `every - 1` others. */
@@ -61,10 +72,24 @@ function text(n: number): string {
 	return 'abcdefghij,'.repeat(Math.ceil(n / 11)).slice(0, n);
 }
 
+/** A built-in that does one pass over its input, or none. */
+const LINEAR: BuiltinModel[] = ['const', 'n'];
+
 function record(n: number): Record<string, number> {
 	const o: Record<string, number> = {};
 	for (let i = 0; i < n; i++) o['k' + i] = i;
 	return o;
+}
+
+/**
+ * An object of `n` keys the way the `wide_keys` term sees it: in V8's fast mode up to
+ * WIDE_OBJECT_KEYS keys (built from JSON, which keeps it fast that far), a dictionary past them
+ * (keys added one by one, which turns it into one).
+ */
+function keyed(n: number): Record<string, number> {
+	return n <= WIDE_OBJECT_KEYS
+		? (JSON.parse(JSON.stringify(record(n))) as Record<string, number>)
+		: record(n);
 }
 
 function map_of(n: number): Map<number, number> {
@@ -159,10 +184,11 @@ export const INPUTS: Record<string, InputMaker> = {
 		json_shapes().map((v) => (n: number) => ({ self: JSON, args: [JSON.stringify(v(n))] }))
 	),
 	structuredClone: { make: (n) => ({ self: globalThis, args: [numbers(n)] }) },
-	'Object.keys': { make: (n) => ({ self: Object, args: [record(n)] }) },
-	'Object.values': { make: (n) => ({ self: Object, args: [record(n)] }) },
-	'Object.entries': { make: (n) => ({ self: Object, args: [record(n)] }) },
-	'Object.assign': { make: (n) => ({ self: Object, args: [{}, record(n)] }) },
+	// one pass over the keys: linear, with the keys of a dictionary (`wide_keys`) dearer
+	'Object.keys': { make: (n) => ({ self: Object, args: [keyed(n)] }), models: LINEAR },
+	'Object.values': { make: (n) => ({ self: Object, args: [keyed(n)] }), models: LINEAR },
+	'Object.entries': { make: (n) => ({ self: Object, args: [keyed(n)] }), models: LINEAR },
+	'Object.assign': { make: (n) => ({ self: Object, args: [{}, keyed(n)] }), models: LINEAR },
 	'Object.fromEntries': { make: (n) => ({ self: Object, args: [Object.entries(record(n))] }) },
 	'Map.prototype.get': { make: (n) => ({ self: map_of(n), args: [n >> 1] }) },
 	'Map.prototype.set': { make: (n) => ({ self: map_of(n), args: [n >> 1, 1] }) },

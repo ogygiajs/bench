@@ -5,7 +5,7 @@ import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { exit_on_signals } from './proc.ts';
 import { UsageError } from './usage.ts';
-import { REPORT_SCHEMA, one_line } from './report.ts';
+import { REPORT_SCHEMA, one_line, report_of } from './report.ts';
 import { run_benches } from './runner.ts';
 import { diff_reports } from './diff/index.ts';
 import { render_markdown } from './diff/markdown.ts';
@@ -742,9 +742,9 @@ function read_report(path: string): Report {
 	} catch {
 		throw new UsageError(`${path} is not JSON`);
 	}
-	if (r === null || typeof r !== 'object' || (r as Report).schema !== REPORT_SCHEMA)
+	const rep = report_of(r);
+	if (rep === null)
 		throw new UsageError(`${path} is not an heisenbench report (no "schema": "${REPORT_SCHEMA}")`);
-	const rep = r as Report;
 	if (!Array.isArray(rep.cases)) throw new UsageError(`${path} has no cases`);
 	return rep;
 }
@@ -1029,7 +1029,8 @@ function svelte_flag(value: string | undefined): SvelteOutput | undefined {
 
 /**
  * `--conditions svelte,browser`: the export conditions the code under test resolves packages with
- * (loader/conditions.ts), in this process and, through NODE_OPTIONS, in every process it starts.
+ * (loader/conditions.ts), in this process and in every process it starts (proc.ts adds the loader
+ * to their NODE_OPTIONS, where it takes itself out again: the code under test never reads it).
  * Before `--import`, so a preload's own imports get them too. Client output adds `browser`, as a
  * browser bundle resolves: `svelte` is then Svelte's client runtime, where `mount` and `hydrate` work.
  */
@@ -1040,12 +1041,10 @@ function conditions(list: string | undefined, svelte: SvelteOutput | undefined):
 		[list ?? '', svelte === 'client' ? 'browser' : ''].filter(Boolean).join(',')
 	);
 	if (names.length === 0) return;
+	if (/\s/.test(own_file('loader/conditions')))
+		throw new UsageError('--conditions: Heisenbench is installed at a path with a space');
 	process.env[CONDITIONS_ENV] = names.join(',');
 	register_conditions(names);
-	const file = own_file('loader/conditions');
-	if (/\s/.test(file))
-		throw new UsageError('--conditions: Heisenbench is installed at a path with a space');
-	process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --import=${file}`.trim();
 }
 
 /** `--root` must be a directory, and the directories `--out`, `--md` and `--json` write into must exist. */

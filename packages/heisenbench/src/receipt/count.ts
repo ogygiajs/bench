@@ -7,6 +7,7 @@ import type { GrowthClass } from '../growth/fit.ts';
 import type { GrowthReport } from '../growth/index.ts';
 import type { Shape } from '../growth/odds.ts';
 import { own_file } from '../own.ts';
+import { CONDITIONS_ENV } from '../loader/conditions-env.ts';
 import { ProcessError, run_process } from '../proc.ts';
 import { one_line } from '../report.ts';
 import type { CaseReport } from '../report.ts';
@@ -77,6 +78,7 @@ export const RECEIPT_ENV: Readonly<Record<string, string>> = {
 function child_env(): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = { ...process.env, ...RECEIPT_ENV };
 	delete env.NODE_OPTIONS;
+	delete env[CONDITIONS_ENV];
 	return env;
 }
 

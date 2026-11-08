@@ -172,13 +172,14 @@ and charges `base + k × f(n) + Σ kₜ × t`, where `n` is the size that drives
 array's length, the string's length), `f` is one of `1`, `n`, `n log n` or `n²`, and each `t` is
 a size term: another size the work follows, measured on the call.
 
-| Size term   | What it counts                                                         | Kept for                                 |
-| ----------- | ---------------------------------------------------------------------- | ---------------------------------------- |
-| `parts`     | strings a `split` cuts                                                 | `split`                                  |
-| `matches`   | matches it replaces or returns                                         | `replace`, `replaceAll`, `match` with /g |
-| `callbacks` | calls it makes into the code                                           | `replace`, `replaceAll`, `Array.from`    |
-| `values`    | values it builds or visits                                             | `JSON.parse`, `JSON.stringify`           |
-| `items`     | elements it turns into text (a number in a `join`; a string is copied) | `join`                                   |
+| Size term   | What it counts                                                         | Kept for                                     |
+| ----------- | ---------------------------------------------------------------------- | -------------------------------------------- |
+| `parts`     | strings a `split` cuts                                                 | `split`                                      |
+| `matches`   | matches it replaces or returns                                         | `replace`, `replaceAll`, `match` with /g     |
+| `callbacks` | calls it makes into the code                                           | `replace`, `replaceAll`, `Array.from`        |
+| `values`    | values it builds or visits                                             | `JSON.parse`, `JSON.stringify`               |
+| `items`     | elements it turns into text (a number in a `join`; a string is copied) | `join`                                       |
+| `wide_keys` | keys past the first 32, which V8 keeps in a dictionary                 | `Object.keys`, `values`, `entries`, `assign` |
 
 `split` is the reason: cutting 16,384 characters into 5 parts takes 0.4 µs, into 8,193 parts
 83 µs, so a price per character was 25x too high on long lines and 2.6x too low on short ones.

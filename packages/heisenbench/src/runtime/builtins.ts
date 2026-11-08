@@ -1,4 +1,4 @@
-import { SIZE_TERMS, builtin_call_name, builtin_cost } from '../prices.ts';
+import { SIZE_TERMS, WIDE_OBJECT_KEYS, builtin_call_name, builtin_cost } from '../prices.ts';
 import type { BuiltinPrice, SizeTerm } from '../prices.ts';
 import { ANY_RECEIVER } from './index.ts';
 import type { Runtime } from './index.ts';
@@ -337,8 +337,25 @@ const SIZE_OF_TERMS: Record<string, Partial<Record<SizeTerm, Term>>> = {
 		callbacks: (_self, args, result) => (typeof args[1] === 'function' ? len(result) : 0)
 	},
 	'JSON.parse': { values: (_self, _args, result) => graph_size(result) },
-	'JSON.stringify': { values: (_self, args) => graph_size(args[0]) }
+	'JSON.stringify': { values: (_self, args) => graph_size(args[0]) },
+	// one list of keys each, as long as the object's
+	'Object.keys': { wide_keys: (_self, _args, result) => wide(len(result)) },
+	'Object.values': { wide_keys: (_self, _args, result) => wide(len(result)) },
+	'Object.entries': { wide_keys: (_self, _args, result) => wide(len(result)) },
+	'Object.assign': {
+		wide_keys: (_self, args) => {
+			let n = 0;
+			for (let i = 1; i < args.length; i++)
+				if (args[i] != null) n += wide(object_keys(args[i] as object).length);
+			return n;
+		}
+	}
 };
+
+/** The keys of an object of `n` past the ones V8 keeps out of dictionary mode. */
+function wide(n: number): number {
+	return n > WIDE_OBJECT_KEYS ? n - WIDE_OBJECT_KEYS : 0;
+}
 
 /** The size term functions of a built-in, aligned with SIZE_TERMS (null: it has none). */
 function terms_of(key: string): Array<Term | null> | null {

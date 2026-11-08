@@ -51,9 +51,8 @@ Prices are stored as binary fractions (whole numbers from 64 up, quarters from 8
 n log n is rounded to 1/64. That keeps counts exact: a recount from units gives the same number as
 the runtime's own count, to the bit.
 
-Known oddity: `Object.keys`, `values`, `entries` and `assign` fit best as n² over 16 to 4096 keys.
-Large plain objects are in V8's dictionary mode, which is slower per key. ogygia's objects are
-small, where the n² term is a few steps.
+Known oddity, fixed in prices v4 (below): `Object.keys`, `values`, `entries` and `assign` fit best
+as n² over 16 to 4096 keys. Large plain objects are in V8's dictionary mode, which is slower per key.
 
 ### Decision: calibrated prices replace the seed prices
 
@@ -134,6 +133,33 @@ A report from before them has no parts or matches to price: `recount` refuses it
 calls the two reports not comparable, rather than read the old side as cheaper. The stored
 reports of the real-world check (section 4) are such reports; it is to be measured again before
 it is recounted with v3. `weights.json` is still the fit on v2 prices: it only feeds `≈ ns`.
+
+### Wide objects: prices v4 (2026-11-08)
+
+`Object.keys`, `values`, `entries` and `assign` were priced n², so a growth case over a wide object
+read quadratic (neotraverse's `diff · wide`: exponent 1.6, quadratic by the odds) while the work is
+one pass over the keys. Timed alone, both of V8's layouts are linear: an object in fast mode
+costs 0.3 to 1 ns a key, one in dictionary mode (past about 20 keys added one by one, or about
+100 from JSON) 9 to 14 ns. The n² curve was that step, fitted over 16 to 4,096 keys.
+
+The four are now held to const and n (`models` in `calibrate/inputs.ts`), with a size term
+`wide_keys`: the keys past the first 32. They were timed again at 4 to 4,096 keys on objects in
+fast mode up to 32 keys and dictionaries past them, with `step_ns` kept at 0.0997, in three runs;
+the first and third agreed (R² 0.995 to 0.999), and the first is in `prices.json`:
+
+| Built-in         | v3 (n²)       | v4                                 |
+| ---------------- | ------------- | ---------------------------------- |
+| `Object.keys`    | 75 + 0.047 n² | 72 + 137 per wide key              |
+| `Object.values`  | 180 + 0.22 n² | 31.75 + 13.75 n + 702 per wide key |
+| `Object.entries` | 325 + 0.27 n² | 40.25 + 21 n + 861 per wide key    |
+| `Object.assign`  | 856 + 0.28 n² | 69 + 44.5 n + 896 per wide key     |
+
+With v4, `diff · wide` reads linear (exponent 1.01). On ogygia (`e0be4db`, 107 cases), 61 cases
+count the same and 46 move, all through these four: most by under 1%, `lift_document` +11.9%
+and `absolutize` +7.7% (wide objects the n² price undercharged; the audit had `Object.entries`
+there at 0.19x of its time), `flags: six flags read for 500 visitors` −3.9%. A report from before
+v4 keeps no `wide_keys` and is not recounted with v4: compare it with a report counted by the
+same version.
 
 ## 3. Weights (steps to nanoseconds)
 

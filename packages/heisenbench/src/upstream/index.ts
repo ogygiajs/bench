@@ -18,6 +18,7 @@ import { diff_reports } from '../diff/index.ts';
 import { input_size } from '../growth/scale.ts';
 import { package_of } from '../identity.ts';
 import { own_file, own_url } from '../own.ts';
+import { CONDITIONS_ENV } from '../loader/conditions-env.ts';
 import { ProcessError, run_process } from '../proc.ts';
 import { one_line } from '../report.ts';
 import type { Report } from '../report.ts';
@@ -524,6 +525,7 @@ function version_dir(
 function plain_env(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 	const out = { ...env };
 	delete out.NODE_OPTIONS;
+	delete out[CONDITIONS_ENV];
 	return out;
 }
 

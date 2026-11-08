@@ -689,10 +689,10 @@ character of the prefix: timed alone, 7.1 ns a match against 11.5 priced, inside
 
 The v3 finding was there before, hidden: `lift_document`'s `replace` with a callback was priced
 per character, and priced by its matches it shrinks, so the `Object.entries` beside it stands out.
-`Object.keys`, `values`, `entries` and `assign` are priced n² because the calibration's objects
+`Object.keys`, `values`, `entries` and `assign` were priced n² because the calibration's objects
 turn into dictionary mode from 64 keys (`Object.entries` takes 40 ns on 16 keys, 4.4 µs on 64,
-362 µs on 4,096: linear from 64 on, with a step at the switch). That price is the next to fix,
-with calibration objects that stay in fast mode beside ones that do not.
+362 µs on 4,096: linear from 64 on, with a step at the switch). Prices v4 fix it: linear in the
+keys, with the keys past the first 32 priced at the dictionary's rate (`wide_keys`).
 
 The old pricing flags these four cases in both of its runs, and the v2 prices flag only
 `split` in both of theirs (and nothing at all in four earlier runs that counted only devalue,

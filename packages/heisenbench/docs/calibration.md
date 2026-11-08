@@ -53,9 +53,12 @@ n log n is rounded to 1/64. Sums of binary fractions are exact in a `Float64Arra
 from units gives the same number as the runtime's own count, to the bit. That is why counts can
 end in `.13` and still compare exactly.
 
-One known oddity: `Object.keys`, `values`, `entries` and `assign` fit best as n² over 16 to 4,096
-keys, because large plain objects are in V8's dictionary mode. ogygia's objects are small, where
-the n² term is a few steps.
+A built-in can be held to the curves its work has (`models` in `calibrate/inputs.ts`).
+`Object.keys`, `values`, `entries` and `assign` do one pass over the keys, but over 16 to 4,096
+keys they fit n² best: V8 keeps an object of a few dozen keys as a dictionary, about ten times
+slower per key, and that step reads as a curve. They are held to const and n, with the keys past
+the first 32 as a size term of their own (`wide_keys`), so a wide object costs a linear price
+with the dictionary's slope (prices v4).
 
 ### Why calibrated prices replaced the seed prices
 
