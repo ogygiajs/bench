@@ -90,6 +90,39 @@ export function label(user: { name?: string } | null, fallback = ($a$c[2]++,'ano
 Every function is counted: exported or not, nested, arrow, method, getter, class field
 initializer. Module-level code is a function too, named `<top>`.
 
+### import.meta.env
+
+Code written for Vite reads `import.meta.env.DEV` (and `PROD`, `MODE`, `SSR`, `BASE_URL`). Vite
+replaces those statically, its `define`, so `if (import.meta.env.DEV) {...}` is dead code the
+shipped bundle drops; Node has no `import.meta.env`, and the same line throws in a bench. So every
+build Heisenbench loads code with (the counting build, the plain build of the time, bytes and leak
+layers, the engine-health child, the recorder) defines it the same way, before anything else sees
+the code (`src/transform/env.ts`):
+
+- a read (`import.meta.env.DEV`, `import.meta.env?.SSR`, `import.meta.env['MODE']`) becomes its
+  literal (`false`), padded with spaces so no line or column moves. A literal costs nothing, so
+  the read counts what a constant counts. A key the env does not have reads `undefined`, as in
+  Vite.
+- `import.meta.env` anywhere else (`const { DEV } = import.meta.env`, a computed key, a write) is
+  the whole env as an object literal, as Vite 8 writes it. That is longer than what it replaces,
+  so the rewrite's source map is chained to the module's.
+
+Dependencies in `node_modules` get it too: `vite build` defines every module it bundles, packages
+included. A module without `import.meta.env` is left byte for byte as it was, so its count does not
+change.
+
+The env models a production client build:
+`{ BASE_URL: '/', DEV: false, MODE: 'production', PROD: true, SSR: false }`. A project changes it
+with one key in its package.json, merged over that default; the nearest package.json above a file
+that sets it is the one the file reads (`SSR: true` for server code, `VITE_*` keys the code reads):
+
+```json
+{ "heisenbench": { "importMetaEnv": { "SSR": true, "VITE_API_URL": "/api" } } }
+```
+
+Values are strings, numbers, booleans or `null`. A module reads the env once, when it loads, so it
+is one per project, not one per case. The env is part of a cached case's key.
+
 ## Prices
 
 A block's price is fixed when the module is transformed: the sum of the operations in it, each at

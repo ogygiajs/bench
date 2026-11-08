@@ -6,6 +6,7 @@ import { dirname, join, relative, sep } from 'node:path';
 import {
 	VIRTUAL_PREFIX,
 	compile_svelte,
+	define_env,
 	inline_map,
 	is_svelte_module,
 	is_ts,
@@ -305,8 +306,25 @@ export class LoaderCore {
 	/** That module as JS: types stripped, or compiled when stripping cannot run it. */
 	plain_typescript(url: string): string {
 		const file = fileURLToPath(url);
-		const out = ts_to_js(this.read(url), file);
+		const ts = ts_to_js(this.read(url), file);
+		const out = define_env(ts.code, file, ts.map);
 		const code = this.config.virtual_paths ? virtualize_meta(out.code, file) : out.code;
+		return out.map === null ? code : code + inline_map(out.map as object);
+	}
+
+	/**
+	 * An ES module that is not counted (a bench file in JavaScript, a dependency left out of
+	 * `deps`) as it loads: `import.meta.env` defined, and `import.meta` virtual for a module of the
+	 * root (`meta_only`). Null when it loads as it is: CommonJS, Heisenbench's own files, or
+	 * nothing to change.
+	 */
+	uncounted(url: string, source: string, format: string | null | undefined): string | null {
+		if (format !== 'module' || !url.startsWith('file:')) return null;
+		const file = fileURLToPath(url);
+		if (this.is_own(file)) return null;
+		const out = define_env(source, file);
+		const code = this.meta_only(url, format) ? virtualize_meta(out.code, file) : out.code;
+		if (code === source) return null;
 		return out.map === null ? code : code + inline_map(out.map as object);
 	}
 
@@ -352,6 +370,8 @@ export class LoaderCore {
 		} else if (format !== 'module' && !(format == null && guess_format(filename) === 'module')) {
 			return null;
 		}
+		// `import.meta` is a syntax error in CommonJS
+		if (!commonjs) ({ code, map: input_map } = define_env(code, filename, input_map));
 		let r: ReturnType<typeof transform>;
 		try {
 			r = transform(code, {

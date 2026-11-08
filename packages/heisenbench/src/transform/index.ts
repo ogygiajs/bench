@@ -16,6 +16,8 @@ import { require_peer, require_typescript } from '../peer.ts';
 
 export { instrument } from './instrument.ts';
 export { virtualize_meta } from './meta.ts';
+export { DEFAULT_ENV, ENV_KEY, define_env, env_for } from './env.ts';
+export type { ImportMetaEnv } from './env.ts';
 export type { InstrumentOptions, InstrumentResult } from './instrument.ts';
 
 export const VIRTUAL_PREFIX = 'heisenbench:module/';

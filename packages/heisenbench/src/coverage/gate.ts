@@ -1,12 +1,14 @@
 import { readFileSync } from 'node:fs';
 import {
 	compile_svelte,
+	define_env,
 	is_svelte_module,
 	is_ts,
 	module_id,
 	transform,
 	ts_to_js
 } from '../transform/index.ts';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { load_prices } from '../prices.ts';
 import type { Report } from '../report.ts';
 import { cell, code } from '../md.ts';
@@ -68,7 +70,7 @@ export function source_inventory(root: string, files: readonly string[]): Source
 		try {
 			const source = readFileSync(file, 'utf8');
 			let code = source;
-			let input_map = null;
+			let input_map: SourceMapInput | null = null;
 			if (is_svelte_module(file)) {
 				const out = compile_svelte(source, file, 'server');
 				code = out.code;
@@ -78,6 +80,7 @@ export function source_inventory(root: string, files: readonly string[]): Source
 				code = out.code;
 				input_map = out.map;
 			}
+			({ code, map: input_map } = define_env(code, file, input_map));
 			const id = module_id(file, root);
 			const r = transform(code, { filename: file, id, input_map, prices, expose: false });
 			const declared = read_contracts(source, file, id, r.meta.functions);

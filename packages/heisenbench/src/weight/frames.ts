@@ -10,6 +10,7 @@ import {
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import {
 	compile_svelte,
+	define_env,
 	is_svelte_module,
 	is_ts,
 	module_id,
@@ -146,6 +147,7 @@ export class FrameMapper {
 				code = c.code;
 				input_map = c.map;
 			}
+			({ code, map: input_map } = define_env(code, file, input_map));
 			const id = module_id(file, this.#root);
 			const r = transform(code, {
 				filename: file.endsWith('.svelte') ? file + '.js' : file,

@@ -2,7 +2,14 @@ import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'n
 import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { instrument } from '../transform/instrument.ts';
-import { is_svelte_module, is_ts, module_id, strip_types } from '../transform/index.ts';
+import {
+	define_env,
+	env_for,
+	is_svelte_module,
+	is_ts,
+	module_id,
+	strip_types
+} from '../transform/index.ts';
 import { load_prices } from '../prices.ts';
 import { OWN_DIR, PACKAGE_DIR } from '../own.ts';
 import { normalize, sha256 } from './normalize.ts';
@@ -20,7 +27,7 @@ import type { IoOp } from './capture.ts';
  *              and a report records which Node counted it
  *   options    --deps, --state, svelte output: they change what is counted
  *   flags      Node's flags (NODE_OPTIONS, execArgv) with the content of every preload they name,
- *              and NODE_ENV
+ *              NODE_ENV, and the `import.meta.env` the project sets (transform/env.ts)
  *   modules    every module the process loaded, by kind:
  *                code   a counted module of the project: its text normalized (normalize.ts),
  *                       with the body of every function the case never ran left out
@@ -125,6 +132,9 @@ export class TreeHasher {
 					code = text;
 				}
 			}
+			// what the run executes reads `import.meta.env` as its literals
+			if (kind_of(abs, true) === 'code' && !abs.startsWith(OWN_DIR))
+				code = define_env(code, abs).code;
 			s = { raw: sha256(bytes), code };
 		}
 		this.#sources.set(abs, s);
@@ -341,7 +351,9 @@ export function global_parts(o: KeyOptions, hasher: TreeHasher): Record<string, 
 		node: [process.version, process.versions.v8, process.platform, process.arch],
 		options: { deps: o.deps, svelte: o.svelte, fresh: o.fresh },
 		flags: node_flags(o.root, hasher),
-		node_env: process.env.NODE_ENV ?? null
+		node_env: process.env.NODE_ENV ?? null,
+		// what `import.meta.env` reads (dependencies and .svelte files are keyed by their bytes)
+		import_meta_env: env_for(join(o.root, 'package.json'))
 	};
 }
 
