@@ -7,7 +7,8 @@ name: training-data
 #
 # One job, so every pair is counted and timed on the same machine: the two sides of a pair are
 # timed in turns, so a label never compares two machines. The runner's load is recorded with every
-# group, and a group whose load rose above `retime_above` is timed again.
+# group, and a group whose load rose above `retime_above` is timed again right away (after waiting
+# for the load to drop), up to three timings in all.
 
 on:
   workflow_dispatch:

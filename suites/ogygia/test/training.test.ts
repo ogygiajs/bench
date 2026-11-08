@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TimeComparison, TimeStats } from '@bench/heisenbench';
 import { PLANTED_FOR, planted_pairs } from '../src/planted.ts';
-import { assemble, measure_planted, write_dataset } from '../src/training.ts';
+import { RETIME_TRIES, assemble, measure_planted, write_dataset } from '../src/training.ts';
 import { check_counts, check_times, dataset_text, time_rows } from '../src/training-rows.ts';
 import type { CountsFile, TimesFile } from '../src/training-rows.ts';
 
@@ -68,6 +68,43 @@ test('the counted part is the same bytes on every run, in groups of any size', a
 		assert.ok(sizes[0] < sizes[1] && sizes[1] < sizes[2], JSON.stringify(sizes));
 	} finally {
 		for (const d of dirs) rmSync(d, { recursive: true, force: true });
+	}
+});
+
+test('a group timed while the machine was busy is timed again in the same run', async () => {
+	const work = temp('heisenbench-training-');
+	const lines: string[] = [];
+	try {
+		// every load is above -1: each timing is too loud, so the run times RETIME_TRIES times
+		await measure_planted({
+			work,
+			filter: `${FILTER}-n20`,
+			repeats: 1,
+			time_ms: 5,
+			retime_above: -1,
+			max_wait_min: 0,
+			log: (l) => lines.push(l)
+		});
+		const again = lines.filter((l) => l.includes('timing again'));
+		assert.equal(again.length, RETIME_TRIES - 1, lines.join('\n'));
+		assert.ok(lines.some((l) => l.includes(`after ${RETIME_TRIES} timings, kept`)));
+		const meta = JSON.parse(
+			readFileSync(join(work, 'training', 'planted', 'planted-01', 'group.json'), 'utf8')
+		) as { timings?: number; load: unknown };
+		assert.equal(meta.timings, RETIME_TRIES);
+		assert.ok(meta.load, 'the last timing is kept');
+
+		// a run with the bar above any load keeps the group: timed once, and not again on resume
+		lines.length = 0;
+		await measure_planted({
+			work,
+			filter: `${FILTER}-n20`,
+			retime_above: 1e9,
+			log: (l) => lines.push(l)
+		});
+		assert.ok(lines.includes('planted-01 done before'), lines.join('\n'));
+	} finally {
+		rmSync(work, { recursive: true, force: true });
 	}
 });
 

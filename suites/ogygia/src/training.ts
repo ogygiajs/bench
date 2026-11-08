@@ -26,9 +26,11 @@
  * average is sampled while a group is timed. `--counts-only` skips health and time.
  *
  * `measure` writes `<work>/training/<source>/<group>/` and skips groups already there, so a
- * stopped run resumes; `--retime-above <load>` measures again a group whose 1-minute load average
- * went above that while it was timed (another job took the machine), and `--max-load` waits for
- * the load to drop before a group is timed. `assemble` reads them back and writes the dataset: the counted part
+ * stopped run resumes; `--retime-above <load>` times a group again when its 1-minute load average
+ * went above that while it was timed (another job took the machine): right away, up to
+ * RETIME_TRIES timings in all, each after waiting for the load to drop, and on a resumed run
+ * also a group an earlier run saved that loud. `--max-load` waits for the load to drop before
+ * every timing. `assemble` reads them back and writes the dataset: the counted part
  * (`training-counts-<version>.json`: the same bytes for the same inputs) and the timed part
  * (`training-times-<version>.json`), fields in packages/heisenbench/calibration/data/training.md.
  */
@@ -73,7 +75,10 @@ export interface MeasureOptions {
 	repeats?: number;
 	time_ms?: number;
 	counts_only?: boolean;
-	/** Measure again a finished group whose load average went above this while it was timed. */
+	/**
+	 * Time a group again when its load average went above this while it was timed: in the same
+	 * run, up to RETIME_TRIES timings, and a group an earlier run saved that loud.
+	 */
 	retime_above?: number;
 	/** Before timing a group, wait for the 1-minute load average to be at most this... */
 	max_load?: number;
@@ -97,13 +102,23 @@ function read_json<T>(path: string): T | null {
 	return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as T) : null;
 }
 
+/** How many times one run times a group at most while its load stays above `retime_above`. */
+export const RETIME_TRIES = 3;
+
+/** Minutes a timing after the first waits at most for the load to drop (no `max_wait_min`). */
+const RETIME_WAIT_MIN = 10;
+
+/** The load went above `retime_above` while the group was timed. */
+function too_loud(load: GroupLoad | null | undefined, o: MeasureOptions): boolean {
+	return o.retime_above !== undefined && load != null && load.load.max > o.retime_above;
+}
+
 /** A group measured before, and not to be measured again (`retime_above`). */
 function done_before(dir: string, o: MeasureOptions): boolean {
 	const meta = read_json<GroupMeta>(join(dir, 'group.json'));
 	if (!meta) return false;
-	const max = meta.load?.load.max;
-	if (o.retime_above !== undefined && max !== undefined && max > o.retime_above) {
-		o.log?.(`${meta.id}: timed at a load of up to ${max}, measured again`);
+	if (too_loud(meta.load, o)) {
+		o.log?.(`${meta.id}: timed at a load of up to ${meta.load!.load.max}, measured again`);
 		return false;
 	}
 	return true;
@@ -118,6 +133,8 @@ interface GroupMeta {
 	counts_only: boolean;
 	load: GroupLoad | null;
 	time_error: string | null;
+	/** How many times this run timed the group (`retime_above`); `load` is the last timing's. */
+	timings?: number;
 	/** Planted: the pair ids. History: the commit. */
 	pairs?: string[];
 	commit?: string;
@@ -241,8 +258,34 @@ async function measure_group(
 	write_json(join(dir, 'sizes.json'), sizes);
 	let load: GroupLoad | null = null;
 	let time_error: string | null = null;
-	if (!o.counts_only)
-		({ load, error: time_error } = await timed(id, source, base, pr, files, dir, o));
+	let timings = 0;
+	// A timing after the first waits for the load to drop to `retime_above` first: timing again
+	// at once, while the other job still has the machine, would only be as loud.
+	const again: MeasureOptions = {
+		...o,
+		max_load: Math.min(o.max_load ?? Infinity, o.retime_above ?? Infinity),
+		max_wait_min: o.max_wait_min ?? RETIME_WAIT_MIN
+	};
+	while (!o.counts_only) {
+		({ load, error: time_error } = await timed(
+			id,
+			source,
+			base,
+			pr,
+			files,
+			dir,
+			timings === 0 ? o : again
+		));
+		timings++;
+		if (!too_loud(load, o)) break;
+		if (timings >= RETIME_TRIES) {
+			log(`${id}: still at a load of up to ${load.load.max} after ${timings} timings, kept`);
+			break;
+		}
+		log(
+			`${id}: timed at a load of up to ${load.load.max}, timing again (${timings + 1} of ${RETIME_TRIES})`
+		);
+	}
 	const meta: GroupMeta = {
 		id,
 		source,
@@ -250,6 +293,7 @@ async function measure_group(
 		counts_only: o.counts_only ?? false,
 		load,
 		time_error,
+		...(timings > 1 ? { timings } : {}),
 		load_errors: {
 			base: b.load_errors.map((e) => `${e.file} (${e.command})`),
 			pr: p.load_errors.map((e) => `${e.file} (${e.command})`)
