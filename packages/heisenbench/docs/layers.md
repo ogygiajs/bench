@@ -395,7 +395,10 @@ bench('match_path: every request against a 300-route table', ({ table, paths }) 
 ```
 
 PR against base, a class change (linear to quadratic) is a finding. The same class with more
-steps is not: the step table already shows that. A side that `shrinks` or is `irregular` is listed
+steps is not: the step table already shows that, unless the steps the PR adds grow quadratically
+or worse on their own (the PR's steps less the base's at each size, an exponent of 1.5 or more).
+A case that is quadratic already, through a parser or a sort, keeps its class when a PR adds one
+more pass over its input; the pass is still a finding. A side that `shrinks` or is `irregular` is listed
 under "Steps that fell as the input grew", never a finding. CI grows only the cases that declare
 `scale` (`--scaled on`).
 
@@ -1071,9 +1074,10 @@ returns a smaller count, and is discarded.
   hooked original against the mutant (a function whose own steps, allocations or bytes moved in
   some case; counts are exact, so any change shows). It is also **loud** when a case grew by 1% and
   1,000 steps or more, blame's threshold, the line the comment leads with.
-- `quadratic`: growth flags a class change: a case that declares `scale` (what CI grows) goes from
-  linear to quadratic or worse, or, with `--records`, growth from recorded calls newly finds the
-  function growing. The extra steps at the bench's one size are kept (`noticed_steps`) but are not
+- `quadratic`: growth flags it: a case that declares `scale` (what CI grows) goes from linear to
+  quadratic or worse, or the steps the mutant adds to one grow quadratically on their own (a case
+  quadratic already keeps its class), or, with `--records`, growth from recorded calls newly finds
+  the function growing. The extra steps at the bench's one size are kept (`noticed_steps`) but are not
   enough: at one size a quadratic loop looks like a constant cost. A mutant whose growth goes past
   this layer's cap (below) at its smallest sizes, where the original fitted below quadratic, is
   caught too: CI's growth, with its cap of 10¹⁰, would fit it. So is one whose growth does not
@@ -1169,7 +1173,8 @@ important first:
    morph's `reconcile_children`, 0.34 million steps per docs interaction); 19 sit in a loop the
    cases' inputs never enter; and 17 run only under a case that is already quadratic
    (`transformHost` grows quadratically through acorn's parser, so a new quadratic loop in the
-   compiler does not change its class: a class change is the only growth finding).
+   compiler does not change its class; that run counted a class change only, and growth now also
+   flags the steps a change adds when they grow quadratically on their own).
 3. **A 2x slowdown always shows, but almost half of them quietly.** All 624 show in the step table;
    only 342 make a case grow by 1% and 1,000 steps, the threshold at which the comment says which
    change made it slower. The other 282 are functions under 1% of every case that runs them.

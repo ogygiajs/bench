@@ -798,6 +798,16 @@ export function diff_growth(
 		} else if (pr_rank < br) {
 			out.better.push({ case: b.name, base: b.class, pr: p.class, text });
 		} else {
+			const added = added_growth(b, p);
+			if (added) {
+				out.findings.push({
+					case: b.name,
+					base: b.class,
+					pr: p.class,
+					text: `${text}; the steps the PR adds grow ${growth_label(added.class)} (exponent ${added.exponent.toFixed(2)})`
+				});
+				continue;
+			}
 			const bl = b.steps[b.steps.length - 1];
 			const pl = p.steps[p.steps.length - 1];
 			if (bl > 0 && bl !== pl) {
@@ -806,4 +816,32 @@ export function diff_growth(
 		}
 	}
 	return out;
+}
+
+/**
+ * The growth of the steps the PR adds to a case (its steps less the base's, size by size), when
+ * they grow quadratically or worse; null otherwise. A case that grows quadratically already (a
+ * sort, a parser, another loop) keeps its class when one more pass is added under it, and one
+ * that is linear can stay linear by its fit when the pass is small at these sizes: the class does
+ * not change, the steps the pass adds still grow so. Counts are exact, so the extra steps are the
+ * pass alone; at least three sizes, more steps at every one, and an exponent of 1.5 or more
+ * between the two largest.
+ */
+export function added_growth(
+	base: GrowthCase,
+	pr: GrowthCase
+): { class: GrowthClass; exponent: number } | null {
+	if (base.error || pr.error) return null;
+	const ks: number[] = [];
+	const extra: number[] = [];
+	for (let i = 0; i < base.sizes.length; i++) {
+		const j = pr.sizes.indexOf(base.sizes[i]);
+		if (j === -1 || i >= base.steps.length || j >= pr.steps.length) continue;
+		ks.push(base.sizes[i]);
+		extra.push(pr.steps[j] - base.steps[i]);
+	}
+	if (ks.length < 3 || extra.some((x) => !(x > 0))) return null;
+	const fit = fit_growth(ks, extra);
+	if (!is_superlinear(fit.class) || fit.exponent < 1.5) return null;
+	return { class: fit.class, exponent: fit.exponent };
 }

@@ -56,7 +56,9 @@ import { suggest } from './suggest.ts';
  *                          (exact counts: any change shows). "Loud" when a case also grew past
  *                          blame's threshold (1% and 1,000 steps), the line the comment leads with.
  *   quadratic              caught when growth flags a class change: a case that declares `scale`
- *                          (what CI grows) turns from linear to quadratic or worse, or growth from
+ *                          (what CI grows) turns from linear to quadratic or worse, or the steps
+ *                          the mutant adds to it grow quadratically or worse (growth/index.ts
+ *                          `added_growth`: a case quadratic already keeps its class), or growth from
  *                          recorded calls (`--records`) newly finds the function growing. The
  *                          extra steps at the bench's own input size are not enough: at one size a
  *                          quadratic loop looks like a constant cost.
@@ -215,6 +217,13 @@ export interface MutationReport {
 	/** Inventory functions not found in the source (listed, never guessed), and files that did not read. */
 	unmatched: string[];
 	errors: Array<{ file: string; error: string }>;
+	/**
+	 * Bench files that did not load on the root: none of their cases ran, so their functions read
+	 * as unreached. Absent when every file loaded.
+	 */
+	load_errors?: Array<{ file: string; error: string }>;
+	/** Cases that threw on the root, by name: what only they reach reads as unreached. */
+	failed_cases?: string[];
 	/** The recount budget ran out before every sampled function was evaluated. */
 	exhausted: boolean;
 	cost: {
@@ -641,6 +650,9 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 			if (!c.report) throw new Error(`heisenbench mutate: the base did not count: ${c.error}`);
 			base = c.report;
 		}
+		// a file that did not load, or a case that threw, runs nothing: what it reaches reads unreached
+		for (const e of base.load_errors ?? []) log(`FAILED   ${e.file}: ${e.error}`);
+		for (const c of base.cases) if (c.error) log(`FAILED   ${c.name}: ${c.error}`);
 		const ran = new Map<string, Set<string>>();
 		const calls = new Map<string, number>();
 		const incl = new Map<string, number>();
@@ -1173,6 +1185,12 @@ export async function mutation_score(o: MutationOptions): Promise<MutationReport
 			missed,
 			unmatched,
 			errors: result_errors,
+			...((base.load_errors ?? []).length > 0
+				? { load_errors: base.load_errors!.map((e) => ({ file: e.file, error: e.error })) }
+				: {}),
+			...(base.cases.some((c) => c.error)
+				? { failed_cases: base.cases.filter((c) => c.error).map((c) => c.name) }
+				: {}),
 			exhausted,
 			cost: { ms: Date.now() - started, ...cost }
 		};

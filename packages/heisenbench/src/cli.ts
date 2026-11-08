@@ -178,8 +178,8 @@ ship the calibration corpus or the planted cases)
                                  training dataset (calibration/data/), with its held-out scores
   heisenbench feel check         fit them again: exit 1 unless feel.json comes out byte for byte
 
-Every command that loads bench files (run, health, growth, search, audit, time, blame, record,
-prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
+Every command that loads bench files (run, health, growth, search, audit, time, blame, mutate,
+record, prove) also takes --import <file>[,file]: a preload loaded first, in this process and in every
 process it starts (resolve hooks for path aliases, Vite-only modules, globals the code expects),
 and --conditions <name>[,name]: export conditions the code under test resolves packages with, as
 its bundler does (svelte for a Svelte project; Heisenbench's own imports keep Node's), and
@@ -532,7 +532,10 @@ const SPECS: Record<string, Spec> = {
 			'work',
 			'suggestions',
 			'out',
-			'md'
+			'md',
+			'import',
+			'conditions',
+			'svelte'
 		],
 		args: [1, MANY],
 		files: true
