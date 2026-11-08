@@ -11,7 +11,7 @@ import type { CountedFunction } from '../src/contracts/declare.ts';
 import { check_contracts, diff_contracts, render_contracts_diff } from '../src/contracts/index.ts';
 import type { ContractReport } from '../src/contracts/index.ts';
 import { gate, measurement_sources, render_gate, source_inventory } from '../src/coverage/gate.ts';
-import { transform } from '../src/transform/index.ts';
+import { transform, ts_to_js } from '../src/transform/index.ts';
 import { private_dts } from '../src/dts.ts';
 import { load_prices } from '../src/prices.ts';
 import type { GrowthReport } from '../src/growth/index.ts';
@@ -531,4 +531,49 @@ test('the PR comment shows contracts that change, and any that fail', () => {
 		),
 		''
 	);
+});
+
+test('a contract on a method of a class TypeScript compiles (a parameter property) is measured', async () => {
+	const dir = temp_dir('heisenbench-contracts-');
+	write_files(dir, {
+		'package.json': '{ "type": "module" }',
+		// `private readonly base` in a constructor: type stripping cannot run it, the compiler does
+		'src/lib.ts': `export class Summer {
+	constructor(private readonly base: number) {}
+
+	/** @heisenbench linear in xs */
+	total(xs: number[]): number {
+		let s = this.base;
+		for (const x of xs) s += x;
+		return s;
+	}
+}
+`,
+		'lib.bench.ts': `import { bench } from ${JSON.stringify(BENCH)};
+import { Summer } from './src/lib.ts';
+const list = (n: number) => Array.from({ length: n }, (_, i) => i);
+bench('summer', ({ xs }) => new Summer(1).total(xs), {
+	setup: () => ({ xs: list(20) }),
+	scale: (_c, k) => ({ xs: list(20 * k) })
+});
+`
+	});
+	const out = join(dir, 'r.json');
+	await run(process.execPath, [CLI, 'growth', 'lib.bench.ts', '--root', dir, '--out', out], {
+		cwd: dir
+	});
+	const grown = JSON.parse(readFileSync(out, 'utf8')) as Report;
+	assert.deepEqual(
+		grown.growth!.cases[0].contracts?.map((c) => [c.id, c.class]),
+		[['src/lib.ts > Summer > total', 'linear']]
+	);
+	const r = await run(process.execPath, [CLI, 'contracts', 'src/lib.ts', '--reports', out], {
+		cwd: dir
+	});
+	assert.match(r.stdout, /^holds {4}src\/lib\.ts > Summer > total /m);
+});
+
+test('a module TypeScript compiles names its own file, not the base name its source map gives', () => {
+	const { map } = ts_to_js('enum E { A }\nexport const a = E.A;\n', '/x/src/e.ts');
+	assert.deepEqual((map as { sources: string[] }).sources, ['/x/src/e.ts']);
 });
