@@ -327,6 +327,11 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
   `export type`). Node's type stripping keeps that import and the module would not link ("does
   not provide an export named 'Rule'"); a named import that nothing in the module reads is
   dropped instead, as `tsc` does. The module it names still loads.
+- `import.meta.env`, as Vite defines it. `import.meta.env.DEV` reads `false`, as a literal that
+  costs what a constant costs, in your code and in dependencies, in every build Heisenbench runs.
+  The env is a production client build (`DEV: false`, `PROD: true`, `MODE: 'production'`,
+  `SSR: false`, `BASE_URL: '/'`); `"heisenbench": { "importMetaEnv": { "SSR": true } }` in
+  package.json changes it ([how-counting-works.md](docs/how-counting-works.md#importmetaenv)).
 - Anything else Node cannot load by itself (path aliases, modules only a bundler serves, globals
   the code expects) through a preload: `--import <file>` (below).
 - A bench file that throws, does not parse or defines no cases is reported on its own; the other

@@ -5,7 +5,14 @@ import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { serialize } from 'node:v8';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { compile_svelte, is_svelte_module, is_ts, ts_to_js } from '../transform/index.ts';
+import {
+	compile_svelte,
+	define_env,
+	is_svelte_module,
+	is_ts,
+	ts_to_js
+} from '../transform/index.ts';
+import { OWN_DIR } from '../own.ts';
 import { record_transform } from './record-transform.ts';
 import { SIZE_BANDS, load_records, replay, size_band } from './recorder.ts';
 import type { FunctionRecord, ReplayResult } from './recorder.ts';
@@ -178,16 +185,28 @@ export function register_record_hooks(
 				/\.(m?[jt]s|svelte)$/.test(file) &&
 				!file.endsWith('.d.ts');
 			if (!t && !own) {
-				if (!is_svelte_module(file) || file.includes('/node_modules/')) return next(url, context);
+				if (!is_svelte_module(file) || file.includes('/node_modules/')) {
+					const r = next(url, context);
+					if (r.source == null || r.format !== 'module' || file.startsWith(OWN_DIR)) return r;
+					const src =
+						typeof r.source === 'string'
+							? r.source
+							: Buffer.from(r.source as Uint8Array).toString('utf8');
+					const code = define_env(src, file).code;
+					return code === src ? r : { ...r, source: code, shortCircuit: true };
+				}
 				const out = compile_svelte(readFileSync(file, 'utf8'), file, 'server');
-				return { format: 'module', source: out.code, shortCircuit: true };
+				return { format: 'module', source: define_env(out.code, file).code, shortCircuit: true };
 			}
 			const source = readFileSync(file, 'utf8');
-			const code = is_svelte_module(file)
-				? compile_svelte(source, file, 'server').code
-				: is_ts(file)
-					? ts_to_js(source, file).code
-					: source;
+			const code = define_env(
+				is_svelte_module(file)
+					? compile_svelte(source, file, 'server').code
+					: is_ts(file)
+						? ts_to_js(source, file).code
+						: source,
+				file
+			).code;
 			const r = record_transform(code, {
 				filename: file,
 				id: t?.id ?? file,

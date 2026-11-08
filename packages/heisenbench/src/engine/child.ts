@@ -12,11 +12,13 @@ import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
 import {
 	compile_svelte,
+	define_env,
 	is_svelte_module,
 	is_ts,
 	module_id,
 	ts_to_js
 } from '../transform/index.ts';
+import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { private_bindings } from '../transform/instrument.ts';
 import { MARKER_PREFIX } from './log.ts';
 import { calibrate, decode, natives } from './natives.ts';
@@ -88,7 +90,7 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 	const plain = (url: string, source: string, format: string | null | undefined): string | null => {
 		const path = fileURLToPath(url);
 		let code: string;
-		let map: unknown = null;
+		let map: SourceMapInput | null = null;
 		if (is_svelte_module(path)) {
 			const out = compile_svelte(source, path, config.svelte);
 			code = out.code;
@@ -102,6 +104,7 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 		} else {
 			return null;
 		}
+		({ code, map } = define_env(code, path, map));
 		code = with_private_export(code, path);
 		modules.push({ url, path, id: module_id(path, config.root), code, map });
 		return code;
@@ -110,8 +113,16 @@ function register(config: ChildConfig, modules: ChildModule[]): void {
 	registerHooks({
 		load(url, context, next) {
 			if (!core.should_instrument(url)) {
-				if (!core.is_plain_typescript(url)) return next(url, context);
-				return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
+				if (core.is_plain_typescript(url))
+					return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
+				const r = next(url, context);
+				if (r.source == null || r.format !== 'module') return r;
+				const src =
+					typeof r.source === 'string'
+						? r.source
+						: Buffer.from(r.source as Uint8Array).toString('utf8');
+				const source = core.uncounted(url, src, r.format);
+				return source === null ? r : { ...r, source, shortCircuit: true };
 			}
 			if (core.needs_own_read(url)) {
 				return {

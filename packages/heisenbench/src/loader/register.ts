@@ -1,11 +1,9 @@
 import { registerHooks } from 'node:module';
 import { resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { LoaderCore } from './core.ts';
 import type { LoaderConfig } from './core.ts';
 import { register_source_resolve } from './resolve.ts';
 import { install_paths, real_url } from '../runtime/paths.ts';
-import { virtualize_meta } from '../transform/meta.ts';
 
 export type { LoaderConfig } from './core.ts';
 
@@ -40,12 +38,13 @@ export function register_heisenbench(config: LoaderConfig): LoaderCore {
 				if (core.is_plain_typescript(url))
 					return { format: 'module', source: core.plain_typescript(url), shortCircuit: true };
 				const r = next(url, context);
-				if (r.source == null || !core.meta_only(url, r.format)) return r;
+				if (r.source == null || r.format !== 'module') return r;
 				const src =
 					typeof r.source === 'string'
 						? r.source
 						: Buffer.from(r.source as Uint8Array).toString('utf8');
-				return { ...r, source: virtualize_meta(src, fileURLToPath(url)), shortCircuit: true };
+				const source = core.uncounted(url, src, r.format);
+				return source === null ? r : { ...r, source, shortCircuit: true };
 			}
 			if (core.needs_own_read(url)) {
 				const out = core.instrument(url, core.read(url), null);

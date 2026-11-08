@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseSync } from 'oxc-parser';
 import {
 	compile_svelte,
+	define_env,
 	inline_map,
 	is_svelte_module,
 	is_ts,
@@ -24,6 +25,9 @@ import { OWN_DIR } from '../own.ts';
  *   like the counting loader does;
  * - every module gets the same `export const __heisenbench = {...}` of private bindings, appended at the
  *   end, so bench files that import private functions run unchanged.
+ *
+ * And every module that reads `import.meta.env`, dependencies too, gets it defined as the counting
+ * build defines it (transform/env.ts).
  *
  * TS is left to Node's own type stripping, which keeps every offset: script positions V8 reports
  * (heap profiles, snapshots) are the positions the counting transform saw.
@@ -86,13 +90,29 @@ export function executed_code(
 	source: string,
 	svelte: 'server' | 'client' = 'server'
 ): { code: string; map: object | null } {
-	if (is_svelte_module(filename)) {
-		const out = compile_svelte(source, filename, svelte);
-		return { code: out.code, map: out.map as object };
-	}
-	if (!is_ts(filename)) return { code: source, map: null };
-	const out = ts_to_js(source, filename);
-	return { code: out.code, map: out.map as object | null };
+	const out = is_svelte_module(filename)
+		? compile_svelte(source, filename, svelte)
+		: is_ts(filename)
+			? ts_to_js(source, filename)
+			: { code: source, map: null };
+	if (filename.startsWith(HEISENBENCH_DIR))
+		return { code: out.code, map: out.map as object | null };
+	const defined = define_env(out.code, filename, out.map);
+	return { code: defined.code, map: defined.map as object | null };
+}
+
+/** A loaded ES module with `import.meta.env` defined (as executed_code does), or `r` as it is. */
+function with_env<R extends { format?: string | null; source?: unknown }>(r: R, path: string): R {
+	if (r.source == null || r.format !== 'module' || path.startsWith(HEISENBENCH_DIR)) return r;
+	const src =
+		typeof r.source === 'string' ? r.source : Buffer.from(r.source as Uint8Array).toString('utf8');
+	const { code, map } = define_env(src, path);
+	if (code === src) return r;
+	return {
+		...r,
+		source: map === null ? code : code + inline_map(map as object),
+		shortCircuit: true
+	};
 }
 
 let installed: PlainConfig | null = null;
@@ -128,7 +148,8 @@ export function register_plain(config: PlainConfig): void {
 			// offset); the rest is the same compile the counting build used.
 			const ts = is_own_typescript(path);
 			const plain = is_plain_source(path, cfg.roots);
-			if (!plain && !ts) return next(url, context);
+			// a dependency: `import.meta.env` defined, as a production build defines it
+			if (!plain && !ts) return with_env(next(url, context), path);
 			if (is_svelte_module(path)) {
 				const { code, map } = executed_code(path, readFileSync(path, 'utf8'), cfg.svelte);
 				const js = code + expose_suffix(code, path, 'js');
@@ -136,13 +157,17 @@ export function register_plain(config: PlainConfig): void {
 			}
 			if (ts) {
 				const src = readFileSync(path, 'utf8');
-				const { code, map, elided } = ts_to_js(src, path);
+				const js_of = ts_to_js(src, path);
+				const { code, map } = path.startsWith(HEISENBENCH_DIR)
+					? js_of
+					: define_env(js_of.code, path, js_of.map);
 				if (map !== null) {
 					const js = plain ? code + expose_suffix(code, path, 'js') : code;
 					return { format: 'module', source: js + inline_map(map as object), shortCircuit: true };
 				}
-				// a type imported without `type`, blanked out (elide.ts): the offsets are still the source's
-				if (elided > 0) {
+				// a type imported without `type`, blanked out (elide.ts), or `import.meta.env`
+				// defined in place: the offsets are still the source's
+				if (js_of.elided > 0 || code !== js_of.code) {
 					const js = plain ? code + expose_suffix(code, path, 'js') : code;
 					return { format: 'module', source: js, shortCircuit: true };
 				}
@@ -152,11 +177,18 @@ export function register_plain(config: PlainConfig): void {
 			const r = next(url, context);
 			if (r.source == null) return r;
 			if (r.format !== 'module') return r;
-			const src =
+			const { code: src, map } = define_env(
 				typeof r.source === 'string'
 					? r.source
-					: Buffer.from(r.source as Uint8Array).toString('utf8');
-			return { ...r, source: src + expose_suffix(src, path), shortCircuit: true };
+					: Buffer.from(r.source as Uint8Array).toString('utf8'),
+				path
+			);
+			const js = src + expose_suffix(src, path);
+			return {
+				...r,
+				source: map === null ? js : js + inline_map(map as object),
+				shortCircuit: true
+			};
 		}
 	});
 }
