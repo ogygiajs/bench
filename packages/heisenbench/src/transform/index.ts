@@ -176,6 +176,9 @@ export function ts_to_js(
 	});
 	const code = out.outputText.replace(/\n\/\/# sourceMappingURL=.*\s*$/, '\n');
 	const map = out.sourceMapText ? (JSON.parse(out.sourceMapText) as SourceMapInput) : null;
+	// TypeScript names the source by its base name (`sum.ts`); the module's file is where it is,
+	// which is what a module's own source is read from again (a contract's tag, its lines)
+	if (map) Object.assign(map, { sources: [filename], sourceRoot: '' });
 	return { ...elide_unused_imports(code, filename), map };
 }
 
