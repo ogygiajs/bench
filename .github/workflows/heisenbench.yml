@@ -27,7 +27,8 @@ name: heisenbench
 # the same-job no-overlap noise rule of packages/compare. Results land on
 # the `results` branch next to the app benchmark's, under heisenbench/: `heisenbench/pr/<number>.json` (the
 # newest run of that PR), `heisenbench/commit/<sha>.json` (the newest run of that commit),
-# `heisenbench/main/<sha>.json` and `heisenbench/main/latest.json` (main pushes and the nightly run). A main or
+# `heisenbench/main/<sha>.json` and `heisenbench/main/latest.json` (main pushes and the nightly run),
+# each a manifest of its shards in `heisenbench/shards/` (packages/compare/src/shards.ts). A main or
 # nightly run also stores real-app weights from the app benchmark's counted scenarios:
 # `heisenbench/main/app-weights.json` (the newest, what PRs rank their changes by) and
 # `heisenbench/main/app-weights/<sha>.json`.
@@ -450,8 +451,9 @@ jobs:
           name: heisenbench-results
           path: ${{ runner.temp }}/artifact
 
-      # Only result.json and section.md, checked against the plan, are taken from the artifact;
-      # the steps below read the checked copies.
+      # Only result.json (a manifest, with the shards it lists, each checked by size and sha256)
+      # and section.md, checked against the plan, are taken from the artifact; the steps below
+      # read the checked copies.
       - name: Check the counts
         if: needs.measure.result == 'success'
         env:
@@ -493,6 +495,13 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/results"
+          # result.json is a manifest of shards named by their content (packages/compare's
+          # shards.ts): every run's shards share heisenbench/shards/, so a shard that did not
+          # change is stored once, and two runs that write the same name write the same bytes.
+          if [ -d "$RUNNER_TEMP/checked/shards" ]; then
+            mkdir -p heisenbench/shards
+            cp "$RUNNER_TEMP/checked/shards/"*.json heisenbench/shards/
+          fi
           mkdir -p heisenbench/commit
           cp "$RESULT" "heisenbench/commit/$SHA.json"
           if [ "$KIND" = pr ]; then

@@ -6,7 +6,8 @@
 //   node packages/compare/src/validate-artifact.ts apps    ...same flags
 //   node packages/compare/src/validate-artifact.ts weights --dir <artifact> --out <dir> --sha <sha>
 //
-// The checked files are written to --out under fixed names (heisenbench: result.json, section.md; apps:
+// The checked files are written to --out under fixed names (heisenbench: result.json, its checked
+// shards in shards/ when it is a manifest, section.md; apps:
 // run.json, comment.md; weights: app-weights.json); later steps read only those. `apps` prints
 // `name=<file name on the results branch>` for $GITHUB_OUTPUT. Exit 1, with the reason, when the
 // artifact does not pass.
@@ -19,6 +20,7 @@ import {
 	validate_apps,
 	validate_weights
 } from './artifact.ts';
+import { SHARDS_DIR } from './shards.ts';
 
 const { values, positionals } = parseArgs({
 	allowPositionals: true,
@@ -47,6 +49,10 @@ try {
 	if (what === 'heisenbench') {
 		const a = validate_heisenbench(values.dir, plan);
 		writeFileSync(join(out, 'result.json'), a.result);
+		if (a.shards.size > 0) {
+			mkdirSync(join(out, SHARDS_DIR), { recursive: true });
+			for (const [name, bytes] of a.shards) writeFileSync(join(out, SHARDS_DIR, name), bytes);
+		}
 		writeFileSync(join(out, 'section.md'), a.section);
 	} else if (what === 'apps') {
 		const a = validate_apps(values.dir, plan);

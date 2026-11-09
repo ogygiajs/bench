@@ -4,6 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SHARDS_DIR, split_result } from '@bench/compare';
 import { REPORT_SCHEMA } from '@bench/heisenbench';
 import type { CaseReport } from '@bench/heisenbench';
 import { RESULT_SCHEMA, render_full_summary, trend_lines } from '../src/section.ts';
@@ -163,12 +164,19 @@ test('trend over main: the stored runs are read in first-parent order, this run 
 		// commit that has no run (it is skipped), written newest first so file order is no help
 		const files = join(dir, 'results');
 		mkdirSync(join(files, 'heisenbench', 'main'), { recursive: true });
+		mkdirSync(join(files, 'heisenbench', SHARDS_DIR), { recursive: true });
 		for (let i = 28; i >= 0; i--) {
 			if (i === 3) continue;
-			writeFileSync(
-				join(files, 'heisenbench', 'main', `${shas[i]}.json`),
-				JSON.stringify(result_of(pts[i]))
-			);
+			const path = join(files, 'heisenbench', 'main', `${shas[i]}.json`);
+			// the newer runs as manifests of shards, the older ones whole, as written before shards
+			if (i < 15) {
+				writeFileSync(path, JSON.stringify(result_of(pts[i])));
+				continue;
+			}
+			const split = split_result(result_of(pts[i]) as unknown as Record<string, unknown>);
+			writeFileSync(path, split.text);
+			for (const [name, text] of split.files)
+				writeFileSync(join(files, 'heisenbench', SHARDS_DIR, name), text);
 		}
 		writeFileSync(join(files, 'heisenbench', 'main', 'latest.json'), '{}');
 		const own = result_of(pts[29]);
