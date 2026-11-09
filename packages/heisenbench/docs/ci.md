@@ -439,7 +439,11 @@ files, under `heisenbench/`:
 Each run file is a `result.json` (`schema: "ogygia-heisenbench/1"`): `meta` (kind, PR, commits, the Heisenbench
 commit that counted, the Node version, the run URL, the layers measured), `selection`, the `head`
 and `base` reports, the `diff`, load errors, the time comparison and, for a PR, the weight ranking
-and the search. A weights file is `heisenbench-app-weights/1` plus `node` and `env`. The publish job only adds files
+and the search. The two reports leave out each function's blocks and the engine sites that are
+monomorphic and stable (`detail` says so; `suites/ogygia/src/stored.ts`): together they are more
+than half a report, nothing that reads a run file back uses them, and they would take a PR that
+reaches most bench files past the publish job's 50 MiB limit. The run's artifact keeps the whole
+reports (`head/`, `base/`). A weights file is `heisenbench-app-weights/1` plus `node` and `env`. The publish job only adds files
 under `heisenbench/`, and retries its push with a rebase when another run pushed first.
 
 ## Real traffic

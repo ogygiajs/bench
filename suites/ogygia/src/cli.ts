@@ -40,7 +40,8 @@
  *
  *   section.md    the `heisenbench` section of the PR comment (a full run: a summary of every case)
  *   result.json   meta, selection, both reports, the diff and the time comparison (the results
- *                 branch keeps this)
+ *                 branch keeps this); the reports without function blocks and monomorphic engine
+ *                 sites (stored.ts)
  *   head/, base/  the per-file reports and Heisenbench's log; time/ the time comparison (the artifact)
  */
 import { execFileSync } from 'node:child_process';
@@ -77,6 +78,7 @@ import {
 	run_searches
 } from './search.ts';
 import { select_all, select_changed } from './select.ts';
+import { stored_result } from './stored.ts';
 import { BLAME_BUDGET_MS, run_blame } from './blame.ts';
 import { rank_by_weights, ranking_weights } from './weights.ts';
 import { run_recorded, summarize } from './recorded.ts';
@@ -417,7 +419,7 @@ async function main(): Promise<void> {
 
 	const md = mb ? render_pr_section(result) : render_full_summary(result);
 	writeFileSync(join(out, 'section.md'), md);
-	writeFileSync(join(out, 'result.json'), JSON.stringify(result) + '\n');
+	writeFileSync(join(out, 'result.json'), JSON.stringify(stored_result(result)) + '\n');
 	console.log(md);
 }
 
