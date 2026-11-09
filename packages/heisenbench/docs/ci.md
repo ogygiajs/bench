@@ -169,10 +169,14 @@ is the count cache, and only on a main or nightly run, which runs main's code
 
 The `publish` job holds the write token and `BENCH_TOKEN`. It checks out only this repository's
 `packages/compare` (no install) and runs nothing from the measure job or from ogygia. It reads the
-artifact as data with `packages/compare/src/validate-artifact.ts`: only `result.json` and
-`section.md`, each a regular file under its size limit, the JSON parsed, its kind, commit, base
-and PR equal to what the `plan` job decided, and no section markers in the markdown. Paths come
-from the plan, never from the artifact. When the measure job failed, or the artifact does not
+artifact as data with `packages/compare/src/validate-artifact.ts`: only `result.json` (a
+manifest, see [the results branch](#the-results-branch)), the shards it lists and `section.md`,
+each a regular file under its size limit, the JSON parsed, its kind, commit, base and PR equal to
+what the `plan` job decided, and no section markers in the markdown. A shard is read only by the
+name the manifest gives it, which is its sha256 (no paths), at most at the size the manifest
+gives it, and must hash to its name; `shards/` may hold nothing the manifest does not list; a
+manifest lists at most 1,024 shards, each at most 40 MiB, adding up to at most 200 MiB. Paths
+come from the plan, never from the artifact. When the measure job failed, or the artifact does not
 pass, the publish job still rewrites the PR's section with a line saying so.
 
 The app benchmark's `bench.yml` has the same three jobs.
@@ -430,6 +434,7 @@ files, under `heisenbench/`:
 | `heisenbench/commit/<sha>.json`                       | The newest run of that ogygia commit, PR or main.          |
 | `heisenbench/main/<sha>.json`                         | A full run of a main commit.                               |
 | `heisenbench/main/latest.json`                        | The newest full run.                                       |
+| `heisenbench/shards/<sha256>.json`                    | The shards every run file above lists, shared by them all. |
 | `heisenbench/main/app-weights.json`                   | Real-app weights of the newest main run: what PRs rank by. |
 | `heisenbench/main/app-weights/<sha>.json`             | Real-app weights of that main commit.                      |
 | `heisenbench/main/real-weights.json`                  | Weights of real traffic, uploaded by the owner (optional). |
@@ -441,9 +446,23 @@ commit that counted, the Node version, the run URL, the layers measured), `selec
 and `base` reports, the `diff`, load errors, the time comparison and, for a PR, the weight ranking
 and the search. The two reports leave out each function's blocks and the engine sites that are
 monomorphic and stable (`detail` says so; `suites/ogygia/src/stored.ts`): together they are more
-than half a report, nothing that reads a run file back uses them, and they would take a PR that
-reaches most bench files past the publish job's 50 MiB limit. The run's artifact keeps the whole
-reports (`head/`, `base/`). A weights file is `heisenbench-app-weights/1` plus `node` and `env`. The publish job only adds files
+than half a report and nothing that reads a run file back uses them. The run's artifact keeps the
+whole reports (`head/`, `base/`).
+
+A run file is written in shards (`packages/compare/src/shards.ts`). The file itself is a small
+manifest: `format: "heisenbench-shards/1"`, copies of `schema` and `meta`, and the list of shards,
+each with its `name` (`<sha256>.json`), `sha256`, `bytes`, what it holds (`of`) and its bench
+file (`group`) and `part`. The first shard is the body: the result with the reports' `cases` and
+`engine.cases` empty. The others hold those cases, one bench file's run of them each, in order
+(`head.cases`, `head.engine`, `base.cases`, `base.engine`); a bench file over 40 MiB is cut into
+parts. A shard is named by its content, so a bench file whose counts did not change is the same
+shard on both sides of a PR and from one run to the next, and every run file shares
+`heisenbench/shards/`: an unchanged shard is stored once. Every reader goes through `load_result`
+of the same file: the publish check, the trend over main (`trend.ts`), the history backfill and
+`heisenbench history --reports` (which skips `shards/` and reads each manifest with its shards).
+A run file without `format` is one from before shards and reads as it always did.
+
+A weights file is `heisenbench-app-weights/1` plus `node` and `env`. The publish job only adds files
 under `heisenbench/`, and retries its push with a rebase when another run pushed first.
 
 ## Real traffic

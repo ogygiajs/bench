@@ -9,8 +9,10 @@
  * directory as files under `heisenbench/main/`.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { SHARDS_DIR, SHARD_NAME, load_result, load_result_file } from '@bench/compare';
+import type { ShardReader } from '@bench/compare';
 import { detect_trend } from '@bench/heisenbench/trend';
 import type { TrendCreep, TrendOptions } from '@bench/heisenbench/trend';
 
@@ -112,10 +114,19 @@ export function stored_runs(history: string): Set<string> {
 /** A full run of main the history holds, as its result.json says it. */
 export function read_result(history: string, sha: string): ResultLike {
 	const path = `heisenbench/main/${sha}.json`;
-	const text = existsSync(join(history, '.git'))
-		? git(history, ['show', `HEAD:${path}`])
-		: readFileSync(join(history, path), 'utf8');
-	return JSON.parse(text) as ResultLike;
+	if (!existsSync(join(history, '.git')))
+		return load_result_file(join(history, path)) as unknown as ResultLike;
+	// a blobless clone: only the blobs read here are fetched
+	const read: ShardReader = (name, max) => {
+		if (!SHARD_NAME.test(name)) throw new Error(`not a shard name: ${name}`);
+		const bytes = execFileSync('git', ['show', `HEAD:heisenbench/${SHARDS_DIR}/${name}`], {
+			cwd: history,
+			maxBuffer: max + 1,
+			stdio: ['ignore', 'pipe', 'ignore']
+		});
+		return bytes;
+	};
+	return load_result(git(history, ['show', `HEAD:${path}`]), read) as unknown as ResultLike;
 }
 
 /** Each case's series over the runs (oldest first) through the model. Pure. */

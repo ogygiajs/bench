@@ -2,14 +2,26 @@
 // (installs, builds, bench files), so everything it uploads is untrusted data: only files with
 // names fixed here are read, each must be a regular file under its size limit, JSON must parse
 // and say what the plan said (kind, commit, PR), and nothing in it is ever run or used as a path.
-import { lstatSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+	SHARDS_DIR,
+	SHARD_LIMITS,
+	SHARD_NAME,
+	ShardError,
+	check_manifest,
+	is_manifest,
+	join_shards
+} from './shards.ts';
 
 const MiB = 1 << 20;
 
 /** The largest file of each kind the publish job takes. */
 export const LIMITS = {
-	/** A Heisenbench result.json: two merged reports and the diff. */
+	/**
+	 * A Heisenbench result.json from before shards: two merged reports and the diff. A manifest is
+	 * held to shards.ts's SHARD_LIMITS (its own size, each shard, the count and the total).
+	 */
 	result: 50 * MiB,
 	/** The app benchmark's run.json. */
 	run: 20 * MiB,
@@ -30,11 +42,16 @@ const fail = (msg: string): never => {
 };
 
 /**
- * The text of `name` in `dir`: a plain file name (no directories), a regular file (not a link),
- * at most `max` bytes, valid UTF-8. Null when it is not there and `optional`.
+ * The bytes of `name` in `dir`: a fixed name or a shard's sha256 name (no directories), a regular
+ * file (not a link), at most `max` bytes. Null when it is not there and `optional`.
  */
-export function read_file(dir: string, name: string, max: number, optional = false): string | null {
-	if (!/^[a-z][a-z0-9-]*\.(json|md)$/.test(name))
+export function read_bytes(
+	dir: string,
+	name: string,
+	max: number,
+	optional = false
+): Uint8Array | null {
+	if (!/^[a-z][a-z0-9-]*\.(json|md)$/.test(name) && !SHARD_NAME.test(name))
 		fail(`not a file name the artifact may hold: ${name}`);
 	const path = join(dir, name);
 	let st;
@@ -47,6 +64,16 @@ export function read_file(dir: string, name: string, max: number, optional = fal
 	if (st.size > max) fail(`${name} is ${st.size} bytes, over the ${max} byte limit`);
 	const bytes = readFileSync(path);
 	if (bytes.length > max) fail(`${name} grew past the ${max} byte limit while it was read`);
+	return bytes;
+}
+
+/**
+ * The text of `name` in `dir`: read_bytes, and valid UTF-8. Null when it is not there and
+ * `optional`.
+ */
+export function read_file(dir: string, name: string, max: number, optional = false): string | null {
+	const bytes = read_bytes(dir, name, max, optional);
+	if (bytes === null) return null;
 	try {
 		return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
 	} catch {
@@ -98,16 +125,56 @@ function plan_pr(plan: Plan): number | null {
 }
 
 export interface HeisenbenchArtifact {
-	/** result.json, as uploaded (it parsed and matched the plan). */
+	/** result.json, as uploaded (it parsed and matched the plan): the manifest, or a whole result. */
 	result: string;
+	/** The manifest's shards by name, each checked against it (empty for a whole result). */
+	shards: Map<string, Uint8Array>;
 	section: string;
 }
 
-/** suites/ogygia's output: result.json (schema ogygia-heisenbench/1) and section.md. */
+/**
+ * The result a manifest describes, from the artifact's shards/: only the manifest's shards, each
+ * read through read_bytes at most at the size the manifest gives it, and nothing else there.
+ */
+function sharded(dir: string, manifest: Record<string, unknown>, text: string) {
+	const shards_dir = join(dir, SHARDS_DIR);
+	try {
+		if (Buffer.byteLength(text) > SHARD_LIMITS.manifest)
+			fail(`result.json is a manifest over the ${SHARD_LIMITS.manifest} byte limit`);
+		const m = check_manifest(manifest);
+		let st;
+		try {
+			st = lstatSync(shards_dir);
+		} catch {
+			return fail(`${SHARDS_DIR}/ is missing`);
+		}
+		if (!st.isDirectory()) fail(`${SHARDS_DIR} is not a directory`);
+		const listed = new Set(m.shards.map((e) => e.name));
+		for (const name of readdirSync(shards_dir))
+			if (!listed.has(name)) fail(`${SHARDS_DIR}/${name} is not in the manifest`);
+		return join_shards(m, (name, max) => read_bytes(shards_dir, name, max)!);
+	} catch (e) {
+		if (e instanceof ShardError) fail(`result.json: ${e.message}`);
+		throw e;
+	}
+}
+
+/**
+ * suites/ogygia's output: result.json (schema ogygia-heisenbench/1), as a manifest with its
+ * shards/ (shards.ts) or as one file from before shards, and section.md.
+ */
 export function validate_heisenbench(dir: string, plan: Plan): HeisenbenchArtifact {
 	if (!SHA.test(plan.sha)) fail(`bad sha in the plan: ${plan.sha}`);
 	const result = read_file(dir, 'result.json', LIMITS.result)!;
-	const r = parse(result, 'result.json');
+	let r = parse(result, 'result.json');
+	let shards = new Map<string, Uint8Array>();
+	if (is_manifest(r)) {
+		const joined = sharded(dir, r, result);
+		r = joined.result;
+		shards = joined.files;
+	} else if (existsSync(join(dir, SHARDS_DIR))) {
+		fail(`${SHARDS_DIR}/ is there, but result.json is not a manifest`);
+	}
 	expect_equal(r.schema, 'ogygia-heisenbench/1', 'result.json schema');
 	const meta = object_at(r, 'meta', 'result.json');
 	expect_equal(meta.kind, plan.kind, 'meta.kind');
@@ -115,7 +182,7 @@ export function validate_heisenbench(dir: string, plan: Plan): HeisenbenchArtifa
 	expect_equal(meta.base, plan.base_sha || null, 'meta.base');
 	expect_equal(meta.pr, plan_pr(plan), 'meta.pr');
 	const section = section_text(read_file(dir, 'section.md', LIMITS.markdown)!, 'section.md');
-	return { result, section };
+	return { result, shards, section };
 }
 
 export interface AppsArtifact {

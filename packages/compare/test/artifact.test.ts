@@ -31,6 +31,7 @@ test('a Heisenbench artifact that matches the plan passes, as uploaded', () => {
 	const dir = dir_with({ 'result.json': result, 'section.md': '#### Heisenbench\n\nok' });
 	assert.deepEqual(validate_heisenbench(dir, pr_plan), {
 		result,
+		shards: new Map(),
 		section: '#### Heisenbench\n\nok'
 	});
 });

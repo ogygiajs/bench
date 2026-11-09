@@ -21,5 +21,29 @@ export {
 	upsertSection
 } from './sections.ts';
 export type { FitOptions, Section } from './sections.ts';
+export {
+	SHARDS_DIR,
+	SHARDS_FORMAT,
+	SHARD_LIMITS,
+	SHARD_NAME,
+	ShardError,
+	check_manifest,
+	dir_reader,
+	is_manifest,
+	join_shards,
+	load_result,
+	load_result_file,
+	shards_dir_of,
+	split_result
+} from './shards.ts';
+export type {
+	Joined,
+	ShardEntry,
+	ShardLimits,
+	ShardManifest,
+	ShardOf,
+	ShardReader,
+	Split
+} from './shards.ts';
 export { ACTIONS_BOT, upsertComment } from './github.ts';
 export type { UpsertOptions, UpsertResult } from './github.ts';

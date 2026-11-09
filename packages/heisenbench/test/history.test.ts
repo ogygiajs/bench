@@ -1,9 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { SHARDS_DIR, split_result } from '@bench/compare';
+import { read_runs } from '../src/history/cli.ts';
 import { align_lines, likeness } from '../src/history/align.ts';
 import { parse_blame } from '../src/history/git.ts';
 import { build_history, run_of } from '../src/history/index.ts';
@@ -363,4 +365,39 @@ test('history: a counter change is marked, a changed input is left out, a gap na
 		runs: [run(c1, 100, 'A'), run(c2, 150, 'B')]
 	});
 	assert.equal(marked.lines[1].last?.counter_changed, true);
+});
+
+test('history --reports reads the results branch: whole run files and manifests of shards', () => {
+	const root = temp_dir('heisenbench-history-results-');
+	const [a, b, c] = ['1', '2', '3'].map((d) => d.repeat(40));
+	const run_file = (sha: string, steps: number) => ({
+		schema: 'ogygia-heisenbench/1',
+		meta: { sha, heisenbench: 'H' },
+		head: report(sha, steps),
+		base: null
+	});
+	mkdirSync(join(root, 'main'), { recursive: true });
+	mkdirSync(join(root, SHARDS_DIR));
+	// a run file from before shards, and one written as a manifest with its shards
+	writeFileSync(join(root, 'main', `${a}.json`), JSON.stringify(run_file(a, 100)));
+	const split = split_result(run_file(b, 150));
+	writeFileSync(join(root, 'main', `${b}.json`), split.text);
+	for (const [name, text] of split.files) writeFileSync(join(root, SHARDS_DIR, name), text);
+	// a commit off the line is never read
+	writeFileSync(join(root, 'main', `${c}.json`), JSON.stringify(run_file(c, 200)));
+	const runs = read_runs([root], new Set([a, b]));
+	assert.deepEqual(
+		runs.map((r) => [r.sha, r.report.cases[0].functions[0].lines[1].steps]),
+		[
+			[a, 100],
+			[b, 150]
+		]
+	);
+	// a manifest whose shard was changed is refused when it is named
+	const [name] = [...split.files.keys()].filter((n) => n !== split.manifest.shards[0].name);
+	writeFileSync(join(root, SHARDS_DIR, name), split.files.get(name)!.replace('150', '151'));
+	assert.throws(
+		() => read_runs([join(root, 'main', `${b}.json`)], new Set([b])),
+		/does not hash to its name/
+	);
 });

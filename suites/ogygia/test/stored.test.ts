@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { SHARDS_DIR, SHARDS_FORMAT, load_result_file } from '@bench/compare';
 import type { EngineSite, Report } from '@bench/heisenbench';
-import { STORED_DETAIL, stored_report, stored_result } from '../src/stored.ts';
+import { STORED_DETAIL, stored_report, stored_result, write_stored } from '../src/stored.ts';
 import type { Result } from '../src/section.ts';
 
 const site = (id: string, state: string, unstable?: string) =>
@@ -76,4 +80,20 @@ test('result.json trims both reports and says what it left out', () => {
 	assert.equal(s.base, null);
 	assert.deepEqual(s.detail, STORED_DETAIL);
 	assert.equal(s.schema, 'ogygia-heisenbench/1');
+});
+
+test('result.json is written as a manifest of shards that loads back as the stored result', () => {
+	const out = mkdtempSync(join(tmpdir(), 'stored-'));
+	const r = {
+		schema: 'ogygia-heisenbench/1',
+		meta: { sha: 'a'.repeat(40) },
+		head: report(),
+		base: report()
+	} as unknown as Result;
+	const split = write_stored(out, r);
+	assert.equal(split.manifest.format, SHARDS_FORMAT);
+	assert.deepEqual(readdirSync(join(out, SHARDS_DIR)).sort(), [...split.files.keys()].sort());
+	assert.deepEqual(load_result_file(join(out, 'result.json')), stored_result(r));
+	// the two sides counted the same: their shards are the same files
+	assert.equal(split.files.size, 3);
 });

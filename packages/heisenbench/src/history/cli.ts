@@ -1,5 +1,6 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+import { SHARDS_DIR, SHARD_NAME, ShardError, load_result_file } from '@bench/compare';
 import { UsageError } from '../usage.ts';
 import { Git } from './git.ts';
 import { build_history, run_of } from './index.ts';
@@ -18,11 +19,16 @@ export function read_runs(paths: string[], on_line: ReadonlySet<string>): Histor
 	const read = (file: string, given: boolean): void => {
 		const m = SHA_FILE.exec(basename(file));
 		if (!given && (!file.endsWith('.json') || (m && !on_line.has(m[1])))) return;
+		if (!given && SHARD_NAME.test(basename(file))) return;
 		let json: unknown;
 		try {
-			json = JSON.parse(readFileSync(file, 'utf8'));
-		} catch {
-			if (given) throw new UsageError(`${file} is not JSON`);
+			// a run file in shards (the results branch's manifests) is joined with its shards
+			json = load_result_file(file);
+		} catch (e) {
+			if (given)
+				throw new UsageError(
+					e instanceof ShardError ? `${file}: ${e.message}` : `${file} is not JSON`
+				);
 			return;
 		}
 		const r = run_of(json, file);
@@ -32,8 +38,10 @@ export function read_runs(paths: string[], on_line: ReadonlySet<string>): Histor
 	const walk = (dir: string): void => {
 		for (const name of readdirSync(dir).sort()) {
 			const p = join(dir, name);
-			if (statSync(p).isDirectory()) walk(p);
-			else read(p, false);
+			if (statSync(p).isDirectory()) {
+				// shards are read through the manifests that list them
+				if (name !== SHARDS_DIR) walk(p);
+			} else read(p, false);
 		}
 	};
 	for (const p of paths) {
