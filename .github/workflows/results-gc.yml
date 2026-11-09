@@ -1,0 +1,110 @@
+name: results-gc
+
+# Garbage collection of the `results` branch: Heisenbench's run files under heisenbench/ that the
+# retention policy drops (suites/ogygia/src/retention.ts: a closed PR's runs 30 days after it
+# closed, main's runs after 180 days but the newest of each month), then every shard no kept run
+# file lists (`heisenbench gc`, packages/compare/src/gc.ts). Nothing is deleted when any run file
+# or shard cannot be read.
+#
+# Deleting files does not shrink the branch's history, so the kept tree is then written as ONE new
+# orphan commit and force-pushed to `results`, and to no other ref: the push names the branch in
+# a fixed string and refuses anything else. It is leased on the commit this job read
+# (--force-with-lease), so a run published meanwhile is never lost: the lease fails and the job
+# starts again from the branch as it is then. The publishing jobs (bench.yml, heisenbench.yml)
+# never assume the branch's history: they clone its newest commit, and a rejected push starts
+# again from the branch as it is.
+#
+#   schedule            weekly
+#   workflow_dispatch   by hand; `dry_run` (the default) says what would go and pushes nothing
+
+on:
+  schedule:
+    - cron: '23 4 * * 0'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'only say what would be deleted and freed; push nothing'
+        type: boolean
+        default: true
+
+# One gc at a time. The publishing jobs are not in this group: GitHub keeps one pending job per
+# group and cancels the one before, which would drop queued results; the lease above is what keeps
+# a gc and a publish from losing each other's work.
+concurrency:
+  group: results-gc
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  NODE_OPTIONS: --experimental-strip-types
+
+jobs:
+  gc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      # This repository's own code (main), nothing from a PR or from ogygia runs here.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --filter 'heisenbench...' --filter '@bench/ogygia...' --config.confirmModulesPurge=false
+
+      # The commit dates of main's runs: ogygia's commits only, no trees or files.
+      - name: Fetch ogygia's commits
+        run: git clone --quiet --filter=tree:0 --no-checkout https://github.com/ogygiajs/ogygia.git "$RUNNER_TEMP/ogygia"
+
+      - name: Collect and squash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
+        run: |
+          set -euo pipefail
+          # The one ref this job may force-push.
+          readonly BRANCH=results
+          readonly PUSH_REF="refs/heads/$BRANCH"
+          if [ "$PUSH_REF" != "refs/heads/results" ]; then
+            echo "::error::refusing to force-push $PUSH_REF: only refs/heads/results"; exit 1
+          fi
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for attempt in 1 2 3; do
+            lease="$(git ls-remote "$url" "$PUSH_REF" | cut -f1)"
+            if [ -z "$lease" ]; then echo "no results branch: nothing to collect"; exit 0; fi
+            dir="$RUNNER_TEMP/results"
+            rm -rf "$dir"
+            git clone --quiet --depth 1 --branch "$BRANCH" "$url" "$dir"
+            if [ "$(git -C "$dir" rev-parse HEAD)" != "$lease" ]; then
+              echo "::notice::the branch moved while it was cloned; starting again"; continue
+            fi
+            if [ -d "$dir/heisenbench" ]; then
+              node suites/ogygia/src/retention.ts --root "$dir/heisenbench" --ogygia "$RUNNER_TEMP/ogygia" \
+                --out "$RUNNER_TEMP/drops.json"
+              node packages/heisenbench/src/cli.ts gc --root "$dir/heisenbench" --drop "$RUNNER_TEMP/drops.json" \
+                ${DRY_RUN:+--dry-run} --json "$RUNNER_TEMP/gc.json" | tee -a "$GITHUB_STEP_SUMMARY"
+            fi
+            git -C "$dir" add -A
+            tree="$(git -C "$dir" write-tree)"
+            commit="$(GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+              GIT_COMMITTER_NAME='github-actions[bot]' GIT_COMMITTER_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+              git -C "$dir" commit-tree "$tree" -m "results: the kept tree after gc (${lease:0:7})")"
+            echo "the kept tree of ${lease:0:7} as one commit: ${commit:0:7}" | tee -a "$GITHUB_STEP_SUMMARY"
+            if [ -n "$DRY_RUN" ]; then echo "dry run: nothing pushed" | tee -a "$GITHUB_STEP_SUMMARY"; exit 0; fi
+            if git -C "$dir" push --quiet --force-with-lease="$PUSH_REF:$lease" origin "$commit:$PUSH_REF"; then
+              echo "pushed ${commit:0:7} to $BRANCH" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::notice::$BRANCH moved since ${lease:0:7} (a run was published); starting again"
+            sleep $((attempt * 20))
+          done
+          echo "::error::the results branch kept moving; gc tries again next week"
+          exit 1

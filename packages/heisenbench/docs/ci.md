@@ -463,7 +463,42 @@ of the same file: the publish check, the trend over main (`trend.ts`), the histo
 A run file without `format` is one from before shards and reads as it always did.
 
 A weights file is `heisenbench-app-weights/1` plus `node` and `env`. The publish job only adds files
-under `heisenbench/`, and retries its push with a rebase when another run pushed first.
+under `heisenbench/`. It clones only the branch's newest commit and never assumes its history:
+when its push is rejected (another run pushed first, or the branch was rewritten, below), it
+fetches the branch as it is, writes its files again on top and pushes again.
+
+### Garbage collection
+
+Every week `results-gc.yml` collects the branch:
+
+1. **Retention** (`suites/ogygia/src/retention.ts`, `RETENTION`: the one place the numbers are).
+   A PR's runs (`meta.kind` `pr`: `pr/<n>.json`, `commit/<sha>.json`) are kept while the PR is
+   open and for 30 days after it closed or merged, as GitHub's API says; a PR whose state cannot
+   be read is kept. Main's runs (`meta.kind` `main`) are kept 180 days after their commit's date
+   in ogygia; older, only the newest commit of each month is kept, for good (run files carry no
+   release version, so the month stands in for it). `main/latest.json`, the weights files and the
+   registry are always kept. A run file from before shards is a run file like a manifest.
+2. **Sweep** (`heisenbench gc`, `packages/compare/src/gc.ts`). Every run file under `heisenbench/`
+   is read, and every shard a manifest lists is checked (there, its size, its sha256). When any
+   file cannot be read, a manifest does not check out, a listed shard is missing or changed, or
+   `shards/` holds a file not named by a sha256, nothing is deleted: the run stops and lists them.
+   Otherwise the run files the policy drops are deleted first, then every shard no kept run file
+   lists. A shard a kept run file lists is never deleted. `--dry-run` only says what would go
+   and the bytes it frees.
+3. **Squash.** Deleting files does not shrink history, so the kept tree is written as one new
+   orphan commit and force-pushed to `results`: that ref only (the job refuses any other), leased
+   on the commit it read (`--force-with-lease`). A run published meanwhile makes the lease fail,
+   and the job starts again from the branch as it is then (three tries, then next week).
+
+The publishing jobs are not in the gc's concurrency group on purpose: GitHub keeps one pending
+job per group and cancels the one before it, which would drop queued results. The lease and the
+publishing jobs' fetch-and-retry are what keep the two from losing each other's work. Run it by
+hand with `workflow_dispatch` (`dry_run` is on by default).
+
+Nothing reads the branch's history: the trend over main (`trend.ts`) and the history backfill
+read the tree of its newest commit (`git ls-tree HEAD`, `git show HEAD:<path>`),
+`heisenbench history --reports` reads files, and the publishing jobs clone only the newest
+commit. The ordering they need is ogygia's history, never the results branch's.
 
 ## Real traffic
 

@@ -387,8 +387,9 @@ jobs:
           set -euo pipefail
           url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           dir="$RUNNER_TEMP/results"
+          # Only the newest commit: results-gc.yml squashes the branch, nothing assumes its history.
           if git ls-remote --exit-code --heads "$url" results >/dev/null; then
-            git clone --quiet --branch results "$url" "$dir"
+            git clone --quiet --depth 1 --branch results "$url" "$dir"
           else
             git init --quiet -b results "$dir"
             git -C "$dir" remote add origin "$url"
@@ -396,28 +397,34 @@ jobs:
           git -C "$dir" config user.name 'github-actions[bot]'
           git -C "$dir" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           cd "$dir"
-          mkdir -p heisenbench/main/app-weights
-          cp "$WEIGHTS" "heisenbench/main/app-weights/$SHA.json"
-          old=''
-          if [ -f heisenbench/main/app-weights.json ]; then
-            old="$(node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.source?.sha; process.stdout.write(/^[0-9a-f]{40}$/.test(s) ? s : "")' heisenbench/main/app-weights.json || true)"
-          fi
-          order=''
-          if [ -n "$old" ] && [ "$old" != "$SHA" ]; then
-            order="$(gh api "repos/$UPSTREAM/compare/$old...$SHA" --jq .status 2>/dev/null || true)"
-          fi
-          if [ "$order" = behind ]; then
-            echo "::notice::app-weights.json keeps ${old:0:7}: ${SHA:0:7} is an older commit"
-          else
-            cp "$WEIGHTS" heisenbench/main/app-weights.json
-          fi
-          git add -A heisenbench
-          git diff --cached --quiet && exit 0
-          git commit --quiet -m "heisenbench: app weights ${SHA:0:7}"
+          # This run's files on top of whatever the branch holds now.
+          apply() {
+            mkdir -p heisenbench/main/app-weights
+            cp "$WEIGHTS" "heisenbench/main/app-weights/$SHA.json"
+            old=''
+            if [ -f heisenbench/main/app-weights.json ]; then
+              old="$(node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.source?.sha; process.stdout.write(/^[0-9a-f]{40}$/.test(s) ? s : "")' heisenbench/main/app-weights.json || true)"
+            fi
+            order=''
+            if [ -n "$old" ] && [ "$old" != "$SHA" ]; then
+              order="$(gh api "repos/$UPSTREAM/compare/$old...$SHA" --jq .status 2>/dev/null || true)"
+            fi
+            if [ "$order" = behind ]; then
+              echo "::notice::app-weights.json keeps ${old:0:7}: ${SHA:0:7} is an older commit"
+            else
+              cp "$WEIGHTS" heisenbench/main/app-weights.json
+            fi
+          }
+          # A rejected push (another run, or results-gc.yml rewrote the branch) starts again from
+          # the branch as it is now: no rebase, no fast-forward assumed.
           for i in 1 2 3 4 5; do
+            apply
+            git add -A heisenbench
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "heisenbench: app weights ${SHA:0:7}"
             git push --quiet origin HEAD:results && exit 0
             sleep $((i * 3))
-            git pull --quiet --rebase -X theirs origin results || true
+            git fetch --quiet --depth 1 origin results && git reset --quiet --hard FETCH_HEAD || true
           done
           echo "::error::could not push to the results branch"
           exit 1
@@ -472,8 +479,9 @@ jobs:
         run: |
           set -euo pipefail
           url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # Only the newest commit: results-gc.yml squashes the branch, nothing assumes its history.
           if git ls-remote --exit-code --heads "$url" results >/dev/null; then
-            git clone --quiet --branch results "$url" "$RUNNER_TEMP/results"
+            git clone --quiet --depth 1 --branch results "$url" "$RUNNER_TEMP/results"
           else
             git init --quiet -b results "$RUNNER_TEMP/results"
             git -C "$RUNNER_TEMP/results" remote add origin "$url"
@@ -495,46 +503,51 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/results"
-          # result.json is a manifest of shards named by their content (packages/compare's
-          # shards.ts): every run's shards share heisenbench/shards/, so a shard that did not
-          # change is stored once, and two runs that write the same name write the same bytes.
-          if [ -d "$RUNNER_TEMP/checked/shards" ]; then
-            mkdir -p heisenbench/shards
-            cp "$RUNNER_TEMP/checked/shards/"*.json heisenbench/shards/
-          fi
-          mkdir -p heisenbench/commit
-          cp "$RESULT" "heisenbench/commit/$SHA.json"
-          if [ "$KIND" = pr ]; then
-            mkdir -p heisenbench/pr
-            cp "$RESULT" "heisenbench/pr/$PR.json"
-            msg="heisenbench: pr #$PR @ ${SHA:0:7}"
-          else
-            mkdir -p heisenbench/main
-            cp "$RESULT" "heisenbench/main/$SHA.json"
-            old=''
-            if [ -f heisenbench/main/latest.json ]; then
-              old="$(node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.meta?.sha; process.stdout.write(/^[0-9a-f]{40}$/.test(s) ? s : "")' heisenbench/main/latest.json || true)"
+          if [ "$KIND" = pr ]; then msg="heisenbench: pr #$PR @ ${SHA:0:7}"; else msg="heisenbench: main ${SHA:0:7}"; fi
+          # This run's files on top of whatever the branch holds now.
+          apply() {
+            # result.json is a manifest of shards named by their content (packages/compare's
+            # shards.ts): every run's shards share heisenbench/shards/, so a shard that did not
+            # change is stored once, and two runs that write the same name write the same bytes.
+            if [ -d "$RUNNER_TEMP/checked/shards" ]; then
+              mkdir -p heisenbench/shards
+              cp "$RUNNER_TEMP/checked/shards/"*.json heisenbench/shards/
             fi
-            order=''
-            if [ -n "$old" ] && [ "$old" != "$SHA" ]; then
-              order="$(gh api "repos/$UPSTREAM/compare/$old...$SHA" --jq .status 2>/dev/null || true)"
-            fi
-            if [ "$order" = behind ]; then
-              echo "::notice::latest.json keeps ${old:0:7}: ${SHA:0:7} is an older commit"
+            mkdir -p heisenbench/commit
+            cp "$RESULT" "heisenbench/commit/$SHA.json"
+            if [ "$KIND" = pr ]; then
+              mkdir -p heisenbench/pr
+              cp "$RESULT" "heisenbench/pr/$PR.json"
             else
-              cp "$RESULT" heisenbench/main/latest.json
+              mkdir -p heisenbench/main
+              cp "$RESULT" "heisenbench/main/$SHA.json"
+              old=''
+              if [ -f heisenbench/main/latest.json ]; then
+                old="$(node -e 'const s = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))?.meta?.sha; process.stdout.write(/^[0-9a-f]{40}$/.test(s) ? s : "")' heisenbench/main/latest.json || true)"
+              fi
+              order=''
+              if [ -n "$old" ] && [ "$old" != "$SHA" ]; then
+                order="$(gh api "repos/$UPSTREAM/compare/$old...$SHA" --jq .status 2>/dev/null || true)"
+              fi
+              if [ "$order" = behind ]; then
+                echo "::notice::latest.json keeps ${old:0:7}: ${SHA:0:7} is an older commit"
+              else
+                cp "$RESULT" heisenbench/main/latest.json
+              fi
             fi
-            msg="heisenbench: main ${SHA:0:7}"
-          fi
-          git add -A heisenbench
-          git diff --cached --quiet && exit 0
-          git commit --quiet -m "$msg"
-          # Other runs push here too (the app benchmark, other PRs); their files never overlap ours
-          # except a rerun of the same commit, where this newer run keeps its file.
+          }
+          # Other runs push here too (the app benchmark, other PRs), and results-gc.yml rewrites
+          # the branch as one commit. A rejected push starts again from the branch as it is now:
+          # no rebase, no fast-forward assumed. Files never overlap another run's except a rerun of
+          # the same commit, where this newer run writes its file last.
           for i in 1 2 3 4 5; do
+            apply
+            git add -A heisenbench
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "$msg"
             git push --quiet origin HEAD:results && exit 0
             sleep $((i * 3))
-            git pull --quiet --rebase -X theirs origin results || true
+            git fetch --quiet --depth 1 origin results && git reset --quiet --hard FETCH_HEAD || true
           done
           echo "::error::could not push to the results branch"
           exit 1

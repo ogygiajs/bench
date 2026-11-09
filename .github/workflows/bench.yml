@@ -340,14 +340,17 @@ jobs:
         run: |
           set -euo pipefail
           url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # Only the newest commit: the branch is squashed by results-gc.yml, so nothing here
+          # assumes its history.
           if git ls-remote --exit-code --heads "$url" results >/dev/null; then
-            git clone --quiet --branch results "$url" "$RUNNER_TEMP/results"
+            git clone --quiet --depth 1 --branch results "$url" "$RUNNER_TEMP/results"
           else
             # First run: start the orphan branch.
             git init --quiet -b results "$RUNNER_TEMP/results"
             git -C "$RUNNER_TEMP/results" remote add origin "$url"
           fi
-          # A note on what the branch holds, rewritten every run so it follows the layout.
+          # A note on what the branch holds, rewritten every run so it follows the layout (the
+          # store step copies it in, again on every try).
           # shellcheck disable=SC2016 # the backticks are markdown
           printf '%s\n' \
             '# results' '' \
@@ -362,7 +365,7 @@ jobs:
             '  (each a manifest of the shards it lists in `heisenbench/shards/`, named by their sha256);' \
             '  real-app weights from the counted app scenarios in `heisenbench/main/app-weights.json` (the newest) and' \
             '  `heisenbench/main/app-weights/<sha>.json`' \
-            > "$RUNNER_TEMP/results/README.md"
+            > "$RUNNER_TEMP/results-readme.md"
           git -C "$RUNNER_TEMP/results" config user.name 'github-actions[bot]'
           git -C "$RUNNER_TEMP/results" config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
@@ -378,32 +381,37 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/results"
-          if [ "$KIND" = pr ]; then
-            mkdir -p pr
-            cp "$RUN" "pr/$PR.json"
-            msg="pr #$PR @ ${SHA:0:7}"
-          else
-            mkdir -p main
-            cp "$RUN" "main/$NAME.json"
-            cp "$RUN" main/latest.json
-            msg="main $NAME"
-          fi
-          # The same file per measured commit, for walking main's history and a PR's commits. The
-          # weekly run installs a release and has no sha, so it has no commit file.
-          if [ -n "$SHA" ]; then
-            mkdir -p commit
-            cp "$RUN" "commit/$SHA.json"
-          fi
-          git add -A
-          git diff --cached --quiet && exit 0
-          git commit --quiet -m "$msg"
-          # Other runs (other PRs, a main push) push here too. Their files overlap only when two
-          # runs measured the same commit; then this, the newer run, keeps its file (in a rebase,
-          # "theirs" is the commit being replayed: this run's).
+          if [ "$KIND" = pr ]; then msg="pr #$PR @ ${SHA:0:7}"; else msg="main $NAME"; fi
+          # This run's files, written on top of whatever the branch holds now.
+          apply() {
+            cp "$RUNNER_TEMP/results-readme.md" README.md
+            if [ "$KIND" = pr ]; then
+              mkdir -p pr
+              cp "$RUN" "pr/$PR.json"
+            else
+              mkdir -p main
+              cp "$RUN" "main/$NAME.json"
+              cp "$RUN" main/latest.json
+            fi
+            # The same file per measured commit, for walking main's history and a PR's commits. The
+            # weekly run installs a release and has no sha, so it has no commit file.
+            if [ -n "$SHA" ]; then
+              mkdir -p commit
+              cp "$RUN" "commit/$SHA.json"
+            fi
+          }
+          # Other runs (other PRs, a main push) push here too, and results-gc.yml rewrites the
+          # branch as one commit. A rejected push starts again from the branch as it is now: no
+          # rebase, no fast-forward assumed. Files overlap only when two runs measured the same
+          # commit; then this, the newer run, writes its file last.
           for i in 1 2 3 4 5; do
+            apply
+            git add -A
+            git diff --cached --quiet && exit 0
+            git commit --quiet -m "$msg"
             git push --quiet origin HEAD:results && exit 0
             sleep $((i * 3))
-            git pull --quiet --rebase -X theirs origin results || true
+            git fetch --quiet --depth 1 origin results && git reset --quiet --hard FETCH_HEAD || true
           done
           echo "::error::could not push to the results branch"
           exit 1

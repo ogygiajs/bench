@@ -45,5 +45,7 @@ export type {
 	ShardReader,
 	Split
 } from './shards.ts';
+export { GcError, apply_gc, parse_drops, plan_gc, render_gc, scan_results } from './gc.ts';
+export type { Drop, GcPlan, RunFile, Scan } from './gc.ts';
 export { ACTIONS_BOT, upsertComment } from './github.ts';
 export type { UpsertOptions, UpsertResult } from './github.ts';
