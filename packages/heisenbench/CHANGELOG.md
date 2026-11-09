@@ -1,5 +1,45 @@
 # heisenbench
 
+## 0.2.0
+
+### Minor Changes
+
+- [#63](https://github.com/ogygiajs/bench/pull/63) [`355c922`](https://github.com/ogygiajs/bench/commit/355c9229107b4aa6564d265094743bcd5d67bd2f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - Growth flags a case that keeps its class when the steps a change adds grow quadratically or worse, so a pass added under a case that is quadratic already is a finding in the PR comment and in `mutate`.
+
+- [#60](https://github.com/ogygiajs/bench/pull/60) [`a59cd58`](https://github.com/ogygiajs/bench/commit/a59cd5832ea2db46b816e662611b2f4b945f0877) Thanks [@PuruVJ](https://github.com/PuruVJ)! - Code that reads `import.meta.env` runs in every build, defined as a Vite production build defines it, and a project changes the env with `heisenbench.importMetaEnv` in its package.json.
+
+- [#62](https://github.com/ogygiajs/bench/pull/62) [`0292685`](https://github.com/ogygiajs/bench/commit/0292685f329d4f8f798702b8fce2239f67640e3f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - The diff marks code moved between a caller and a new or removed function as moved, with the net change of the move, and pairs a function moved to another module by its body.
+
+- [#63](https://github.com/ogygiajs/bench/pull/63) [`355c922`](https://github.com/ogygiajs/bench/commit/355c9229107b4aa6564d265094743bcd5d67bd2f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `mutate` takes `--import`, `--conditions` and `--svelte` like every command that loads bench files, and exits 1 when a bench file did not load or a case threw on the root.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `prove` takes a method of a top-level class (`'Cache > get'`, `'Cache > static of'`), with the recorded `this` rebuilt on each side's own class.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - Async functions are recorded, with what their promise settles to, so `prove` and recorded growth take them.
+
+- [#67](https://github.com/ogygiajs/bench/pull/67) [`b5db759`](https://github.com/ogygiajs/bench/commit/b5db75973bedaf1c7d684dea543a2d1939200015) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `heisenbench gc --root <dir> [--drop policy.json] [--dry-run]` collects a results tree: it drops the run files a retention policy names, then every shard no kept run file lists, and deletes nothing when any run file or shard cannot be read.
+
+- [#62](https://github.com/ogygiajs/bench/pull/62) [`0292685`](https://github.com/ogygiajs/bench/commit/0292685f329d4f8f798702b8fce2239f67640e3f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `Object.keys`, `values`, `entries` and `assign` are priced linear in the keys (prices v4), with the keys of a wide object at V8's dictionary rate, so a wide object no longer reads as quadratic.
+
+### Patch Changes
+
+- [#64](https://github.com/ogygiajs/bench/pull/64) [`66e33a2`](https://github.com/ogygiajs/bench/commit/66e33a272d50b45a40db79865c83c99c7a976a3f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - A contract on a method of a module TypeScript compiles (a class with a parameter property, an enum) is measured, instead of reading "unmeasured".
+
+- [#62](https://github.com/ogygiajs/bench/pull/62) [`0292685`](https://github.com/ogygiajs/bench/commit/0292685f329d4f8f798702b8fce2239f67640e3f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `--conditions` keeps the engine's loader out of the `NODE_OPTIONS` the code under test reads, so counts no longer depend on where Heisenbench is installed.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - A recorded input nested deeper than 1,000 levels is counted and not kept, so `prove` no longer crashes reading back a deep walk's recording.
+
+- [#62](https://github.com/ogygiajs/bench/pull/62) [`0292685`](https://github.com/ogygiajs/bench/commit/0292685f329d4f8f798702b8fce2239f67640e3f) Thanks [@PuruVJ](https://github.com/PuruVJ)! - Reports written under the engine's former name (`abax-report/1`) are read by `diff`, `history` and every command that reads a report.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `prove` grows an argument only up to 4,000,000 units of input, stopping at the largest factor that fits and saying so, instead of running out of memory at 100x.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `prove`'s sandbox reads the `node_modules`, `package.json` and `svelte.config` files above the root, so a package of a workspace can be proven.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `record` and `prove --bench` resolve `./x.js` to `x.ts` and extensionless imports, and `record` and `time` load `.svelte` files from packages.
+
+- [#65](https://github.com/ogygiajs/bench/pull/65) [`0e151d3`](https://github.com/ogygiajs/bench/commit/0e151d3cd1ffcdd68ab33dbd8c0cc8f67af6ebbe) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `prove`'s safety check follows scopes: a local named like a global, `typeof window`, a harmless `globalThis` property, a class's `this.constructor` and a `'__proto__'` string that is no key no longer refuse a candidate.
+
+- [#66](https://github.com/ogygiajs/bench/pull/66) [`7c51d08`](https://github.com/ogygiajs/bench/commit/7c51d085633e9d0bfd514a4e0bb17a6758b8d211) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `heisenbench history --reports` reads run files written as a manifest of content-hashed shards (the results branch's `heisenbench/shards/`), checking each shard's size and hash, and still reads whole run files.
+
 ## 0.1.0
 
 ### Minor Changes
