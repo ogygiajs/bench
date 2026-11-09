@@ -39,6 +39,7 @@ import { contracts_command } from './contracts/cli.ts';
 import { upgrade_command } from './upgrade/cli.ts';
 import { upstream_command } from './upstream/cli.ts';
 import { history_command } from './history/cli.ts';
+import { gc_command } from './gc/cli.ts';
 import { feel_command } from './models/cli.ts';
 import type { CacheSummary } from './cache/index.ts';
 import { receipt_command, registry_command, verify_receipt_command } from './receipt/cli.ts';
@@ -87,6 +88,10 @@ Counting (the counting build)
                                  cost and by how much (followed through edits and moves), and each
                                  function's timeline, from one report per first-parent commit
       [--repo dir] [--rev HEAD] [--out history.json] [--md history.md]
+  heisenbench gc --root <results dir>   garbage collection of stored run files: drops the run
+                                 files a retention policy names, then every shard no kept run
+                                 file lists; deletes nothing when any file of the tree is unreadable
+      [--drop policy.json] [--dry-run] [--json gc.json]
   heisenbench dts <source files...> --out heisenbench-private.d.ts [--tsconfig tsconfig.json]
                                  types for the private functions bench files import as __heisenbench
 
@@ -385,6 +390,7 @@ const SPECS: Record<string, Spec> = {
 	},
 	// `<file>[:<function>]`, a path in git at --rev (not on disk)
 	history: { values: ['reports', 'repo', 'rev', 'out', 'md'], args: [1, 1] },
+	gc: { values: ['root', 'drop', 'json'], args: [0, 0], switches: ['dry-run'] },
 	dts: { values: ['out', 'tsconfig'], args: [1, MANY], files: true },
 	receipt: {
 		values: ['package', 'include', 'preload', 'root', 'npm', 'work', 'jobs', 'out'],
@@ -867,6 +873,7 @@ async function main(argv: string[]): Promise<number> {
 	if (cmd === 'verify-receipt') return verify_receipt_command(positional, flags);
 	if (cmd === 'registry') return registry_command(positional, flags);
 	if (cmd === 'history') return history_command(positional, flags);
+	if (cmd === 'gc') return gc_command(flags);
 	if (cmd === 'health' || cmd === 'growth' || cmd === 'search' || cmd === 'audit') {
 		const root = flags.get('root') ?? process.cwd();
 		const out = flags.get('out') ?? 'heisenbench-report.json';
