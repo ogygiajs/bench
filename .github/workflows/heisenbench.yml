@@ -75,15 +75,15 @@ on:
   schedule:
     - cron: '41 3 * * *'
 
-# A newer push to the same PR cancels the older run. GitHub keeps one running and ONE pending run
-# per group, and a newer pending run cancels the one already waiting, so a shared main group would
-# drop every push but the newest that arrive during a run. Each main push has its own group (they
-# may run side by side; latest.json only moves to a newer commit, see "Store the result"), and the
-# nightly run has its own, so it never cancels a waiting push.
+# A newer push to the same PR cancels the older run. Main pushes share one group: GitHub keeps one
+# running and ONE pending run per group, so a burst of merges runs the first and the newest, not one
+# two-hour run per merge in the org's shared runner pool. The skipped commits are gaps in the trend
+# (suites/ogygia/src/trend.ts reads the runs that exist). The nightly run has its own group, so it
+# never cancels a waiting push.
 concurrency:
   group: >-
     heisenbench-${{ github.event.action == 'ogygia-heisenbench' && format('pr-{0}', github.event.client_payload.pr)
-    || github.event.action == 'ogygia-main' && format('main-{0}', github.event.client_payload.sha)
+    || github.event.action == 'ogygia-main' && 'main'
     || github.event_name == 'schedule' && 'nightly'
     || github.run_id }}
   cancel-in-progress: ${{ github.event.action == 'ogygia-heisenbench' }}
