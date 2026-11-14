@@ -35,9 +35,10 @@ import { BASE_ID, baseDir } from './harness/ab.ts';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const OGYGIA_APP = join(ROOT, 'frameworks', 'ogygia');
-// The packages the ogygia app imports (`ogygia`, `@ogygia/content`) plus the core both of them
-// depend on. All three move together so the app never mixes builds.
-const OGYGIA_PACKAGES = ['ogygia', '@ogygia/core', '@ogygia/content'];
+// The packages the ogygia app imports (`ogygia`, `@ogygia/content`) plus the core and compiler
+// `ogygia` depends on (since 0.14 the compiler is its own package). They move together so the app
+// never mixes builds.
+const OGYGIA_PACKAGES = ['ogygia', '@ogygia/core', '@ogygia/compiler', '@ogygia/content'];
 
 function parseArgs(argv) {
 	const args = {
@@ -114,7 +115,13 @@ function resolveOgygia(spec) {
 			if (!content) throw new Error(`no @ogygia/content release predates ogygia@${view.version}`);
 		}
 	}
-	return { ogygia: view.version, '@ogygia/core': core, '@ogygia/content': content };
+	const compiler = view.dependencies?.['@ogygia/compiler'];
+	return {
+		ogygia: view.version,
+		'@ogygia/core': core,
+		...(compiler ? { '@ogygia/compiler': compiler } : {}),
+		'@ogygia/content': content
+	};
 }
 
 // pnpm exits non-zero on unapproved native build scripts (esbuild/workerd) and refuses to purge a
