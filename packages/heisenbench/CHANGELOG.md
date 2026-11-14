@@ -1,5 +1,11 @@
 # heisenbench
 
+## 0.3.0
+
+### Minor Changes
+
+- [#70](https://github.com/ogygiajs/bench/pull/70) [`5698901`](https://github.com/ogygiajs/bench/commit/5698901704c4884bb72516519d17593b04964af0) Thanks [@PuruVJ](https://github.com/PuruVJ)! - A variable a nested function uses costs a property read or write on every use, as V8 keeps it in a context object (a module variable nothing reassigns stays free), and a getter or setter costs a call when it runs, so state moved from a closure to class fields no longer reads as slower.
+
 ## 0.2.0
 
 ### Minor Changes
