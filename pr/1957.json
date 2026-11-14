@@ -1,0 +1,1871 @@
+{
+  "meta": {
+    "ogygia": "0.13.2-next.a4c4aa7",
+    "spec": "https://pkg.pr.new/ogygia@a4c4aa7",
+    "sha": "a4c4aa768bdc62b2c94b2379880d298d82ca8191",
+    "pr": 1957,
+    "mode": "pr",
+    "scope": "fast",
+    "frameworks": [
+      "ogygia",
+      "ogygia-base"
+    ],
+    "passes": 5,
+    "base": {
+      "ogygia": "0.13.2-next.81e1725",
+      "spec": "https://pkg.pr.new/ogygia@81e1725",
+      "sha": "81e1725dfda91278f685ec45d81c5c928fd52749"
+    },
+    "runner": {
+      "cpu": "Intel(R) Xeon(R) 6975P-C",
+      "cores": 4,
+      "memGb": 15
+    },
+    "runAt": "2026-11-14T16:08:11.309Z",
+    "scenarioPasses": 5,
+    "scenarios": [
+      "blog",
+      "docs",
+      "dashboard",
+      "ai-chat",
+      "shop"
+    ]
+  },
+  "generatedWith": "benchmark.ts (port of khromov/interactive-blogs-benchmark)",
+  "posts": [
+    {
+      "id": "small",
+      "words": 8800
+    },
+    {
+      "id": "medium",
+      "words": 23000
+    },
+    {
+      "id": "large",
+      "words": 71000
+    }
+  ],
+  "frameworks": [
+    {
+      "id": "ogygia",
+      "approach": "islands (svelte 5)",
+      "rows": [
+        {
+          "post": "small",
+          "words": 8800,
+          "jsRaw": 144529,
+          "jsBr": 48242,
+          "htmlRaw": 57436,
+          "htmlBr": 10890,
+          "score": 100,
+          "lcp": 1051,
+          "cls": 0,
+          "tbt": 0,
+          "evalMs": 83,
+          "dom": 57
+        },
+        {
+          "post": "medium",
+          "words": 23000,
+          "jsRaw": 144529,
+          "jsBr": 48242,
+          "htmlRaw": 143458,
+          "htmlBr": 13146,
+          "score": 100,
+          "lcp": 1502,
+          "cls": 0,
+          "tbt": 0,
+          "evalMs": 79,
+          "dom": 110
+        },
+        {
+          "post": "large",
+          "words": 71000,
+          "jsRaw": 144529,
+          "jsBr": 48242,
+          "htmlRaw": 432905,
+          "htmlBr": 13764,
+          "score": 84,
+          "lcp": 3720,
+          "cls": 0,
+          "tbt": 0,
+          "evalMs": 85,
+          "dom": 290
+        }
+      ],
+      "avg": {
+        "score": 95,
+        "lcp": 2091,
+        "cls": 0,
+        "tbt": 0,
+        "evalMs": 82,
+        "dom": 152
+      },
+      "samples": {
+        "score": [
+          97,
+          94,
+          92,
+          95,
+          96
+        ],
+        "lcp": [
+          1802,
+          2091,
+          2623,
+          2101,
+          2070
+        ],
+        "cls": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "tbt": [
+          0,
+          8,
+          9,
+          0,
+          0
+        ],
+        "evalMs": [
+          95,
+          85,
+          79,
+          83,
+          82
+        ],
+        "dom": [
+          152,
+          152,
+          152,
+          152,
+          152
+        ]
+      }
+    },
+    {
+      "id": "ogygia-base",
+      "approach": "islands (svelte 5)",
+      "rows": [
+        {
+          "post": "small",
+          "words": 8800,
+          "jsRaw": 144487,
+          "jsBr": 48253,
+          "htmlRaw": 57436,
+          "htmlBr": 10893,
+          "score": 100,
+          "lcp": 1052,
+          "cls": 0,
+          "tbt": 0,
+          "evalMs": 83,
+          "dom": 57
+        },
+        {
+          "post": "medium",
+          "words": 23000,
+          "jsRaw": 144487,
+          "jsBr": 48253,
+          "htmlRaw": 143458,
+          "htmlBr": 13173,
+          "score": 100,
+          "lcp": 1502,
+          "cls": 0,
+          "tbt": 0,
+          "evalMs": 83,
+          "dom": 110
+        },
+        {
+          "post": "large",
+          "words": 71000,
+          "jsRaw": 144487,
+          "jsBr": 48253,
+          "htmlRaw": 432905,
+          "htmlBr": 13780,
+          "score": 81,
+          "lcp": 3724,
+          "cls": 0,
+          "tbt": 27,
+          "evalMs": 81,
+          "dom": 290
+        }
+      ],
+      "avg": {
+        "score": 94,
+        "lcp": 2092,
+        "cls": 0,
+        "tbt": 9,
+        "evalMs": 82,
+        "dom": 152
+      },
+      "samples": {
+        "score": [
+          92,
+          94,
+          96,
+          92,
+          94
+        ],
+        "lcp": [
+          2624,
+          2094,
+          2064,
+          2360,
+          2092
+        ],
+        "cls": [
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "tbt": [
+          9,
+          10,
+          0,
+          8,
+          9
+        ],
+        "evalMs": [
+          84,
+          84,
+          86,
+          80,
+          82
+        ],
+        "dom": [
+          152,
+          152,
+          152,
+          152,
+          152
+        ]
+      }
+    }
+  ],
+  "scenarios": {
+    "blog": {
+      "title": "Blog: long static posts with five counters",
+      "routes": [
+        "small",
+        "medium",
+        "large"
+      ],
+      "steps": [
+        "counter"
+      ],
+      "frameworks": [
+        {
+          "id": "ogygia",
+          "approach": "islands (svelte 5)",
+          "served": "static",
+          "metrics": {
+            "jsBr:small": 48242,
+            "htmlBr:small": 10890,
+            "jsBr:medium": 48242,
+            "htmlBr:medium": 13146,
+            "jsBr:large": 48242,
+            "htmlBr:large": 13764,
+            "jsBr": 48242,
+            "htmlBr": 12600,
+            "inp:counter": 16,
+            "resp:counter": 2.2,
+            "inp": 16,
+            "resp": 2.2,
+            "navMs": 219.6,
+            "visitBr": 187122,
+            "heapMb": 2.343,
+            "locCode": 51,
+            "locConfig": 38,
+            "loc": 89
+          },
+          "samples": {
+            "inp:counter": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:counter": [
+              2.5,
+              1.5,
+              3.7,
+              1.9,
+              2.2
+            ],
+            "inp": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp": [
+              2.5,
+              1.5,
+              3.7,
+              1.9,
+              2.2
+            ],
+            "navMs": [
+              223.3,
+              181.4,
+              223.8,
+              187.3,
+              219.6
+            ],
+            "visitBr": [
+              187122,
+              187122,
+              187122,
+              187122,
+              187122
+            ],
+            "heapMb": [
+              2.343,
+              2.35,
+              2.343,
+              2.343,
+              2.343
+            ]
+          }
+        },
+        {
+          "id": "ogygia-base",
+          "approach": "islands (svelte 5)",
+          "served": "static",
+          "metrics": {
+            "jsBr:small": 48253,
+            "htmlBr:small": 10893,
+            "jsBr:medium": 48253,
+            "htmlBr:medium": 13173,
+            "jsBr:large": 48253,
+            "htmlBr:large": 13780,
+            "jsBr": 48253,
+            "htmlBr": 12615,
+            "inp:counter": 16,
+            "resp:counter": 2.1,
+            "inp": 16,
+            "resp": 2.1,
+            "navMs": 220.1,
+            "visitBr": 187201,
+            "heapMb": 2.343,
+            "locCode": 51,
+            "locConfig": 38,
+            "loc": 89
+          },
+          "samples": {
+            "inp:counter": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:counter": [
+              2.5,
+              2.4,
+              1.9,
+              2.1,
+              2.1
+            ],
+            "inp": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp": [
+              2.5,
+              2.4,
+              1.9,
+              2.1,
+              2.1
+            ],
+            "navMs": [
+              226,
+              222.6,
+              220.1,
+              219.8,
+              196.4
+            ],
+            "visitBr": [
+              187201,
+              187201,
+              187201,
+              187201,
+              187201
+            ],
+            "heapMb": [
+              2.343,
+              2.343,
+              2.349,
+              2.349,
+              2.342
+            ]
+          }
+        }
+      ]
+    },
+    "docs": {
+      "title": "Docs: 300 generated pages with sidebar, search, code tabs and a table of contents",
+      "routes": [
+        "first",
+        "mid"
+      ],
+      "steps": [
+        "tabs",
+        "search"
+      ],
+      "frameworks": [
+        {
+          "id": "ogygia",
+          "approach": "prerendered, islands, ogygia router",
+          "served": "static",
+          "metrics": {
+            "jsBr:first": 57415,
+            "htmlBr:first": 4300,
+            "jsBr:mid": 56981,
+            "htmlBr:mid": 4337,
+            "jsBr": 57198,
+            "htmlBr": 4319,
+            "inp:tabs": 16,
+            "resp:tabs": 2,
+            "inp:search": 16,
+            "resp:search": 1.8,
+            "inp": 16,
+            "resp": 2,
+            "navMs": 160.8,
+            "visitBr": 104540,
+            "heapMb": 4.268,
+            "score": 100,
+            "lcp": 903.3,
+            "cls": 0,
+            "tbt": 0,
+            "evalMs": 69.8,
+            "buildMs": 4087,
+            "outBytes": 18109280,
+            "locCode": 62,
+            "locConfig": 16,
+            "loc": 78
+          },
+          "samples": {
+            "inp:tabs": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:tabs": [
+              2,
+              2,
+              1.6,
+              2.1,
+              2.1
+            ],
+            "inp:search": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:search": [
+              1.1,
+              1.8,
+              1.4,
+              1.8,
+              2.5
+            ],
+            "inp": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp": [
+              2,
+              2,
+              1.6,
+              2.1,
+              2.5
+            ],
+            "navMs": [
+              160.5,
+              162.4,
+              161.8,
+              159.7,
+              160.8
+            ],
+            "visitBr": [
+              104540,
+              104540,
+              104540,
+              104540,
+              104540
+            ],
+            "heapMb": [
+              4.262,
+              4.268,
+              4.269,
+              4.268,
+              4.26
+            ],
+            "score": [
+              99,
+              100,
+              100,
+              100,
+              99
+            ],
+            "lcp": [
+              1699.9,
+              901.1,
+              903.3,
+              901.3,
+              1694.6
+            ],
+            "cls": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "tbt": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "evalMs": [
+              71.9,
+              67.8,
+              65.2,
+              76,
+              69.8
+            ]
+          }
+        },
+        {
+          "id": "ogygia-base",
+          "approach": "prerendered, islands, ogygia router",
+          "served": "static",
+          "metrics": {
+            "jsBr:first": 57388,
+            "htmlBr:first": 4291,
+            "jsBr:mid": 56954,
+            "htmlBr:mid": 4329,
+            "jsBr": 57171,
+            "htmlBr": 4310,
+            "inp:tabs": 16,
+            "resp:tabs": 2.2,
+            "inp:search": 16,
+            "resp:search": 1.7,
+            "inp": 16,
+            "resp": 2.2,
+            "navMs": 161.7,
+            "visitBr": 104483,
+            "heapMb": 4.263,
+            "score": 100,
+            "lcp": 901.7,
+            "cls": 0,
+            "tbt": 0,
+            "evalMs": 74.5,
+            "buildMs": 4092,
+            "outBytes": 18109213,
+            "locCode": 62,
+            "locConfig": 16,
+            "loc": 78
+          },
+          "samples": {
+            "inp:tabs": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:tabs": [
+              2.2,
+              2.2,
+              2.3,
+              2.1,
+              2.1
+            ],
+            "inp:search": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:search": [
+              1.5,
+              1.8,
+              1.9,
+              1.5,
+              1.7
+            ],
+            "inp": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp": [
+              2.2,
+              2.2,
+              2.3,
+              2.1,
+              2.1
+            ],
+            "navMs": [
+              146,
+              163.2,
+              161.7,
+              164.8,
+              161.3
+            ],
+            "visitBr": [
+              104483,
+              104483,
+              104483,
+              104483,
+              104483
+            ],
+            "heapMb": [
+              4.266,
+              4.263,
+              4.26,
+              4.263,
+              4.237
+            ],
+            "score": [
+              100,
+              99,
+              100,
+              100,
+              100
+            ],
+            "lcp": [
+              901.4,
+              1698.1,
+              901.7,
+              903,
+              901.3
+            ],
+            "cls": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "tbt": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "evalMs": [
+              74.5,
+              75.8,
+              72.2,
+              73.2,
+              74.9
+            ]
+          }
+        }
+      ]
+    },
+    "dashboard": {
+      "title": "Dashboard: live cards and chart, a static chart, a sortable and filterable 1,000-row table",
+      "routes": [
+        "home"
+      ],
+      "steps": [
+        "sort",
+        "sort-toggle",
+        "filter",
+        "status"
+      ],
+      "frameworks": [
+        {
+          "id": "ogygia",
+          "approach": "server-rendered per request, islands",
+          "served": "server",
+          "metrics": {
+            "jsBr:home": 51896,
+            "htmlBr:home": 21879,
+            "jsBr": 51896,
+            "htmlBr": 21879,
+            "inp:sort": 248,
+            "resp:sort": 5.5,
+            "inp:sort-toggle": 288,
+            "resp:sort-toggle": 1.7,
+            "inp:filter": 88,
+            "resp:filter": 1.7,
+            "inp:status": 16,
+            "resp:status": 2,
+            "updateMs": 2.3,
+            "inp": 288,
+            "resp": 5.5,
+            "heapMb": 3.452,
+            "score": 95,
+            "lcp": 2405.4,
+            "cls": 0.013,
+            "tbt": 21.5,
+            "evalMs": 200.2,
+            "ttfb": 24.1,
+            "htmlMs": 24.5,
+            "p50": 210,
+            "p99": 868,
+            "vps": 42.3,
+            "reqsPerView": 1,
+            "buildMs": 4130,
+            "outBytes": 410393,
+            "locCode": 33,
+            "locConfig": 16,
+            "loc": 49
+          },
+          "samples": {
+            "inp:sort": [
+              248,
+              224,
+              208,
+              248,
+              256
+            ],
+            "resp:sort": [
+              11.6,
+              2.3,
+              2.4,
+              6,
+              5.5
+            ],
+            "inp:sort-toggle": [
+              288,
+              320,
+              312,
+              288,
+              288
+            ],
+            "resp:sort-toggle": [
+              1.8,
+              1.6,
+              1.8,
+              1.1,
+              1.7
+            ],
+            "inp:filter": [
+              88,
+              80,
+              88,
+              88,
+              88
+            ],
+            "resp:filter": [
+              1.6,
+              2.3,
+              1.7,
+              2.7,
+              1.7
+            ],
+            "inp:status": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:status": [
+              2.1,
+              1.2,
+              1.4,
+              2,
+              3.3
+            ],
+            "updateMs": [
+              2.3,
+              2.3,
+              2.4,
+              1.9,
+              2.3
+            ],
+            "inp": [
+              288,
+              320,
+              312,
+              288,
+              288
+            ],
+            "resp": [
+              11.6,
+              2.3,
+              2.4,
+              6,
+              5.5
+            ],
+            "heapMb": [
+              3.452,
+              3.473,
+              3.473,
+              3.442,
+              3.446
+            ],
+            "score": [
+              95,
+              95,
+              95,
+              95,
+              95
+            ],
+            "lcp": [
+              2404.3,
+              2404,
+              2405.9,
+              2407.8,
+              2405.4
+            ],
+            "cls": [
+              0.013,
+              0.013,
+              0.013,
+              0.013,
+              0.013
+            ],
+            "tbt": [
+              22.5,
+              24.5,
+              21.5,
+              21.5,
+              21.5
+            ],
+            "evalMs": [
+              199.6,
+              204.9,
+              200.2,
+              199.2,
+              215
+            ],
+            "ttfb": [
+              24.3,
+              23.7,
+              22.2,
+              24.1,
+              24.3
+            ],
+            "htmlMs": [
+              24.9,
+              24.1,
+              22.9,
+              24.5,
+              25
+            ],
+            "p50": [
+              210,
+              204,
+              208,
+              213,
+              213
+            ],
+            "p99": [
+              1076,
+              413,
+              868,
+              881,
+              732
+            ],
+            "vps": [
+              39.3,
+              43.8,
+              43,
+              41.8,
+              42.3
+            ],
+            "reqsPerView": [
+              1,
+              1,
+              1,
+              1,
+              1
+            ]
+          }
+        },
+        {
+          "id": "ogygia-base",
+          "approach": "server-rendered per request, islands",
+          "served": "server",
+          "metrics": {
+            "jsBr:home": 51864,
+            "htmlBr:home": 21849,
+            "jsBr": 51864,
+            "htmlBr": 21849,
+            "inp:sort": 248,
+            "resp:sort": 5.8,
+            "inp:sort-toggle": 296,
+            "resp:sort-toggle": 2.9,
+            "inp:filter": 88,
+            "resp:filter": 1.8,
+            "inp:status": 16,
+            "resp:status": 3,
+            "updateMs": 2.4,
+            "inp": 296,
+            "resp": 6.2,
+            "heapMb": 3.441,
+            "score": 95,
+            "lcp": 2403.9,
+            "cls": 0.013,
+            "tbt": 22.5,
+            "evalMs": 201.3,
+            "ttfb": 24,
+            "htmlMs": 24.4,
+            "p50": 206,
+            "p99": 847,
+            "vps": 42.7,
+            "reqsPerView": 1,
+            "buildMs": 4168,
+            "outBytes": 410277,
+            "locCode": 33,
+            "locConfig": 16,
+            "loc": 49
+          },
+          "samples": {
+            "inp:sort": [
+              248,
+              224,
+              248,
+              240,
+              256
+            ],
+            "resp:sort": [
+              2.3,
+              3.7,
+              8.8,
+              5.8,
+              7.9
+            ],
+            "inp:sort-toggle": [
+              288,
+              304,
+              272,
+              296,
+              296
+            ],
+            "resp:sort-toggle": [
+              2.2,
+              6.2,
+              2.9,
+              3.9,
+              2.3
+            ],
+            "inp:filter": [
+              88,
+              80,
+              96,
+              88,
+              88
+            ],
+            "resp:filter": [
+              1.8,
+              1.8,
+              1.3,
+              1.9,
+              2.1
+            ],
+            "inp:status": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:status": [
+              3.3,
+              1,
+              3,
+              3.2,
+              2.5
+            ],
+            "updateMs": [
+              2.4,
+              2.2,
+              2.4,
+              2,
+              2.4
+            ],
+            "inp": [
+              288,
+              304,
+              272,
+              296,
+              296
+            ],
+            "resp": [
+              3.3,
+              6.2,
+              8.8,
+              5.8,
+              7.9
+            ],
+            "heapMb": [
+              3.441,
+              3.472,
+              3.441,
+              3.441,
+              3.445
+            ],
+            "score": [
+              95,
+              95,
+              95,
+              95,
+              95
+            ],
+            "lcp": [
+              2403.7,
+              2402.5,
+              2405.3,
+              2405.4,
+              2403.9
+            ],
+            "cls": [
+              0.013,
+              0.013,
+              0.013,
+              0.013,
+              0.013
+            ],
+            "tbt": [
+              22.5,
+              24.5,
+              22,
+              22.5,
+              19
+            ],
+            "evalMs": [
+              198.3,
+              201.3,
+              203.2,
+              198.3,
+              214.2
+            ],
+            "ttfb": [
+              24.1,
+              22.9,
+              24,
+              22.3,
+              24.3
+            ],
+            "htmlMs": [
+              24.6,
+              23.2,
+              24.4,
+              22.8,
+              24.8
+            ],
+            "p50": [
+              205,
+              205,
+              208,
+              206,
+              212
+            ],
+            "p99": [
+              1083,
+              840,
+              847,
+              861,
+              528
+            ],
+            "vps": [
+              40,
+              43.8,
+              42.7,
+              43.3,
+              42
+            ],
+            "reqsPerView": [
+              1,
+              1,
+              1,
+              1,
+              1
+            ]
+          }
+        }
+      ]
+    },
+    "ai-chat": {
+      "title": "AI chat: a 120-message history, streamed markdown replies with tool calls",
+      "routes": [
+        "chat"
+      ],
+      "steps": [
+        "type-streaming",
+        "toggle-tool"
+      ],
+      "frameworks": [
+        {
+          "id": "ogygia",
+          "approach": "server-rendered per request, chat island",
+          "served": "server",
+          "metrics": {
+            "jsBr:chat": 51908,
+            "htmlBr:chat": 8831,
+            "jsBr": 51908,
+            "htmlBr": 8831,
+            "ttft": 83,
+            "streamMs": 2081.8,
+            "inp:type-streaming": 104,
+            "resp:type-streaming": 1.9,
+            "inp:toggle-tool": 16,
+            "resp:toggle-tool": 1.7,
+            "inp": 104,
+            "resp": 2.4,
+            "heapMb": 2.999,
+            "score": 100,
+            "lcp": 1054.1,
+            "cls": 0,
+            "tbt": 0,
+            "evalMs": 74.2,
+            "ttfb": 2.4,
+            "htmlMs": 2.5,
+            "p50": 13,
+            "p99": 37,
+            "vps": 605,
+            "reqsPerView": 1,
+            "ttfc": 47.9,
+            "streamTotal": 2059.4,
+            "buildMs": 3961,
+            "outBytes": 398308,
+            "locCode": 35,
+            "locConfig": 16,
+            "loc": 51
+          },
+          "samples": {
+            "ttft": [
+              79.5,
+              83,
+              105,
+              106.9,
+              79.5
+            ],
+            "streamMs": [
+              2078,
+              2081.8,
+              2086.7,
+              2090.6,
+              2061.3
+            ],
+            "inp:type-streaming": [
+              136,
+              104,
+              104,
+              136,
+              104
+            ],
+            "resp:type-streaming": [
+              1.3,
+              1.9,
+              1.4,
+              5.7,
+              2.4
+            ],
+            "inp:toggle-tool": [
+              16,
+              24,
+              16,
+              16,
+              16
+            ],
+            "resp:toggle-tool": [
+              2,
+              1.7,
+              2.4,
+              1.2,
+              1.7
+            ],
+            "inp": [
+              136,
+              104,
+              104,
+              136,
+              104
+            ],
+            "resp": [
+              2,
+              1.9,
+              2.4,
+              5.7,
+              2.4
+            ],
+            "heapMb": [
+              2.999,
+              2.997,
+              2.996,
+              2.999,
+              2.999
+            ],
+            "score": [
+              100,
+              100,
+              98,
+              100,
+              100
+            ],
+            "lcp": [
+              1054.1,
+              1054.9,
+              1855.4,
+              1053.6,
+              1053.2
+            ],
+            "cls": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "tbt": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "evalMs": [
+              74.2,
+              76.5,
+              70.9,
+              76.3,
+              72.3
+            ],
+            "ttfb": [
+              2.8,
+              2.5,
+              2.3,
+              2.4,
+              2.2
+            ],
+            "htmlMs": [
+              2.9,
+              2.6,
+              2.4,
+              2.5,
+              2.3
+            ],
+            "p50": [
+              15,
+              14,
+              13,
+              13,
+              13
+            ],
+            "p99": [
+              42,
+              40,
+              35,
+              37,
+              37
+            ],
+            "vps": [
+              545,
+              573.7,
+              618.5,
+              605,
+              613.3
+            ],
+            "reqsPerView": [
+              1,
+              1,
+              1,
+              1,
+              1
+            ],
+            "ttfc": [
+              49.3,
+              48.2,
+              47.9,
+              47.9,
+              47.8
+            ],
+            "streamTotal": [
+              2059.4,
+              2066.1,
+              2054.2,
+              2038.6,
+              2062
+            ]
+          }
+        },
+        {
+          "id": "ogygia-base",
+          "approach": "server-rendered per request, chat island",
+          "served": "server",
+          "metrics": {
+            "jsBr:chat": 51902,
+            "htmlBr:chat": 8833,
+            "jsBr": 51902,
+            "htmlBr": 8833,
+            "ttft": 106.1,
+            "streamMs": 2088.7,
+            "inp:type-streaming": 136,
+            "resp:type-streaming": 1.8,
+            "inp:toggle-tool": 16,
+            "resp:toggle-tool": 1.4,
+            "inp": 136,
+            "resp": 1.9,
+            "heapMb": 2.996,
+            "score": 100,
+            "lcp": 1054.4,
+            "cls": 0,
+            "tbt": 0,
+            "evalMs": 74.3,
+            "ttfb": 2.4,
+            "htmlMs": 2.5,
+            "p50": 13,
+            "p99": 38,
+            "vps": 594,
+            "reqsPerView": 1,
+            "ttfc": 48.9,
+            "streamTotal": 2053.6,
+            "buildMs": 3978,
+            "outBytes": 398233,
+            "locCode": 35,
+            "locConfig": 16,
+            "loc": 51
+          },
+          "samples": {
+            "ttft": [
+              103.8,
+              100.6,
+              107.1,
+              106.6,
+              106.1
+            ],
+            "streamMs": [
+              2088.5,
+              2085,
+              2092.1,
+              2088.7,
+              2104.1
+            ],
+            "inp:type-streaming": [
+              136,
+              136,
+              104,
+              136,
+              136
+            ],
+            "resp:type-streaming": [
+              8.9,
+              1.8,
+              1.7,
+              1.6,
+              1.9
+            ],
+            "inp:toggle-tool": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:toggle-tool": [
+              1.9,
+              3.1,
+              1.4,
+              1.4,
+              0.8
+            ],
+            "inp": [
+              136,
+              136,
+              104,
+              136,
+              136
+            ],
+            "resp": [
+              8.9,
+              3.1,
+              1.7,
+              1.6,
+              1.9
+            ],
+            "heapMb": [
+              2.996,
+              3,
+              2.996,
+              2.996,
+              2.996
+            ],
+            "score": [
+              98,
+              98,
+              100,
+              100,
+              100
+            ],
+            "lcp": [
+              1856.7,
+              1857.4,
+              1054.4,
+              1054.1,
+              1052.8
+            ],
+            "cls": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "tbt": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "evalMs": [
+              74.8,
+              74.8,
+              74.3,
+              70.2,
+              74.2
+            ],
+            "ttfb": [
+              2.7,
+              2.4,
+              2.5,
+              2.4,
+              2.4
+            ],
+            "htmlMs": [
+              2.9,
+              2.6,
+              2.5,
+              2.5,
+              2.5
+            ],
+            "p50": [
+              15,
+              14,
+              13,
+              13,
+              13
+            ],
+            "p99": [
+              39,
+              37,
+              39,
+              34,
+              38
+            ],
+            "vps": [
+              551.3,
+              590.3,
+              605.3,
+              611.3,
+              594
+            ],
+            "reqsPerView": [
+              1,
+              1,
+              1,
+              1,
+              1
+            ],
+            "ttfc": [
+              48.9,
+              50.2,
+              48.1,
+              53.4,
+              48
+            ],
+            "streamTotal": [
+              2053.6,
+              2046.5,
+              2050.9,
+              2054.4,
+              2055.9
+            ]
+          }
+        }
+      ]
+    },
+    "shop": {
+      "title": "Shop: product grid and pages, cacheable HTML with a personal greeting and cart count",
+      "routes": [
+        "home",
+        "product"
+      ],
+      "steps": [
+        "add"
+      ],
+      "frameworks": [
+        {
+          "id": "ogygia",
+          "approach": "prerendered, server islands for the personal bits, ogygia router",
+          "served": "server",
+          "metrics": {
+            "jsBr:home": 40963,
+            "htmlBr:home": 1299,
+            "jsBr:product": 41395,
+            "htmlBr:product": 1339,
+            "jsBr": 41179,
+            "htmlBr": 1319,
+            "personalMs": 908.9,
+            "inp:add": 16,
+            "resp:add": 110,
+            "inp": 16,
+            "resp": 110,
+            "navMs": 113.3,
+            "visitBr": 80150,
+            "heapMb": 3.531,
+            "score": 99,
+            "lcp": 1680.5,
+            "cls": 0,
+            "tbt": 0,
+            "evalMs": 69.3,
+            "ttfb": 0.4,
+            "htmlMs": 0.5,
+            "p50": 2,
+            "p99": 6,
+            "vps": 2214,
+            "reqsPerView": 2,
+            "cacheable": 1,
+            "buildMs": 4476,
+            "outBytes": 1083873,
+            "locCode": 85,
+            "locConfig": 16,
+            "loc": 101
+          },
+          "samples": {
+            "personalMs": [
+              922.6,
+              908.8,
+              908.9,
+              903.1,
+              923
+            ],
+            "inp:add": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:add": [
+              107.9,
+              109.9,
+              110,
+              127.3,
+              125.6
+            ],
+            "inp": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp": [
+              107.9,
+              109.9,
+              110,
+              127.3,
+              125.6
+            ],
+            "navMs": [
+              113.3,
+              113.4,
+              111.9,
+              115.6,
+              109.9
+            ],
+            "visitBr": [
+              80150,
+              80150,
+              80150,
+              80150,
+              80150
+            ],
+            "heapMb": [
+              3.531,
+              3.531,
+              3.531,
+              3.532,
+              3.531
+            ],
+            "score": [
+              99,
+              99,
+              99,
+              100,
+              100
+            ],
+            "lcp": [
+              1684.5,
+              1680.5,
+              1682.7,
+              753.6,
+              755.1
+            ],
+            "cls": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "tbt": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "evalMs": [
+              69.3,
+              73.1,
+              71.4,
+              67.2,
+              66.1
+            ],
+            "ttfb": [
+              0.5,
+              0.4,
+              0.4,
+              0.4,
+              0.9
+            ],
+            "htmlMs": [
+              0.6,
+              0.5,
+              0.5,
+              0.5,
+              1
+            ],
+            "p50": [
+              2,
+              1,
+              1,
+              2,
+              2
+            ],
+            "p99": [
+              7,
+              6,
+              6,
+              6,
+              7
+            ],
+            "vps": [
+              1970,
+              2270,
+              2270.5,
+              2214,
+              2176.5
+            ],
+            "reqsPerView": [
+              2,
+              2,
+              2,
+              2,
+              2
+            ]
+          }
+        },
+        {
+          "id": "ogygia-base",
+          "approach": "prerendered, server islands for the personal bits, ogygia router",
+          "served": "server",
+          "metrics": {
+            "jsBr:home": 40994,
+            "htmlBr:home": 1301,
+            "jsBr:product": 41426,
+            "htmlBr:product": 1334,
+            "jsBr": 41210,
+            "htmlBr": 1318,
+            "personalMs": 911.8,
+            "inp:add": 16,
+            "resp:add": 109.6,
+            "inp": 16,
+            "resp": 109.6,
+            "navMs": 111.8,
+            "visitBr": 80150,
+            "heapMb": 3.529,
+            "score": 99,
+            "lcp": 1680.1,
+            "cls": 0,
+            "tbt": 0,
+            "evalMs": 66.4,
+            "ttfb": 0.5,
+            "htmlMs": 0.6,
+            "p50": 2,
+            "p99": 7,
+            "vps": 2186.6,
+            "reqsPerView": 2,
+            "cacheable": 1,
+            "buildMs": 4530,
+            "outBytes": 1083556,
+            "locCode": 85,
+            "locConfig": 16,
+            "loc": 101
+          },
+          "samples": {
+            "personalMs": [
+              911.8,
+              872.6,
+              921.1,
+              905.8,
+              931
+            ],
+            "inp:add": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp:add": [
+              109.3,
+              110.5,
+              108.4,
+              125.5,
+              109.6
+            ],
+            "inp": [
+              16,
+              16,
+              16,
+              16,
+              16
+            ],
+            "resp": [
+              109.3,
+              110.5,
+              108.4,
+              125.5,
+              109.6
+            ],
+            "navMs": [
+              111.8,
+              110.8,
+              112.7,
+              121.2,
+              111.6
+            ],
+            "visitBr": [
+              80150,
+              80150,
+              80150,
+              80150,
+              80150
+            ],
+            "heapMb": [
+              3.528,
+              3.528,
+              3.529,
+              3.529,
+              3.529
+            ],
+            "score": [
+              99,
+              99,
+              100,
+              99,
+              99
+            ],
+            "lcp": [
+              1682.9,
+              1683.7,
+              755.8,
+              1680.1,
+              1677.9
+            ],
+            "cls": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "tbt": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "evalMs": [
+              64.8,
+              69.4,
+              62.6,
+              69.1,
+              66.4
+            ],
+            "ttfb": [
+              0.6,
+              0.8,
+              0.5,
+              0.4,
+              0.4
+            ],
+            "htmlMs": [
+              0.7,
+              0.8,
+              0.6,
+              0.4,
+              0.5
+            ],
+            "p50": [
+              2,
+              2,
+              2,
+              2,
+              2
+            ],
+            "p99": [
+              7,
+              6,
+              7,
+              6,
+              7
+            ],
+            "vps": [
+              2073.8,
+              2242.8,
+              2084.9,
+              2186.6,
+              2193.7
+            ],
+            "reqsPerView": [
+              2,
+              2,
+              2,
+              2,
+              2
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
