@@ -213,6 +213,16 @@ interface FnRec {
 	blocks: number;
 	/** The body's span, for a function (InstrumentResult.bodies). */
 	body: [number, number] | null;
+	entry: BlockRec | null;
+}
+
+/** A read or write of a variable by name, resolved to its scope once the module is walked. */
+interface VarUse {
+	fn: FnRec;
+	name: string;
+	offset: number;
+	block: BlockRec;
+	write: boolean;
 }
 
 interface BlockRec {
@@ -300,6 +310,7 @@ class Instrumenter {
 	fns: FnRec[] = [];
 	blocks: BlockRec[] = [];
 	sites: SiteRec[] = [];
+	uses: VarUse[] = [];
 	bsites: BuiltinSiteMeta[] = [];
 	edits: Edit[] = [];
 	naming: Naming[] = [{ path: '', used: new Map() }];
@@ -374,7 +385,8 @@ class Instrumenter {
 			refs: new Set(),
 			uses_arguments: false,
 			blocks: 0,
-			body: null
+			body: null,
+			entry: null
 		};
 		this.fns.push(f);
 		return f;
@@ -584,8 +596,13 @@ class Instrumenter {
 		this.fn.declared.add(name);
 	}
 
-	ref(name: string): void {
+	ref(name: string, offset?: number, access?: 'read' | 'write' | 'both'): void {
 		this.fn.refs.add(name);
+		if (offset !== undefined && access !== undefined) {
+			const use = { fn: this.fn, name, offset, block: this.block };
+			if (access !== 'write') this.uses.push({ ...use, write: false });
+			if (access !== 'read') this.uses.push({ ...use, write: true });
+		}
 		if (name === 'arguments') {
 			let f: FnRec | null = this.fn;
 			while (f && f.is_arrow) f = f.parent;
@@ -1006,6 +1023,7 @@ class Instrumenter {
 		const body = get(node, 'body')!;
 		f.body = [body.start, body.end];
 		const entry = this.new_block(body.start, 'entry');
+		f.entry = entry;
 		this.block = entry;
 		this.scope_block = entry;
 
@@ -1102,7 +1120,8 @@ class Instrumenter {
 				let nm = kind === 'constructor' ? 'constructor' : this.key_name(key, computed);
 				if (kind === 'get' || kind === 'set') nm = `${kind} ${nm}`;
 				if (is_static) nm = `static ${nm}`;
-				this.walk_function(value, nm);
+				const f = this.walk_function(value, nm);
+				if (kind === 'get' || kind === 'set') this.op('call', value.start, 1, f.entry!);
 				if (kind === 'constructor') ctor_fields = count_this_writes(get(value, 'body')!);
 			} else if (m.type === 'PropertyDefinition' || m.type === 'AccessorProperty') {
 				if (flag(m, 'declare')) continue;
@@ -1142,7 +1161,7 @@ class Instrumenter {
 		switch (node.type) {
 			case 'Identifier':
 				if (mode === 'declare') this.declare(text(node, 'name'));
-				else this.ref(text(node, 'name'));
+				else this.ref(text(node, 'name'), node.start, 'write');
 				return;
 			case 'ObjectPattern':
 				for (const p of nodes(node, 'properties')) {
@@ -1201,7 +1220,7 @@ class Instrumenter {
 	walk_expr(node: Node, hint?: Hint): void {
 		switch (node.type) {
 			case 'Identifier':
-				this.ref(text(node, 'name'));
+				this.ref(text(node, 'name'), node.start, 'read');
 				return;
 			case 'Literal':
 				if (node.regex) this.alloc_site('regexp', node.start, REGEXP, false);
@@ -1286,6 +1305,7 @@ class Instrumenter {
 					this.op('prop_read', arg.start);
 					this.op('prop_write', arg.start);
 				} else {
+					if (arg.type === 'Identifier') this.ref(text(arg, 'name'), arg.start, 'read');
 					this.walk_pattern(arg, 'assign');
 				}
 				this.op('update', node.start);
@@ -1422,8 +1442,12 @@ class Instrumenter {
 			if (computed && key) this.walk_expr(key);
 			const value = get(p, 'value')!;
 			const kind = text(p, 'kind');
-			let nm = this.key_name(key, computed);
-			if (kind === 'get' || kind === 'set') nm = `${kind} ${nm}`;
+			const nm = this.key_name(key, computed);
+			if (kind === 'get' || kind === 'set') {
+				const f = this.walk_function(value, `${kind} ${nm}`, this.block, false);
+				this.op('call', value.start, 1, f.entry!);
+				continue;
+			}
 			this.walk_expr(value, named(nm));
 		}
 		if (pushed) this.naming.pop();
@@ -1618,6 +1642,8 @@ class Instrumenter {
 			if (op !== '=') this.op('prop_read', left.start);
 			this.op('prop_write', get(left, 'property')!.start);
 		} else {
+			if (op !== '=' && left.type === 'Identifier')
+				this.ref(text(left, 'name'), left.start, 'read');
 			this.walk_pattern(left, 'assign');
 		}
 		this.op('assign', node.start);
@@ -1690,7 +1716,37 @@ class Instrumenter {
 
 	// ---------------------------------------------------------------- finalize
 
+	/**
+	 * A variable a nested function uses lives in a context, a heap object V8 makes per call of the
+	 * function that declares it: each use is a slot load or store, priced as a property read or
+	 * write. Module scope has one context, so the optimizer folds a module variable nothing writes
+	 * after its declaration; one that is written costs a slot access like any other.
+	 */
+	price_context_slots(): void {
+		const owner_of = (f: FnRec, name: string): FnRec | null => {
+			for (let a: FnRec | null = f; a; a = a.parent) if (a.declared.has(name)) return a;
+			return null;
+		};
+		const captured = new Set<string>();
+		const written = new Set<string>();
+		const resolved: Array<[VarUse, FnRec, string]> = [];
+		for (const u of this.uses) {
+			const owner = owner_of(u.fn, u.name);
+			if (!owner) continue;
+			const key = `${owner.index}:${u.name}`;
+			if (owner !== u.fn) captured.add(key);
+			if (u.write) written.add(key);
+			resolved.push([u, owner, key]);
+		}
+		for (const [u, owner, key] of resolved) {
+			if (!captured.has(key)) continue;
+			if (owner.meta.kind === 'top' && !written.has(key)) continue;
+			this.op(u.write ? 'prop_write' : 'prop_read', u.offset, 1, u.block);
+		}
+	}
+
 	finalize(): ModuleMeta {
+		this.price_context_slots();
 		for (const s of this.sites) {
 			if (s.closure_of) s.meta.bytes = closure_bytes(captured(s.closure_of));
 			if (s.meta.kind === 'new') {

@@ -146,6 +146,19 @@ iterator step: 1 + 1 + 1 + 4 = 7. For 20 rows of 3 tags, `score` costs 20 × 10 
 steps, which is what the report says. In `rank`, `const out: number[] = []` is an allocation (4),
 four words of an empty array (16 B, so 4) and an assignment (1): 9 steps on line 15.
 
+A variable costs nothing to read or write while it lives in the function's own frame. A variable
+a nested function uses lives in a context instead, a heap object V8 makes on each call of the
+function that declares it, so every use of it (in the closure and in the declaring function) is
+a property read (1) or a property write (2), the same as `this.x` or `this.#x`. A module variable
+that is never reassigned costs nothing: a module has one context and the optimizer folds it. One
+that is reassigned costs a slot access like any other. Without this, closure state was free and
+the same state as a class field cost a property read per use, so moving state from a closure to
+a class read as slower when Node ran it faster (ogygia's `queries`: +0.2% to +2% steps, 0% to
+-32% time).
+
+A getter or setter costs a call (4) when it runs, as the method doing the same work does: the
+access calls a function the code does not spell out as a call.
+
 Some costs depend on sizes only known at run time. The runtime adds them when the code runs:
 
 | Dynamic cost                     | Steps |
