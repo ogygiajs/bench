@@ -64,8 +64,7 @@ interface Node {
 /** The config in `dir`'s `heisenbench.config.ts`, or null when it has none. */
 export function read_config(dir: string): HeisenbenchConfig | null {
 	const file = join(dir, CONFIG_FILE);
-	// a sandboxed child (prove) may not read above its root: no file there is no config
-	if (!existsSync(file)) return null;
+	if (!present(file)) return null;
 	const parsed = parseSync(file, readFileSync(file, 'utf8'), { sourceType: 'module', lang: 'ts' });
 	if (parsed.errors.length > 0)
 		throw new Error(`heisenbench: ${file} does not parse: ${parsed.errors[0]!.message}`);
@@ -82,6 +81,19 @@ export function read_config(dir: string): HeisenbenchConfig | null {
 			throw new Error(`heisenbench: ${file}: unknown key ${k} (known: ${[...KEYS].join(', ')})`);
 	if (config.importMetaEnv === undefined) return {};
 	return { importMetaEnv: check_env(config.importMetaEnv, file) };
+}
+
+/**
+ * Whether `file` exists. A sandboxed child (prove) may not read above its root, where Node's
+ * permission model throws on the check itself: a config it may not see is no config.
+ */
+function present(file: string): boolean {
+	try {
+		return existsSync(file);
+	} catch (e) {
+		if ((e as { code?: unknown }).code === 'ERR_ACCESS_DENIED') return false;
+		throw e;
+	}
 }
 
 /** `x` without the wrappers a typed default export has: `defineConfig(...)`, `satisfies`, `as`. */
