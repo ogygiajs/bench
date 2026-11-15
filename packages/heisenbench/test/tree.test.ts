@@ -38,9 +38,13 @@ function repo(): string {
 
 async function count(root: string): Promise<{ report: Report; out: string }> {
 	const out = join(root, 'heisenbench-report.json');
-	const r = await run(process.execPath, ['--no-warnings', CLI, 'run', 'bench/lib.bench.ts', '--root', root, '--out', out], {
-		cwd: root
-	});
+	const r = await run(
+		process.execPath,
+		['--no-warnings', CLI, 'run', 'bench/lib.bench.ts', '--root', root, '--out', out],
+		{
+			cwd: root
+		}
+	);
 	return { report: JSON.parse(readFileSync(out, 'utf8')) as Report, out: r.stdout + r.stderr };
 }
 
@@ -52,13 +56,25 @@ test('a report of a clean checkout names no changed files', async () => {
 
 test('a report names the counted files that differ from its commit, and says so', async () => {
 	const root = repo();
-	writeFileSync(join(root, 'src/lib.ts'), 'export function add(a: number, b: number): number {\n\treturn b + a;\n}\n');
+	writeFileSync(
+		join(root, 'src/lib.ts'),
+		'export function add(a: number, b: number): number {\n\treturn b + a;\n}\n'
+	);
 	writeFileSync(join(root, 'src/unused.ts'), 'export const x = 2;\n');
 	writeFileSync(join(root, 'README.md'), 'changed\n');
 	write_files(root, { 'src/new.ts': 'export const y = 1;\n' });
 	const { report, out } = await count(root);
 	assert.deepEqual(report.git.changed, ['src/lib.ts'], 'only what the run loaded');
 	assert.match(out, /uncommitted changes to src\/lib\.ts/);
+});
+
+test('one changed file, the first line git prints, is named whole', async () => {
+	const root = repo();
+	writeFileSync(
+		join(root, 'src/lib.ts'),
+		'export function add(a: number, b: number): number {\n\treturn b + a;\n}\n'
+	);
+	assert.deepEqual((await count(root)).report.git.changed, ['src/lib.ts']);
 });
 
 test('a counted file git does not track yet is a change too', async () => {
@@ -68,7 +84,11 @@ test('a counted file git does not track yet is a change too', async () => {
 		'bench/extra.bench.ts': `import { bench } from '${BENCH_API}';\nimport { one } from '../src/extra.ts';\n\nbench('one', () => one + 1);\n`
 	});
 	const outp = join(root, 'r.json');
-	await run(process.execPath, ['--no-warnings', CLI, 'run', 'bench/extra.bench.ts', '--root', root, '--out', outp], { cwd: root });
+	await run(
+		process.execPath,
+		['--no-warnings', CLI, 'run', 'bench/extra.bench.ts', '--root', root, '--out', outp],
+		{ cwd: root }
+	);
 	const report = JSON.parse(readFileSync(outp, 'utf8')) as Report;
 	assert.deepEqual(report.git.changed, ['bench/extra.bench.ts', 'src/extra.ts']);
 });

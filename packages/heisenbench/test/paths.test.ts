@@ -211,7 +211,10 @@ test('a pnpm-style package with a dependency, a .svelte component and its config
 	const reports: CaseReport[][] = [];
 	for (const root of three_roots('workspace')) {
 		write_files(root, WORKSPACE);
-		symlinkSync(join('.pnpm', 'price@1.2.0', 'node_modules', 'price'), join(root, 'node_modules', 'price'));
+		symlinkSync(
+			join('.pnpm', 'price@1.2.0', 'node_modules', 'price'),
+			join(root, 'node_modules', 'price')
+		);
 		symlinkSync(SVELTE, join(root, 'node_modules', 'svelte'));
 		const r = await count(root, 'bench/page.bench.ts');
 		const c = r.cases[0];
@@ -220,8 +223,14 @@ test('a pnpm-style package with a dependency, a .svelte component and its config
 		reports.push(r.cases);
 	}
 	const [a, b, c] = reports;
-	assert.ok(a[0].functions.some((f) => f.module.startsWith('price@1.2.0')), 'the dependency is counted');
-	assert.ok(a[0].functions.some((f) => f.module === 'src/Card.svelte'), 'the component is counted');
+	assert.ok(
+		a[0].functions.some((f) => f.module.startsWith('price@1.2.0')),
+		'the dependency is counted'
+	);
+	assert.ok(
+		a[0].functions.some((f) => f.module === 'src/Card.svelte'),
+		'the component is counted'
+	);
 	assert.deepEqual(work(b), work(a), 'a long, deep root counts what a short one does');
 	assert.deepEqual(work(c), work(a), 'unicode and spaces in the root count the same');
 });

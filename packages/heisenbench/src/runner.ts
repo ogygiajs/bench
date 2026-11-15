@@ -86,6 +86,42 @@ function git(root: string, args: string[]): string | null {
 	}
 }
 
+/**
+ * Which of `counted` (absolute paths) differ from HEAD on disk: changed, staged or not tracked.
+ * Relative to `root`, sorted. Two checkouts of one commit count the same; one with a change in a
+ * file it counts does not, and the report has to say which.
+ */
+export function changed_files(
+	root: string,
+	toplevel: string,
+	counted: readonly string[]
+): string[] {
+	let status: string;
+	try {
+		// not git(): its trim would cut the first entry's leading status column
+		status = execFileSync(
+			'git',
+			['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', '.'],
+			{ cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], maxBuffer: 1 << 28 }
+		);
+	} catch {
+		return [];
+	}
+	const dirty = new Set<string>();
+	const entries = status.split('\0');
+	for (let i = 0; i < entries.length; i++) {
+		const e = entries[i];
+		if (e.length < 4) continue;
+		dirty.add(resolve(toplevel, e.slice(3)));
+		// a rename or copy is followed by the path it came from
+		if (e[0] === 'R' || e[0] === 'C') i++;
+	}
+	const out = new Set<string>();
+	for (const file of counted)
+		if (dirty.has(file)) out.add(relative(root, file).split(sep).join('/'));
+	return [...out].sort();
+}
+
 const real_set_timeout = setTimeout;
 const real_clear_timeout = clearTimeout;
 
@@ -301,14 +337,27 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	}
 
 	const toplevel = git(root, ['rev-parse', '--show-toplevel']);
+	const sha = opts.sha ?? source_from?.sha ?? git(root, ['rev-parse', 'HEAD']);
+	const changed =
+		toplevel && !source_from
+			? changed_files(root, toplevel, [
+					...rt.modules.map((m) => resolve(root, m.meta.file)),
+					...results.map((r) => resolve(root, r.file))
+				])
+			: [];
+	if (changed.length > 0)
+		log(
+			`NOTE     counted with uncommitted changes to ${changed.join(', ')}: these counts are of the files on disk, not of ${sha ? sha.slice(0, 12) : 'the commit'}`
+		);
 	const report: Report = {
 		schema: REPORT_SCHEMA,
 		prices: { version: rt.prices.version, hash: load_prices().hash },
 		node: process.version,
 		env: environment(),
 		git: {
-			sha: opts.sha ?? source_from?.sha ?? git(root, ['rev-parse', 'HEAD']),
-			prefix: toplevel ? relative(toplevel, root).split(sep).join('/') : ''
+			sha,
+			prefix: toplevel ? relative(toplevel, root).split(sep).join('/') : '',
+			...(changed.length > 0 && { changed })
 		},
 		cases: results,
 		unit_terms: [...SIZE_TERMS]
