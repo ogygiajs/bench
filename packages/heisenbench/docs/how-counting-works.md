@@ -289,9 +289,31 @@ measuring window:
   built what they build lazily), and its count at 1x is its `heisenbench run` count. Growth from
   recorded calls gives each module a copy of its own.
 
+**Outside the window.** A case's own code also runs before and after it: the bench file's top
+level (each run imports a fresh copy), `setup`, `scale` (growth) and `teardown`. That code reads
+the window's clock and randomness too (`case_world` in `src/runtime/determinism.ts`): `Date`,
+`performance.now` and `process.hrtime` start at 2024-01-01T00:00:00Z and move 1 ms per read, and
+`Math.random` and the crypto generators start from seed `0xabac`, every time. Timers, IO and paths
+stay real there: a setup may wait on a server or read a fixture. Before, setup ran on the real
+clock, and an input built from it moved every count it fed: ogygia's capability bench signs its
+claims in setup with an expiry 30 minutes from `Date.now()`, so the signatures, and the steps
+`region_verify` takes to check them, changed on every run. The clock in setup reads the same epoch
+the window starts from, so a claim that expires in 30 minutes is still valid inside the window.
+`test/case-world.test.ts` counts a case whose file, setup, scale and teardown read the clock and
+randomness every way, in two processes: the counts are the same.
+
 Each case runs three times: a warm-up that records IO, then two measured runs. If the two
 measured counts differ in any function, the case is reported **unstable**. That is a finding: the
 code reads something the window does not control.
+
+**The tree.** A count is of the files on disk. Two checkouts of one commit count the same (the
+paths above, and `test/paths.test.ts` on a pnpm-style package with a linked dependency, a
+`.svelte` component and its `heisenbench.config.ts`, at three roots), unless one of them has
+changes: a mutation run applies its mutants in place, and a checkout mid-run counts the mutant.
+So `heisenbench run` names every counted file (a module it loaded, or a bench file) that differs
+from `HEAD`, changed, staged or not tracked, in the report (`git.changed`) and on the console
+(`NOTE counted with uncommitted changes to ...`). Two reports of one sha that differ while one of
+them names changed files are of two different trees. `test/tree.test.ts` checks it.
 
 The runtime never charges itself. Its own tables are typed arrays and plain objects, not `Map`s
 (a priced built-in), and its hot path has no regular expressions.
