@@ -332,8 +332,9 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
 - `import.meta.env`, as Vite defines it. `import.meta.env.DEV` reads `false`, as a literal that
   costs what a constant costs, in your code and in dependencies, in every build Heisenbench runs.
   The env is a production client build (`DEV: false`, `PROD: true`, `MODE: 'production'`,
-  `SSR: false`, `BASE_URL: '/'`); `"heisenbench": { "importMetaEnv": { "SSR": true } }` in
-  package.json changes it ([how-counting-works.md](docs/how-counting-works.md#importmetaenv)).
+  `SSR: false`, `BASE_URL: '/'`); `importMetaEnv` in the package's
+  [`heisenbench.config.ts`](#per-package-config-heisenbenchconfigts) changes it
+  ([how-counting-works.md](docs/how-counting-works.md#importmetaenv)).
 - Anything else Node cannot load by itself (path aliases, modules only a bundler serves, globals
   the code expects) through a preload: `--import <file>` (below).
 - A bench file that throws, does not parse or defines no cases is reported on its own; the other
@@ -364,6 +365,35 @@ too. [layers.md](docs/layers.md#complexity-contracts) has the details.
   > scan`, inside the bundle's wrapper function), and Node's
   > built-in modules are never counted: the built-ins they reach are priced where counted code
   > calls them.
+
+### Per-package config: `heisenbench.config.ts`
+
+A package keeps its Heisenbench settings in `heisenbench.config.ts`, next to its package.json.
+It is the only place they live; package.json holds none, so nothing about benches ships to npm
+with the package (leave the file out of `files`).
+
+```ts
+import { defineConfig } from 'heisenbench';
+
+export default defineConfig({
+	// the import.meta.env this package's code reads, merged over the default
+	importMetaEnv: { SSR: true, VITE_API_URL: '/api' }
+});
+```
+
+| Key             | What it sets                                                                                                      |
+| --------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `importMetaEnv` | `import.meta.env` for the code under the file ([how-counting-works.md](docs/how-counting-works.md#importmetaenv)) |
+
+- A file reads the nearest `heisenbench.config.ts` in its own directory or above. The nearest one
+  wins whole; configs higher up do not merge into it.
+- No config file is fine: every setting has its default.
+- The file is read as data, never run. Its default export (bare, through `defineConfig(...)`, or
+  with `satisfies` / `as`) must be an object literal of literals. Its `import` is never resolved,
+  so `heisenbench` need not be installed where the file sits; `defineConfig` is only there for
+  editor types (`HeisenbenchConfig`).
+- A config that is not plain data, has an unknown key or a bad value is an error, as is a
+  package.json that still sets the old `heisenbench.importMetaEnv` field.
 
 ## CLI
 

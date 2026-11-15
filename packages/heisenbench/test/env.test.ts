@@ -7,7 +7,7 @@ import { engine_health } from '../src/engine/health.ts';
 import { run_child } from '../src/measure/spawn.ts';
 import type { CaseResult } from '../src/measure/child.ts';
 import type { TimeStats } from '../src/measure/time.ts';
-import { DEFAULT_ENV, define_env, env_for } from '../src/transform/env.ts';
+import { DEFAULT_ENV, define_env } from '../src/transform/env.ts';
 import { BENCH_API, KEYS, cli } from '../src/verify/fixture.ts';
 import { temp_dir, write_files } from './helpers.ts';
 
@@ -58,9 +58,13 @@ function project(dir: string, want: string, env?: object, order?: 'forward' | 'r
 		'package.json': JSON.stringify({
 			name: 'env-project',
 			private: true,
-			type: 'module',
-			...(env ? { heisenbench: { importMetaEnv: env } } : {})
+			type: 'module'
 		}),
+		...(env
+			? {
+					'heisenbench.config.ts': `import { defineConfig } from 'heisenbench';\nexport default defineConfig({ importMetaEnv: ${JSON.stringify(env)} });\n`
+				}
+			: {}),
 		'node_modules/envdep/package.json': JSON.stringify({
 			name: 'envdep',
 			version: '1.0.0',
@@ -145,27 +149,6 @@ test('define: code without import.meta.env comes back byte for byte', () => {
 	assert.ok(files > 20, `${files} answer-key files`);
 });
 
-test('env: the nearest package.json that sets heisenbench.importMetaEnv, merged over the default', () => {
-	const dir = temp_dir('heisenbench-env-config-');
-	write_files(dir, {
-		'package.json': JSON.stringify({
-			heisenbench: { importMetaEnv: { SSR: true, VITE_API: '/api' } }
-		}),
-		'packages/a/package.json': JSON.stringify({ name: 'a' }),
-		'packages/b/package.json': JSON.stringify({
-			heisenbench: { importMetaEnv: { MODE: 'staging' } }
-		}),
-		'bad/package.json': JSON.stringify({ heisenbench: { importMetaEnv: { DEV: [1] } } })
-	});
-	assert.deepEqual(env_for(join(dir, 'packages/a/src/x.ts')), {
-		...DEFAULT_ENV,
-		SSR: true,
-		VITE_API: '/api'
-	});
-	assert.deepEqual(env_for(join(dir, 'packages/b/x.ts')), { ...DEFAULT_ENV, MODE: 'staging' });
-	assert.throws(() => env_for(join(dir, 'bad/x.ts')), /importMetaEnv\.DEV must be a string/);
-});
-
 test('counted build: import.meta.env reads the production env, and a read costs what a constant costs', async () => {
 	const dir = temp_dir('heisenbench-env-counted-');
 	project(dir, PRODUCTION);
@@ -208,7 +191,7 @@ test('plain build: the time layer reads the same env, dependencies included', as
 	);
 });
 
-test('a project sets its own env in package.json: both builds read it', async () => {
+test('a project sets its own env in heisenbench.config.ts: both builds read it', async () => {
 	const dir = temp_dir('heisenbench-env-override-');
 	const want = 'staging:true:/app/:true:undefined|staging|staging';
 	project(dir, want, { MODE: 'staging', SSR: true, BASE_URL: '/app/' });

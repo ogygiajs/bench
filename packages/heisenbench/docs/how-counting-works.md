@@ -112,12 +112,14 @@ included. A module without `import.meta.env` is left byte for byte as it was, so
 change.
 
 The env models a production client build:
-`{ BASE_URL: '/', DEV: false, MODE: 'production', PROD: true, SSR: false }`. A project changes it
-with one key in its package.json, merged over that default; the nearest package.json above a file
-that sets it is the one the file reads (`SSR: true` for server code, `VITE_*` keys the code reads):
+`{ BASE_URL: '/', DEV: false, MODE: 'production', PROD: true, SSR: false }`. A package changes it
+with one key in its `heisenbench.config.ts` (next to its package.json), merged over that default;
+the nearest config above a file is the one the file reads (`SSR: true` for server code, `VITE_*`
+keys the code reads):
 
-```json
-{ "heisenbench": { "importMetaEnv": { "SSR": true, "VITE_API_URL": "/api" } } }
+```ts
+import { defineConfig } from 'heisenbench';
+export default defineConfig({ importMetaEnv: { SSR: true, VITE_API_URL: '/api' } });
 ```
 
 Values are strings, numbers, booleans or `null`. A module reads the env once, when it loads, so it
