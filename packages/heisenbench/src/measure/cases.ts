@@ -2,6 +2,7 @@ import { relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
+import { import_bench_file } from '../fresh.ts';
 import { GENERATION } from '../loader/core.ts';
 
 /**
@@ -20,7 +21,7 @@ export async function load_cases(
 		const abs = resolve(root, f);
 		set_current_file(relative(root, abs).split(sep).join('/'));
 		const query = generation ? `?${GENERATION}${generation}` : '';
-		await import(pathToFileURL(abs).href + query);
+		await import_bench_file(pathToFileURL(abs).href + query);
 	}
 	const list = cases().slice(start);
 	return filter ? list.filter((c) => c.name.includes(filter)) : list;

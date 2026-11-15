@@ -123,6 +123,8 @@ export class Determinism {
 	/** Recorded IO. A null-prototype dictionary: Map methods are priced built-ins. */
 	#io: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
 	#finalizers: Array<() => void> = [];
+	/** Calls of `hold` still running: the clock is patched while it is above 0. */
+	#held = 0;
 
 	constructor(o: DeterminismOptions = {}) {
 		this.seed = o.seed ?? 0xabac;
@@ -222,6 +224,46 @@ export class Determinism {
 
 	close(): void {
 		if (!this.#open) return;
+		this.#restore();
+		this.#open = false;
+	}
+
+	/**
+	 * `f` with the clock and randomness of a window (from the epoch, the same seed) and everything
+	 * else real: timers, IO and paths. For a case's own code outside the window (see case_world).
+	 * Nested and overlapping calls share the first one's clock; a window already open keeps its own.
+	 */
+	hold<T>(f: () => T): T {
+		if (this.#open || globalThis.Date !== RealDate) return f();
+		if (this.#held++ === 0) {
+			this.reset();
+			try {
+				this.#patch_clock();
+				this.#patch_random();
+				syncBuiltinESMExports();
+			} catch (e) {
+				this.#release();
+				throw e;
+			}
+		}
+		let out: T;
+		try {
+			out = f();
+		} catch (e) {
+			this.#release();
+			throw e;
+		}
+		if (out && typeof (out as { then?: unknown }).then === 'function')
+			return Promise.resolve(out).finally(() => this.#release()) as T;
+		this.#release();
+		return out;
+	}
+
+	#release(): void {
+		if (--this.#held === 0) this.#restore();
+	}
+
+	#restore(): void {
 		for (let i = this.#patches.length - 1; i >= 0; i--) {
 			const p = this.#patches[i];
 			if (p.desc && !p.desc.configurable) p.owner[p.prop] = p.desc.value;
@@ -229,7 +271,6 @@ export class Determinism {
 			else delete p.owner[p.prop];
 		}
 		this.#patches.length = 0;
-		this.#open = false;
 		syncBuiltinESMExports();
 	}
 
@@ -685,3 +726,19 @@ export class Determinism {
 		return list.length;
 	}
 }
+
+const CASE_WORLD = new Determinism();
+
+/**
+ * Run a case's own code that runs outside the measuring window (loading its bench file, `setup`,
+ * `scale`, `teardown`) on the window's clock and randomness: `Date.now()` is 2024-01-01 and
+ * `Math.random()` starts from the same seed every time, so an input built from them is the same
+ * in every run and every process. Timers, IO and paths stay real. Sync stays sync.
+ */
+export function case_world<T>(f: () => T): T {
+	return CASE_WORLD.hold(f);
+}
+
+/** How bench.ts finds case_world without importing the runtime (bench files load copies of it). */
+export const CASE_WORLD_KEY = Symbol.for('heisenbench.case_world');
+(globalThis as unknown as Record<symbol, unknown>)[CASE_WORLD_KEY] ??= case_world;

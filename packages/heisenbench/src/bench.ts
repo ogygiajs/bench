@@ -1,7 +1,7 @@
 /**
  * Defining bench cases (tinybench-style): a name, the function to measure, and an optional setup
  * whose return value is handed to the function. Setup and teardown run outside the measuring
- * window, before and after every run.
+ * window, before and after every run, on the window's clock and randomness (case_world).
  *
  *   import { bench } from 'heisenbench/bench';
  *   import { __heisenbench } from '../src/router/match.ts';
@@ -42,6 +42,8 @@ export interface BenchCase<T = unknown> extends BenchOptions<T> {
 const SYM = Symbol.for('heisenbench.bench.cases');
 const CURRENT = Symbol.for('heisenbench.bench.file');
 const NAMES = Symbol.for('heisenbench.bench.names');
+/** runtime/determinism.ts CASE_WORLD_KEY. */
+const WORLD = Symbol.for('heisenbench.case_world');
 
 type Global = Record<symbol, unknown>;
 
@@ -80,5 +82,20 @@ export function bench<T = undefined>(
 	if (names.has(name))
 		throw new Error(`heisenbench: two cases in ${file || 'this file'} are named '${name}'`);
 	names.add(name);
-	cases().push({ ...options, name, fn, file } as BenchCase);
+	const { setup, scale, teardown } = options;
+	cases().push({
+		...options,
+		...(setup && { setup: () => in_case_world(setup) }),
+		...(scale && { scale: (ctx: T, k: number) => in_case_world(() => scale(ctx, k)) }),
+		...(teardown && { teardown: (ctx: T) => in_case_world(() => teardown(ctx)) }),
+		name,
+		fn,
+		file
+	} as BenchCase);
+}
+
+/** `f` on the window's clock and randomness (runtime/determinism.ts case_world), when a run is loaded. */
+function in_case_world<R>(f: () => R): R {
+	const world = (globalThis as unknown as Global)[WORLD] as (<X>(f: () => X) => X) | undefined;
+	return world ? world(f) : f();
 }

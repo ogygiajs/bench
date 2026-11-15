@@ -3,6 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
+import { import_bench_file } from '../fresh.ts';
 import { run_growth } from '../growth/index.ts';
 import { register_heisenbench } from '../loader/register.ts';
 import { watch_parent } from '../proc.ts';
@@ -41,7 +42,7 @@ if (job.kind === 'list') {
 		set_current_file(file);
 		const start = cases().length;
 		try {
-			await import(pathToFileURL(join(job.root, file)).href);
+			await import_bench_file(pathToFileURL(join(job.root, file)).href);
 		} catch (e) {
 			errors.push({ file, error: one_line(e) });
 			continue;

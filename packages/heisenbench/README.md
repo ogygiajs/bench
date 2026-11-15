@@ -245,7 +245,9 @@ bench<T>(name: string, fn: (ctx: T) => unknown, options?: {
 ```
 
 `fn` may be async. Each case runs three times: once to warm up and record IO, then twice measured.
-The two measured counts must match exactly or the case is reported unstable.
+The two measured counts must match exactly or the case is reported unstable. The bench file's top
+level, `setup`, `scale` and `teardown` read the same clock and randomness the window does (from
+2024-01-01, the same seed), so an input built from `Date.now()` is the same in every run.
 
 ### Private functions
 

@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
+import { import_bench_file } from '../fresh.ts';
 import { one_line } from '../report.ts';
 import { recorder } from './recorder.ts';
 import { register_record_hooks } from './replay-run.ts';
@@ -55,7 +56,7 @@ export async function record_benches(
 		const abs = resolve(f);
 		set_current_file(relative(root, abs).split(sep).join('/'));
 		try {
-			await import(pathToFileURL(abs).href);
+			await import_bench_file(pathToFileURL(abs).href);
 		} catch (e) {
 			log(`FAILED   ${f}: ${one_line(e)}`);
 		}

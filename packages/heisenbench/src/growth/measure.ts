@@ -2,6 +2,7 @@ import { relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
+import { import_bench_file } from '../fresh.ts';
 import { register_heisenbench } from '../loader/register.ts';
 import type { LoaderConfig } from '../loader/register.ts';
 import { get_runtime, same_counts } from '../runtime/index.ts';
@@ -57,7 +58,7 @@ export async function import_cases(
 		const file = relative(root, abs).split(sep).join('/');
 		set_current_file(file);
 		try {
-			await import(pathToFileURL(abs).href);
+			await import_bench_file(pathToFileURL(abs).href);
 		} catch (e) {
 			// One file that does not load costs only its own cases.
 			log(`FAILED   ${file}: ${one_line(e)}`);

@@ -131,8 +131,12 @@ export interface Report {
 	node: string;
 	/** Where it was counted: what a comparison between two reports must agree on (env_mismatch). */
 	env?: Environment;
-	/** `prefix`: the run root relative to the git top level (module ids are relative to the root). */
-	git: { sha: string | null; prefix: string };
+	/**
+	 * `prefix`: the run root relative to the git top level (module ids are relative to the root).
+	 * `changed`: the counted files (relative to the root) that differ from `sha` on disk, changed
+	 * or not tracked; the counts are of the files on disk. Absent: none differ, or not a checkout.
+	 */
+	git: { sha: string | null; prefix: string; changed?: string[] };
 	cases: CaseReport[];
 	/**
 	 * The built-in size terms its units keep (prices.ts SIZE_TERMS, `parts`...). Absent: a report
