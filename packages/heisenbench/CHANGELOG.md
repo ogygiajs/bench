@@ -1,5 +1,19 @@
 # heisenbench
 
+## 0.3.0
+
+### Minor Changes
+
+- [#70](https://github.com/ogygiajs/bench/pull/70) [`5698901`](https://github.com/ogygiajs/bench/commit/5698901704c4884bb72516519d17593b04964af0) Thanks [@PuruVJ](https://github.com/PuruVJ)! - A variable a nested function uses costs a property read or write on every use, as V8 keeps it in a context object (a module variable nothing reassigns stays free), and a getter or setter costs a call when it runs, so state moved from a closure to class fields no longer reads as slower.
+
+- [#73](https://github.com/ogygiajs/bench/pull/73) [`a32f5de`](https://github.com/ogygiajs/bench/commit/a32f5def27301439013d37eaafbae224d1515f5e) Thanks [@PuruVJ](https://github.com/PuruVJ)! - A package's settings (`importMetaEnv`) live in a `heisenbench.config.ts` next to its package.json, typed with the new `defineConfig`, so nothing about benches ships to npm; the package.json `heisenbench.importMetaEnv` field is no longer read, and a package.json that still sets it is an error that says where to move it.
+
+### Patch Changes
+
+- [#75](https://github.com/ogygiajs/bench/pull/75) [`c707f95`](https://github.com/ogygiajs/bench/commit/c707f957e18a23ccb8d71b9c79d4efeebf078aab) Thanks [@PuruVJ](https://github.com/PuruVJ)! - A bench file's top level, `setup`, `scale` and `teardown` read the same clock and randomness the measuring window does (from 2024-01-01, the same seed), so a case whose input is built from `Date.now()` or `Math.random()` counts the same in every run and every process instead of moving each time.
+
+- [#75](https://github.com/ogygiajs/bench/pull/75) [`c707f95`](https://github.com/ogygiajs/bench/commit/c707f957e18a23ccb8d71b9c79d4efeebf078aab) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `heisenbench run` names the counted files that differ from the commit (changed, staged or not tracked) in the report's `git.changed` and on the console, so a count from a checkout with uncommitted changes is never read as that commit's.
+
 ## 0.2.0
 
 ### Minor Changes
