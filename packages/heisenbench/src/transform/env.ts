@@ -4,6 +4,7 @@ import MagicString from 'magic-string';
 import { parseSync } from 'oxc-parser';
 import remapping from '@jridgewell/remapping';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
+import { CONFIG_FILE, read_config, type EnvValue, type ImportMetaEnv } from '../config.ts';
 
 /*
  * `import.meta.env`, the way Vite gives it to code it builds. Vite replaces it statically (its
@@ -25,17 +26,16 @@ import type { SourceMapInput } from '@jridgewell/trace-mapping';
  * Dependencies are rewritten too: a production build (`vite build`) defines every module it
  * bundles, node_modules included. Heisenbench's own files never read it.
  *
- * The env models a production client build. A project changes it in its package.json, merged
- * over the default (the nearest package.json above the file that sets it):
+ * The env models a production client build. A package changes it in its heisenbench.config.ts
+ * (src/config.ts), merged over the default; the nearest one above a file is the one it reads:
  *
- *   "heisenbench": { "importMetaEnv": { "SSR": true, "VITE_API": "/api" } }
+ *   export default defineConfig({ importMetaEnv: { SSR: true, VITE_API: '/api' } });
  */
 
-/** The package.json field (under `heisenbench`) a project sets its env with. */
+/** The config key a package sets its env with. */
 export const ENV_KEY = 'importMetaEnv';
 
-export type EnvValue = string | number | boolean | null;
-export type ImportMetaEnv = Readonly<Record<string, EnvValue>>;
+export type { EnvValue, ImportMetaEnv };
 
 /** `vite build` for the browser. */
 export const DEFAULT_ENV: ImportMetaEnv = Object.freeze({
@@ -46,27 +46,7 @@ export const DEFAULT_ENV: ImportMetaEnv = Object.freeze({
 	SSR: false
 });
 
-/** `value` as an env (an object of strings, finite numbers, booleans and nulls), or an error. */
-export function check_env(value: unknown, where: string): Record<string, EnvValue> {
-	if (value === null || typeof value !== 'object' || Array.isArray(value))
-		throw new Error(`heisenbench: ${where}: heisenbench.${ENV_KEY} must be an object`);
-	const out: Record<string, EnvValue> = {};
-	for (const [k, v] of Object.entries(value)) {
-		const ok =
-			v === null ||
-			typeof v === 'string' ||
-			typeof v === 'boolean' ||
-			(typeof v === 'number' && Number.isFinite(v));
-		if (!ok)
-			throw new Error(
-				`heisenbench: ${where}: heisenbench.${ENV_KEY}.${k} must be a string, number, boolean or null`
-			);
-		out[k] = v as EnvValue;
-	}
-	return out;
-}
-
-/** The env each directory's code sees (from the nearest package.json that sets one). */
+/** The env each directory's code sees (from the nearest heisenbench.config.ts). */
 const env_of_dir = new Map<string, ImportMetaEnv>();
 
 /** The env a file's `import.meta.env` reads. */
@@ -81,8 +61,9 @@ export function env_for(filename: string): ImportMetaEnv {
 			break;
 		}
 		walked.push(dir);
-		const set = project_env(join(dir, 'package.json'));
-		if (set !== null) found = Object.freeze({ ...DEFAULT_ENV, ...set });
+		refuse_package_field(join(dir, 'package.json'));
+		const config = read_config(dir);
+		if (config !== null) found = Object.freeze({ ...DEFAULT_ENV, ...config.importMetaEnv });
 		else if (dirname(dir) === dir) found = DEFAULT_ENV;
 		else dir = dirname(dir);
 	}
@@ -90,19 +71,21 @@ export function env_for(filename: string): ImportMetaEnv {
 	return found;
 }
 
-/** What a package.json sets under `heisenbench.importMetaEnv`, or null. */
-function project_env(file: string): Record<string, EnvValue> | null {
+/** An error when a package.json still sets `heisenbench.importMetaEnv`, which is no longer read. */
+function refuse_package_field(file: string): void {
 	let pkg: unknown;
 	try {
 		// a sandboxed child (prove) may not read above its root: no file there is no config
-		if (!existsSync(file)) return null;
+		if (!existsSync(file)) return;
 		pkg = JSON.parse(readFileSync(file, 'utf8'));
 	} catch {
-		return null;
+		return;
 	}
 	const hb = (pkg as { heisenbench?: unknown } | null)?.heisenbench;
-	if (hb === null || typeof hb !== 'object' || !(ENV_KEY in hb)) return null;
-	return check_env((hb as Record<string, unknown>)[ENV_KEY], file);
+	if (hb !== null && typeof hb === 'object' && ENV_KEY in hb)
+		throw new Error(
+			`heisenbench: ${file}: heisenbench.${ENV_KEY} is no longer read; move it to ${CONFIG_FILE} beside it: export default defineConfig({ ${ENV_KEY}: ... })`
+		);
 }
 
 interface Node {

@@ -80,7 +80,11 @@ test('config: the default export is read as data, never run, and anything else f
 		['call', `export default defineConfig(make());\n`, /literal/],
 		['spread', `export default { ...base };\n`, /literal/],
 		['unknown', `export default { importMetaENV: { SSR: true } };\n`, /unknown key importMetaENV/],
-		['bad-value', `export default { importMetaEnv: { DEV: [1] } };\n`, /importMetaEnv\.DEV must be a string/],
+		[
+			'bad-value',
+			`export default { importMetaEnv: { DEV: [1] } };\n`,
+			/importMetaEnv\.DEV must be a string/
+		],
 		['template', 'export default { importMetaEnv: { A: `${x}` } };\n', /literal/],
 		['syntax', `export default {\n`, /does not parse/]
 	];

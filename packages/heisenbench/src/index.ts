@@ -4,6 +4,8 @@
  * Public API (camelCase); the modules behind it use snake_case internally.
  */
 export { bench } from './bench.ts';
+export { define_config as defineConfig } from './config.ts';
+export type { HeisenbenchConfig } from './config.ts';
 export type { BenchCase, BenchOptions } from './bench.ts';
 export { transform } from './transform/index.ts';
 export type { TransformOptions, TransformResult } from './transform/index.ts';

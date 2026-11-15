@@ -7,7 +7,7 @@ import { engine_health } from '../src/engine/health.ts';
 import { run_child } from '../src/measure/spawn.ts';
 import type { CaseResult } from '../src/measure/child.ts';
 import type { TimeStats } from '../src/measure/time.ts';
-import { DEFAULT_ENV, define_env, env_for } from '../src/transform/env.ts';
+import { DEFAULT_ENV, define_env } from '../src/transform/env.ts';
 import { BENCH_API, KEYS, cli } from '../src/verify/fixture.ts';
 import { temp_dir, write_files } from './helpers.ts';
 
