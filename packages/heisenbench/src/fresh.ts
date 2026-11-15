@@ -3,6 +3,7 @@ import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from './bench.ts';
 import type { BenchCase } from './bench.ts';
 import { GENERATION, forget_commonjs } from './loader/core.ts';
+import { case_world } from './runtime/determinism.ts';
 
 /*
  * Fresh module state per measured run (spec 3). Every run of a case gets its own copy of the
@@ -27,6 +28,11 @@ import { GENERATION, forget_commonjs } from './loader/core.ts';
  * copies of a case's module graph per case). `fresh: false` (`heisenbench run --state shared`)
  * runs every case on one copy instead.
  */
+
+/** Import a bench file (or a copy of it) with its top level on the window's clock (case_world). */
+export function import_bench_file(href: string): Promise<unknown> {
+	return case_world(() => import(href));
+}
 
 let generation = 0;
 
@@ -56,7 +62,9 @@ export async function fresh_copy(c: BenchCase, root: string, position: number): 
 	const all = cases();
 	const start = all.length;
 	set_current_file(c.file);
-	await import(`${pathToFileURL(resolve(root, c.file)).href}?${GENERATION}${next_generation()}`);
+	await import_bench_file(
+		`${pathToFileURL(resolve(root, c.file)).href}?${GENERATION}${next_generation()}`
+	);
 	const added = all.slice(start);
 	// The copies are not cases of the run: keep the list as the runner built it.
 	all.length = start;

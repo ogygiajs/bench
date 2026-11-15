@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseSync } from 'oxc-parser';
 import { cases, set_current_file } from '../bench.ts';
 import type { BenchCase } from '../bench.ts';
+import { import_bench_file } from '../fresh.ts';
 import { LoaderCore } from '../loader/core.ts';
 import { register_source_resolve } from '../loader/resolve.ts';
 import { watch_parent } from '../proc.ts';
@@ -206,7 +207,7 @@ async function main(): Promise<void> {
 	for (const f of config.files) {
 		const abs = resolve(config.root, f);
 		set_current_file(relative(config.root, abs).split(sep).join('/'));
-		await import(pathToFileURL(abs).href);
+		await import_bench_file(pathToFileURL(abs).href);
 	}
 	const all = cases();
 	result.cases = all.map((c) => ({ name: c.name, file: c.file }));

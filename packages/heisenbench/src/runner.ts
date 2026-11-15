@@ -15,7 +15,7 @@ import { REPORT_SCHEMA, build_case_report, environment, error_frames, one_line }
 import type { LoadError } from './report.ts';
 import { SIZE_TERMS, load_prices } from './prices.ts';
 import { apply_estimates } from './calibrate/estimate.ts';
-import { fresh_copy, next_generation, positions } from './fresh.ts';
+import { fresh_copy, import_bench_file, next_generation, positions } from './fresh.ts';
 import { GENERATION } from './loader/core.ts';
 import type { CaseReport, Report } from './report.ts';
 import { package_shares } from './identity.ts';
@@ -224,7 +224,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 			set_current_file(file);
 			const before = cases().length;
 			try {
-				await import(pathToFileURL(abs).href + gen);
+				await import_bench_file(pathToFileURL(abs).href + gen);
 				if (cases().length === before) log(`NO CASES ${file}: it never calls bench()`);
 			} catch (e) {
 				const error = one_line(e);
