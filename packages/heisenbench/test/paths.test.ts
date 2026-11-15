@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { CaseReport, Report } from '../src/report.ts';
@@ -155,6 +156,72 @@ test('a module that reads its own paths counts the same at any root: short, deep
 	const [a, b, c] = reports.map((r) => r.cases);
 	assert.ok(a[0].totals.steps > 0);
 	assert.ok(a[0].functions.some((f) => f.module === 'src/tally.cjs'));
+	assert.deepEqual(work(b), work(a), 'a long, deep root counts what a short one does');
+	assert.deepEqual(work(c), work(a), 'unicode and spaces in the root count the same');
+});
+
+const SVELTE = join(fileURLToPath(new URL('../', import.meta.url)), 'node_modules', 'svelte');
+
+/*
+ * A package laid out the way a pnpm workspace lays out ogygia's: a dependency whose real files sit
+ * in `node_modules/.pnpm/<name>@<version>/node_modules/<name>` behind a link, a `.svelte` component
+ * rendered on the server, and `import.meta.env` from the package's `heisenbench.config.ts`.
+ */
+const WORKSPACE: Record<string, string> = {
+	'package.json': JSON.stringify({ name: 'shop', private: true, type: 'module' }),
+	'heisenbench.config.ts': `import { defineConfig } from 'heisenbench';
+export default defineConfig({ importMetaEnv: { SSR: true, BASE_URL: '/shop/' } });
+`,
+	'node_modules/.pnpm/price@1.2.0/node_modules/price/package.json': JSON.stringify({
+		name: 'price',
+		version: '1.2.0',
+		type: 'module',
+		exports: './index.js'
+	}),
+	'node_modules/.pnpm/price@1.2.0/node_modules/price/index.js': `export function price(n) {
+	const where = import.meta.url;
+	return '$' + (n / 100).toFixed(2) + ':' + where.split('/').length;
+}
+`,
+	'src/Card.svelte': `<script lang="ts">
+	import { price } from 'price';
+	let { name, cents }: { name: string; cents: number } = $props();
+	const base = import.meta.env.SSR ? import.meta.env.BASE_URL : '/';
+</script>
+
+<a href="{base}{name}">{name} <b>{price(cents)}</b></a>
+`,
+	'src/page.ts': `import { render } from 'svelte/server';
+import Card from './Card.svelte';
+
+export function page(n: number): number {
+	let len = 0;
+	for (let i = 0; i < n; i++) len += render(Card, { props: { name: 'item-' + i, cents: 199 * i } }).body.length;
+	return len + import.meta.url.length;
+}
+`,
+	'bench/page.bench.ts': `import { bench } from '${BENCH_API}';
+import { page } from '../src/page.ts';
+
+bench('a page of cards', ({ n }) => page(n), { setup: () => ({ n: 12 }) });
+`
+};
+
+test('a pnpm-style package with a dependency, a .svelte component and its config counts the same at three roots', async () => {
+	const reports: CaseReport[][] = [];
+	for (const root of three_roots('workspace')) {
+		write_files(root, WORKSPACE);
+		symlinkSync(join('.pnpm', 'price@1.2.0', 'node_modules', 'price'), join(root, 'node_modules', 'price'));
+		symlinkSync(SVELTE, join(root, 'node_modules', 'svelte'));
+		const r = await count(root, 'bench/page.bench.ts');
+		const c = r.cases[0];
+		assert.equal(c.error, null, `${root}: ${c.error}`);
+		assert.equal(c.stable, true);
+		reports.push(r.cases);
+	}
+	const [a, b, c] = reports;
+	assert.ok(a[0].functions.some((f) => f.module.startsWith('price@1.2.0')), 'the dependency is counted');
+	assert.ok(a[0].functions.some((f) => f.module === 'src/Card.svelte'), 'the component is counted');
 	assert.deepEqual(work(b), work(a), 'a long, deep root counts what a short one does');
 	assert.deepEqual(work(c), work(a), 'unicode and spaces in the root count the same');
 });
