@@ -316,5 +316,7 @@ export function read(w) {
 `;
 	const r = record_transform(source, { filename: 'wire.svelte.js', id: 'pkg/wire.svelte.js' });
 	assert.ok(r.code.includes('__heisenbench_rec.enter'), 'the functions are recorded');
-	assert.doesNotThrow(() => compileModule(r.code, { filename: 'wire.svelte.js', generate: 'client' }));
+	assert.doesNotThrow(() =>
+		compileModule(r.code, { filename: 'wire.svelte.js', generate: 'client' })
+	);
 });
