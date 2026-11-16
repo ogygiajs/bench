@@ -184,8 +184,8 @@ export function record_transform(code: string, o: RecordTransformOptions): Recor
 			skipped.push({ id, reason: 'reads new.target' });
 			return;
 		}
-		const r = `$heisenbench_r${++n}`;
-		const e = `$heisenbench_e${n}`;
+		const r = `__heisenbench_r${++n}`;
+		const e = `__heisenbench_e${n}`;
 		const args = is_arrow ? `[${params.map((p) => p.name as string).join(',')}]` : 'arguments';
 		// `this` is an input only when the function reads it (a method called on a module
 		// namespace or a class instance would otherwise make every call uncloneable).

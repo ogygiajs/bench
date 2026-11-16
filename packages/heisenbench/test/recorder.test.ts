@@ -300,3 +300,23 @@ export function name_of(o) {
 	const getter = [...recs].find(([path]) => path.startsWith('named > '))?.[1];
 	assert.equal(getter?.calls, 1, 'only the call name_of made');
 });
+
+test('a recorded .svelte.ts module still compiles: the injected names never start with $', async () => {
+	const { compileModule } = await import('svelte/compiler');
+	const source = `
+export class Wire {
+	#n = $state(1);
+	get twice() {
+		return this.#n * 2;
+	}
+}
+export function read(w) {
+	return w.twice;
+}
+`;
+	const r = record_transform(source, { filename: 'wire.svelte.js', id: 'pkg/wire.svelte.js' });
+	assert.ok(r.code.includes('__heisenbench_rec.enter'), 'the functions are recorded');
+	assert.doesNotThrow(() =>
+		compileModule(r.code, { filename: 'wire.svelte.js', generate: 'client' })
+	);
+});
