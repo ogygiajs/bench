@@ -1,5 +1,11 @@
 # heisenbench
 
+## 0.3.1
+
+### Patch Changes
+
+- [#77](https://github.com/ogygiajs/bench/pull/77) [`93ddd54`](https://github.com/ogygiajs/bench/commit/93ddd54f34abc426a5b22c50f885ce09e204869e) Thanks [@PuruVJ](https://github.com/PuruVJ)! - The recording build no longer breaks a `.svelte.ts` / `.svelte.js` module: the names it injects no longer start with `$`, which Svelte reserves.
+
 ## 0.3.0
 
 ### Minor Changes
