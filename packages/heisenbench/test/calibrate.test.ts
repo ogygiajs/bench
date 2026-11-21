@@ -226,3 +226,19 @@ test('estimate: ns next to steps; time-led from the family fit or from the measu
 	assert.equal(with_measured(fast, 25).ratio, 1.25);
 	assert.equal(with_measured(fast, 200).time_led, true);
 });
+
+test('a node: built-in and a constructor are timed as the wrappers run them, and keep their construct mark', async () => {
+	const { builtin_function, CONSTRUCTORS } = await import('../src/calibrate/inputs.ts');
+	const { prices_from_fits } = await import('../src/calibrate/prices.ts');
+	const hmac = builtin_function('node:crypto.createHmac');
+	assert.equal(typeof hmac, 'function', 'node:crypto.createHmac resolves to the module export');
+	const update = builtin_function('node:crypto.Hash.prototype.update');
+	assert.equal(typeof update, 'function', 'a prototype method under a node: key resolves');
+	const make = builtin_function('URL')!;
+	assert.ok(CONSTRUCTORS.has('URL'));
+	assert.equal((make('https://a.test/x') as URL).href, 'https://a.test/x', 'called as `new` would');
+	const fit = { model: 'const' as const, base_ns: 99.7, k_ns: 0, r2: 1 };
+	const p = prices_from_fits({ URL: fit, 'node:crypto.createHash': fit }, 0.0997);
+	assert.equal(p.URL.construct, true);
+	assert.equal(p['node:crypto.createHash'].construct, undefined);
+});

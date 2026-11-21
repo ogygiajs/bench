@@ -161,6 +161,52 @@ there at 0.19x of its time), `flags: six flags read for 500 visitors` −3.9%. A
 v4 keeps no `wide_keys` and is not recounted with v4: compare it with a report counted by the
 same version.
 
+### Native calls: prices v5 (2026-11-21)
+
+`new URL()`, `node:crypto` (`createHmac`, `createHash`, their `update` and `digest`, `hash`,
+`timingSafeEqual`, `randomBytes`, `randomUUID`), WebCrypto's `getRandomValues` and `randomUUID`, and
+the module loader (`import()`, `require()`) were plain calls: 4 steps, whatever they cost. A
+server's request path is full of them, and three of ogygia's server fixes moved time while their
+steps stood still: an HMAC key object made once (8 µs to 1 µs a signature: steps +0.0%), region
+modules kept once loaded (three `import()` a request: +1.3%), and hole URLs resolved by string in
+place of `new URL()` (12.3 µs to 1.6 µs for 20 hrefs: +2.2%, as the string path counts its regex).
+
+The built-ins were added to `calibrate/inputs.ts` and timed by `heisenbench calibrate prices` at
+16 to 4,096 (`createHmac` in two shapes: a KeyObject, n = 0, and a Buffer, n = 1, from which Node
+makes a key per call), with `step_ns` kept at 0.0997 (`--step-ns`) so they sit on the same scale as
+v4. Two runs (load average 9 to 10 on 16 cores: another project's browser suites) agreed within
+10% on every price (createHmac's base 777 vs 838 ns, the rest within 5%); the first is in
+`prices.json`:
+
+| Built-in                            | v4  | v5                               |
+| ----------------------------------- | --- | -------------------------------- |
+| `URL` (constructor)                 | 4   | 3149 + 3.80 n                    |
+| `node:crypto.createHmac`            | 4   | 7789 + 84069 n (n: a Buffer key) |
+| `node:crypto.Hmac.prototype.update` | 4   | 518 + 3.80 n                     |
+| `node:crypto.Hmac.prototype.digest` | 4   | 2905                             |
+| `node:crypto.createHash`            | 4   | 1918                             |
+| `node:crypto.Hash.prototype.update` | 4   | 451 + 3.77 n                     |
+| `node:crypto.Hash.prototype.digest` | 4   | 1035                             |
+| `node:crypto.hash`                  | 4   | 2061 + 3.97 n                    |
+| `node:crypto.timingSafeEqual`       | 4   | 197 + 2.88 n                     |
+| `node:crypto.randomBytes`           | 4   | 7056 + 1.47 n                    |
+| `node:crypto.randomUUID`            | 4   | 709                              |
+| `Crypto.prototype.getRandomValues`  | 4   | 5816 + 0.83 n                    |
+| `Crypto.prototype.randomUUID`       | 4   | 696                              |
+
+The loader is no function to wrap, so it is two op kinds of its own, timed by a micro-benchmark on
+the same machine (a loop of 20,000 calls less the same loop around an empty function, median of 9
+rounds, twice): `import()` of a module the loader holds 1,819 ns (18,176 steps, the `await` around
+it priced apart), `require()` of a file it holds 58 to 60 ns (576 steps; of a `node:` module, 245
+to 253 ns: priced as a file's).
+
+Recounted with v5 on ogygia (the fixes' own commits, each side's bench file): the HMAC fix
+`region_sign` 1,620,929 → 192,453 steps (−88.1%), `region_verify` −87.7%; the URL fix
+`absolutize` 1,909,787 → 1,578,593 (−17.3%), the hole's graph −8.4%; the module fix reads
+once ogygia's bench reaches the loader through `import()` as a built server does (its stub did
+not). The ranges model is trained again for the new prices hash (`calibrate ranges`, the same
+data and seed).
+
 ## 3. Weights (steps to nanoseconds)
 
 Fitted on 250 points (the corpus and ogygia's 57 cases, both agreeing sets): **R² 0.91** on the

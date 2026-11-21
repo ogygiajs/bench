@@ -1273,13 +1273,30 @@ class Instrumenter {
 			}
 			case 'CallExpression': {
 				const plan = this.plan_bsite(node, false);
-				this.walk_expr(get(node, 'callee')!);
+				const callee = get(node, 'callee')!;
+				this.walk_expr(callee);
 				this.walk_call_tail(node, plan);
+				// (`require(…)`: the CommonJS loader's work beside the call's own)
+				if (callee.type === 'Identifier' && text(callee, 'name') === 'require')
+					this.op('require', node.start);
 				return;
 			}
 			case 'NewExpression': {
+				// (a priced constructor's site, `new URL(…)`, is marked as a call's is; its receiver,
+				// the callee, is wrapped in parentheses: `new (R.rcv(k, URL))(…)`)
+				const plan = nodes(node, 'arguments').length > 0 ? this.plan_bsite(node, true) : null;
+				if (plan && plan.recv !== null) {
+					const recv = plan.recv;
+					const base = this.n.b;
+					this.as_arg(
+						recv,
+						() => `(${this.n.R}.rcv(${base}+${plan.k},`,
+						() => '))'
+					);
+				}
 				const callee = get(node, 'callee')!;
 				this.walk_expr(callee);
+				if (plan) this.mark_bsite(node, plan);
 				this.walk_args(node, this.callee_name(callee));
 				this.op('new', node.start);
 				const site = this.alloc_site('new', node.start, object_bytes(0), false);
@@ -1348,7 +1365,7 @@ class Instrumenter {
 				return;
 			case 'ImportExpression':
 				this.walk_expr(get(node, 'source')!);
-				this.op('call', node.start);
+				this.op('import', node.start);
 				return;
 			default:
 				if (TS_EXPRESSION_WRAPPERS.has(node.type)) {
@@ -1522,36 +1539,41 @@ class Instrumenter {
 		const name = this.callee_name(callee);
 		const args = nodes(call, 'arguments');
 		const is_member = callee.type === 'MemberExpression' && !flag(callee, 'computed');
-		if (plan) {
-			const at = this.pos.original(callee.end);
-			const k = this.bsites.length;
-			plan.k = k;
-			this.bsites.push({
-				fn: this.fn.index,
-				block: this.block.id,
-				line: at.line,
-				col: at.col,
-				name: plan.name
-			});
-			const base = this.n.b;
-			const R = this.n.R;
-			const url = plan.any ? `,${this.self_url()}` : '';
-			if (args.length === 0) {
-				const fn = plan.any ? 'site_any_zero' : 'site_zero';
-				this.add_zero_arg(call, () => `...${R}.${fn}(${base}+${k}${url})`);
-			} else {
-				// The site is set after every argument is evaluated, right before the call.
-				const last = args[args.length - 1];
-				const target = last.type === 'SpreadElement' ? get(last, 'argument')! : last;
-				const fn = plan.any ? 'site_any' : 'site_last';
-				this.as_arg(target, () => `${R}.${fn}(${base}+${k}${url},`);
-			}
-		}
+		if (plan) this.mark_bsite(call, plan);
 		if (is_member && name === 'bind') {
 			this.alloc_site('bound', call.start, bound_bytes(Math.max(0, args.length - 1)), false);
 		}
 		this.walk_args(call, name);
 		this.op('call', callee.end);
+	}
+
+	/** A call (or `new`) that may reach a priced built-in: its site, set right before the call. */
+	mark_bsite(call: Node, plan: BsitePlan): void {
+		const callee = get(call, 'callee')!;
+		const args = nodes(call, 'arguments');
+		const at = this.pos.original(callee.end);
+		const k = this.bsites.length;
+		plan.k = k;
+		this.bsites.push({
+			fn: this.fn.index,
+			block: this.block.id,
+			line: at.line,
+			col: at.col,
+			name: plan.name
+		});
+		const base = this.n.b;
+		const R = this.n.R;
+		const url = plan.any ? `,${this.self_url()}` : '';
+		if (args.length === 0) {
+			const fn = plan.any ? 'site_any_zero' : 'site_zero';
+			this.add_zero_arg(call, () => `...${R}.${fn}(${base}+${k}${url})`);
+		} else {
+			// The site is set after every argument is evaluated, right before the call.
+			const last = args[args.length - 1];
+			const target = last.type === 'SpreadElement' ? get(last, 'argument')! : last;
+			const fn = plan.any ? 'site_any' : 'site_last';
+			this.as_arg(target, () => `${R}.${fn}(${base}+${k}${url},`);
+		}
 	}
 
 	walk_chain(chain: Node): void {

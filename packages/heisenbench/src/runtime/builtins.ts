@@ -29,7 +29,29 @@ type Start = (self: unknown, args: unknown[]) => number;
 // Originals captured at load: sizing must not go through the wrappers.
 const object_keys = Object.keys;
 const reflect_apply = Reflect.apply;
+const reflect_construct = Reflect.construct;
 const is_array = Array.isArray;
+
+// `globalThis.process`: the runtime is also bundled into pages (app layer), which have no process.
+const get_builtin_module = (
+	globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }
+).process?.getBuiltinModule;
+
+/** A Node module's exports object (`node:crypto`), or null where there is none (a page). */
+function node_module(id: string): Record<string, unknown> | null {
+	try {
+		return (get_builtin_module?.(id) as Record<string, unknown> | undefined) ?? null;
+	} catch {
+		return null;
+	}
+}
+
+const crypto_module = node_module('node:crypto');
+const KeyObject = crypto_module?.KeyObject as (abstract new () => object) | undefined;
+/** `node:module`'s `syncBuiltinESMExports`: a module's named imports see a wrapper once it runs. */
+const sync_builtin_exports = node_module('node:module')?.syncBuiltinESMExports as
+	| (() => void)
+	| undefined;
 
 function len(x: unknown): number {
 	if (typeof x === 'string') return x.length;
@@ -50,6 +72,17 @@ const assign_len: Size = (_self, args) => {
 };
 const constant: Size = () => 0;
 const join_len: Size = (self, _args, result) => len(self) + len(result);
+const arg1_len: Size = (_self, args) => len(args[1]);
+const arg0_count: Size = (_self, args) => {
+	const n = Number(args[0]);
+	return n === n ? n : 0;
+};
+/** `createHmac(alg, key)`: 1 when the key is not a KeyObject, so Node makes one for this call. */
+const hmac_key_made: Size = (_self, args) =>
+	KeyObject !== undefined && args[1] instanceof KeyObject ? 0 : 1;
+/** `new URL(input, base?)`: the text the parser reads. */
+const url_len: Size = (_self, args) =>
+	len(args[0]) + (typeof args[1] === 'string' ? len(args[1]) : 0);
 
 // Originals for sizing a search whose result does not say where it stopped (`includes`).
 const string_index_of = String.prototype.indexOf;
@@ -247,7 +280,20 @@ const SIZES: Record<string, Size> = {
 	'Map.prototype.delete': constant,
 	'Set.prototype.add': constant,
 	'Set.prototype.has': constant,
-	'Set.prototype.delete': constant
+	'Set.prototype.delete': constant,
+	URL: url_len,
+	'node:crypto.createHmac': hmac_key_made,
+	'node:crypto.createHash': constant,
+	'node:crypto.Hmac.prototype.update': arg0_len,
+	'node:crypto.Hmac.prototype.digest': constant,
+	'node:crypto.Hash.prototype.update': arg0_len,
+	'node:crypto.Hash.prototype.digest': constant,
+	'node:crypto.hash': arg1_len,
+	'node:crypto.timingSafeEqual': arg0_len,
+	'node:crypto.randomBytes': arg0_count,
+	'node:crypto.randomUUID': constant,
+	'Crypto.prototype.getRandomValues': arg0_len,
+	'Crypto.prototype.randomUUID': constant
 };
 
 // Originals for counting what a call did that its result does not show (how many matches).
@@ -427,10 +473,19 @@ interface Installed {
 	desc: PropertyDescriptor;
 }
 
+/**
+ * The object a key's last part is a property of: from `globalThis`, or from a Node module's
+ * exports when the key starts with one (`node:crypto.createHmac`; `node:crypto.Hmac.prototype.update`).
+ */
 function resolve_owner(key: string): { owner: Record<string, unknown>; prop: string } | null {
 	const parts = key.split('.');
 	let owner: unknown = globalThis;
-	for (let i = 0; i < parts.length - 1; i++) {
+	let i = 0;
+	if (parts[0].startsWith('node:')) {
+		owner = node_module(parts[0]);
+		i = 1;
+	}
+	for (; i < parts.length - 1; i++) {
 		if (owner == null) return null;
 		owner = (owner as Record<string, unknown>)[parts[i]];
 	}
@@ -451,22 +506,30 @@ function make_wrapper(
 ): (...args: unknown[]) => unknown {
 	// One call's size terms (the runtime adds them up before the next call can start).
 	const sizes = terms === null ? null : new Float64Array(terms.length);
+	const construct = price.construct === true;
+	// (a constructor's wrapper constructs what the original does: `new.target` is the original
+	// when the wrapper itself is new'd, a subclass's own otherwise)
+	const run = (self: unknown, args: unknown[], target: Function | undefined): unknown =>
+		target === undefined
+			? reflect_apply(orig, self, args)
+			: reflect_construct(orig, args, target === wrapper ? orig : target);
 	const wrapper = function (this: unknown, ...args: unknown[]): unknown {
+		const target = construct ? new.target : undefined;
 		const d = rt.depth;
 		const site = rt.site;
 		rt.site = -1;
 		// Charged only when counted code called this built-in at the site it announced, on the
 		// receiver it announced: never for calls uncounted code makes (see Runtime.rcv).
 		if (site < 0 || d === 0 || rt.bdepth === d || rt.bsite_name[site] !== name_id)
-			return reflect_apply(orig, this, args);
+			return run(this, args, target);
 		const rx = rt.rx;
 		const prev = rt.bdepth;
 		rt.bdepth = d;
 		try {
 			if (rx === ANY_RECEIVER ? caller_url(wrapper) !== rt.rx_url : this !== rx && rx !== wrapper)
-				return reflect_apply(orig, this, args);
+				return run(this, args, target);
 			const from = start === null ? 0 : start(this, args);
-			const result = reflect_apply(orig, this, args);
+			const result = run(this, args, target);
 			// Sizing and charging run with the guard still up: nothing they touch is charged again.
 			const n = size(this, args, result, from);
 			const bytes = result_bytes(key, this, args, result);
@@ -484,6 +547,11 @@ function make_wrapper(
 	};
 	Object.defineProperty(wrapper, 'name', { value: orig.name });
 	Object.defineProperty(wrapper, 'length', { value: orig.length });
+	if (construct) {
+		// `x instanceof URL` and `URL.canParse` read through the wrapper as through the original
+		Object.defineProperty(wrapper, 'prototype', { value: orig.prototype });
+		Object.setPrototypeOf(wrapper, orig);
+	}
 	return wrapper;
 }
 
@@ -524,9 +592,11 @@ export class Builtins {
 
 	install(): void {
 		for (const w of this.#wrappers) Object.defineProperty(w.owner, w.prop, w.desc);
+		sync_builtin_exports?.();
 	}
 
 	uninstall(): void {
 		for (const o of this.#installed) Object.defineProperty(o.owner, o.prop, o.desc);
+		sync_builtin_exports?.();
 	}
 }

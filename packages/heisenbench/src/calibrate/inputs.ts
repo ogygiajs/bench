@@ -118,7 +118,85 @@ function replacing(pattern: unknown): InputMaker {
 	]);
 }
 
+const get_builtin_module = (
+	globalThis as { process?: { getBuiltinModule?: (id: string) => unknown } }
+).process?.getBuiltinModule;
+
+/** A Node module's exports, or null where there is none. */
+function node_module(id: string): Record<string, unknown> | null {
+	return (get_builtin_module?.(id) as Record<string, unknown> | undefined) ?? null;
+}
+
+type CryptoModule = typeof import('node:crypto');
+const node_crypto = node_module('node:crypto') as CryptoModule | null;
+/** A secret key as a KeyObject, made once (what a server that signs keeps). */
+const hmac_key = node_crypto?.createSecretKey(new Uint8Array(32).fill(7));
+
+/** `node:crypto` inputs (none where the module is missing: the key is then not timed). */
+function crypto_input(
+	make: (c: CryptoModule, n: number, shape: number) => BuiltinInput,
+	o: Partial<InputMaker> = {}
+): InputMaker {
+	return {
+		make: (n, shape = 0) => make(node_crypto!, n, shape),
+		models: LINEAR,
+		...o
+	};
+}
+
 export const INPUTS: Record<string, InputMaker> = {
+	// a relative path against a base, of n characters in all: what a server resolves most
+	URL: {
+		make: (n) => ({
+			self: undefined,
+			args: [`./${'a'.repeat(Math.max(1, n - 24))}.js`, 'https://app.test/d/x']
+		}),
+		models: LINEAR
+	},
+	// shape 0: a KeyObject (n = 0); shape 1: a Buffer, from which Node makes a key per call (n = 1)
+	'node:crypto.createHmac': crypto_input(
+		(_c, _n, shape) => ({
+			self: undefined,
+			args: ['sha256', shape === 0 ? hmac_key : new Uint8Array(32).fill(7)]
+		}),
+		{ shapes: 2, models: ['n'] }
+	),
+	'node:crypto.Hmac.prototype.update': crypto_input((c, n) => ({
+		self: c.createHmac('sha256', hmac_key!),
+		args: [text(n)]
+	})),
+	'node:crypto.Hmac.prototype.digest': crypto_input(
+		(c) => ({ self: c.createHmac('sha256', hmac_key!).update('m'), args: ['hex'] }),
+		{ fresh: true, models: ['const'] }
+	),
+	'node:crypto.createHash': crypto_input(() => ({ self: undefined, args: ['sha1'] }), {
+		models: ['const']
+	}),
+	'node:crypto.Hash.prototype.update': crypto_input((c, n) => ({
+		self: c.createHash('sha1'),
+		args: [text(n)]
+	})),
+	'node:crypto.Hash.prototype.digest': crypto_input(
+		(c) => ({ self: c.createHash('sha1').update('m'), args: ['hex'] }),
+		{ fresh: true, models: ['const'] }
+	),
+	'node:crypto.hash': crypto_input((_c, n) => ({ self: undefined, args: ['sha1', text(n)] })),
+	'node:crypto.timingSafeEqual': crypto_input((_c, n) => ({
+		self: undefined,
+		args: [new Uint8Array(n).fill(1), new Uint8Array(n).fill(1)]
+	})),
+	'node:crypto.randomBytes': crypto_input((_c, n) => ({ self: undefined, args: [n] })),
+	'node:crypto.randomUUID': crypto_input(() => ({ self: undefined, args: [] }), {
+		models: ['const']
+	}),
+	'Crypto.prototype.getRandomValues': {
+		make: (n) => ({ self: globalThis.crypto, args: [new Uint8Array(Math.min(n, 65536))] }),
+		models: LINEAR
+	},
+	'Crypto.prototype.randomUUID': {
+		make: () => ({ self: globalThis.crypto, args: [] }),
+		models: ['const']
+	},
 	'Array.prototype.sort': arr(() => [(a: number, b: number) => a - b], true),
 	'Array.prototype.toSorted': arr(() => [(a: number, b: number) => a - b]),
 	'Array.prototype.slice': arr(),
@@ -203,9 +281,23 @@ export const INPUTS: Record<string, InputMaker> = {
 export function builtin_function(key: string): ((...args: unknown[]) => unknown) | null {
 	const parts = key.split('.');
 	let owner: unknown = globalThis;
-	for (const p of parts) {
-		if (owner == null) return null;
-		owner = (owner as Record<string, unknown>)[p];
+	let i = 0;
+	// (a `node:` key starts at that module's exports, as builtins.ts resolve_owner does)
+	if (parts[0].startsWith('node:')) {
+		owner = node_module(parts[0]);
+		i = 1;
 	}
-	return typeof owner === 'function' ? (owner as (...args: unknown[]) => unknown) : null;
+	for (; i < parts.length; i++) {
+		if (owner == null) return null;
+		owner = (owner as Record<string, unknown>)[parts[i]];
+	}
+	if (typeof owner !== 'function') return null;
+	const fn = owner as (...args: unknown[]) => unknown;
+	// a constructor is timed as `new` makes one (its own receiver is never read)
+	if (CONSTRUCTORS.has(key))
+		return (...args: unknown[]) => Reflect.construct(fn as unknown as new () => unknown, args);
+	return fn;
 }
+
+/** The priced built-ins that are constructors (prices.json `construct`). */
+export const CONSTRUCTORS: ReadonlySet<string> = new Set(['URL']);

@@ -153,7 +153,11 @@ export function build(depth: number, m: Map<number, unknown>): Map<number, unkno
 }
 `);
 	const r = await measure(() => m.calls([1, 2, 3] as never), true);
-	assert.deepEqual(fn_of(r, 'calls').builtins, [], 'Box methods, work() and URL parsing are free');
+	assert.deepEqual(
+		fn_of(r, 'calls').builtins.map((b) => [b.name, b.calls]),
+		[['URL', 1]],
+		'Box methods and work() are free; the URL the counted code makes is priced (prices v5)'
+	);
 
 	const { Box } = (await import(pathToFileURL(join(dir, 'uncounted.bench.ts')).href)) as {
 		Box: new () => unknown;
@@ -281,4 +285,81 @@ test('Object.keys, values, entries and assign are linear in the keys: a wide obj
 	const small = await charged(8);
 	assert.equal(small.keys, cost('Object.keys', 8));
 	assert.equal(at_1k.keys, cost('Object.keys', 1_000, { wide_keys: 1_000 - 32 }));
+});
+
+test("node:crypto's exports, a constructor and a dynamic import() are priced as their time is", async () => {
+	const m =
+		await load_module(`import { createHash, createHmac, createSecretKey } from 'node:crypto';
+const key = createSecretKey(Buffer.from('a secret of the test, 32 bytes!!'));
+export function sign(text: string) {
+	const a = createHmac('sha256', key).update(text).digest('hex');
+	const b = createHmac('sha256', 'a string key').update(text).digest('hex');
+	const h = createHash('sha1').update(text).digest('hex');
+	return [a, b, h];
+}
+export function urls(base: URL) {
+	const u = new URL('./a.js', base);
+	return [u.href, u instanceof URL, URL.canParse('x:')];
+}
+export async function load(spec: string) {
+	return (await import(spec)).x;
+}
+`);
+	const text = 'id=abc&props=e30';
+	const r = await measure(() => m.sign(text as never), true);
+	const f = fn_of(r, 'sign');
+	const charged = (name: string) => f.builtins.filter((b) => b.name === name);
+	// (a string key makes a key object in Node for that call: n = 1)
+	assert.deepEqual(
+		charged('createHmac').map((b) => b.steps),
+		[cost('node:crypto.createHmac', 0), cost('node:crypto.createHmac', 1)]
+	);
+	assert.equal(
+		charged('update').reduce((n, b) => n + b.steps, 0),
+		2 * cost('node:crypto.Hmac.prototype.update', text.length) +
+			cost('node:crypto.Hash.prototype.update', text.length)
+	);
+	assert.equal(
+		charged('digest').reduce((n, b) => n + b.steps, 0),
+		2 * cost('node:crypto.Hmac.prototype.digest', 0) + cost('node:crypto.Hash.prototype.digest', 0)
+	);
+	assert.equal(charged('createHash')[0]!.steps, cost('node:crypto.createHash', 0));
+
+	const base = new URL('https://app.test/docs/x');
+	let out: unknown[] = [];
+	const u = await measure(() => {
+		out = m.urls(base as never) as unknown[];
+	}, true);
+	assert.deepEqual(
+		out,
+		['https://app.test/docs/a.js', true, true],
+		'the wrapper constructs a real URL'
+	);
+	// (n: the input's characters; a base given as a URL object is parsed already)
+	assert.equal(
+		fn_of(u, 'urls').builtins.find((b) => b.name === 'URL')!.steps,
+		cost('URL', './a.js'.length)
+	);
+
+	const dep = pathToFileURL(join(loader_root(), 'dep-import.ts')).href;
+	write_files(loader_root(), { 'dep-import.ts': 'export const x = 7;' });
+	await import(dep);
+	const i = await measure(() => m.load(dep as never), true);
+	const g = fn_of(i, 'load');
+	assert.equal(g.units?.import ?? 0, 1, 'the import() is one op of its own');
+	assert.ok(g.self_steps >= prices.ops.import, 'and costs what the loader takes');
+});
+
+test('a require() is one op of its own, priced as the CommonJS loader takes', async () => {
+	const dir = loader_root();
+	write_files(dir, { 'dep-require.cjs': 'module.exports = { x: 7 };' });
+	const m = await load_module(
+		`exports.load = function load() { return require('./dep-require.cjs').x; };\n`,
+		'.cjs'
+	);
+	m.load();
+	const r = await measure(() => m.load(), true);
+	const f = fn_of(r, 'load');
+	assert.equal(f.units?.require ?? 0, 1);
+	assert.ok(f.self_steps >= prices.ops.require);
 });

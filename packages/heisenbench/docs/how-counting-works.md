@@ -140,7 +140,13 @@ the price in `prices.json`.
 | allocation                 |     4 | each `for..of` step              |     4 |
 | each 4-byte word allocated |     1 | each `for..in` step              |     6 |
 | `await`                    |    20 | `yield`                          |    10 |
-| `throw`                    |    30 |                                  |       |
+| `throw`                    |    30 | `import(…)`                      | 18176 |
+| `require(…)`               |   576 |                                  |       |
+
+`import(…)` and `require(…)` are timed like built-ins (prices v5): Node's loader resolves the
+specifier and looks the module up on every call, even for a module it holds already (1.8 µs for
+an `import()`, 60 ns for a `require()` of a file). Priced as a call, a hot path that imported its
+own module on every request read as free, and keeping the module once loaded did not show.
 
 In `score`, the first block is an assignment, a property read (`row.tags`) and the start of a
 `for..of`: 1 + 1 + 8 = 10. The loop body is a property read, an addition, an assignment and an
@@ -200,7 +206,7 @@ a size term: another size the work follows, measured on the call.
 83 µs, so a price per character was 25x too high on long lines and 2.6x too low on short ones.
 Every call keeps its size terms in its units, priced or not, so a price can start using one and
 still recount exactly, and the price audit can test one a price leaves out. 57 built-ins have a
-price today. A few:
+price today (70 in prices v5, with the native calls below). A few:
 
 | Built-in                   | Price                             |
 | -------------------------- | --------------------------------- |
@@ -215,6 +221,25 @@ price today. A few:
 | `JSON.parse`               | 400 + 11 n                        |
 | `RegExp.prototype.exec`    | 109 + 0.1875 n                    |
 | `structuredClone`          | 3120 + 105 n                      |
+
+A built-in's key names where it lives: from `globalThis` (`JSON.parse`,
+`Crypto.prototype.getRandomValues`), or from a Node module's exports when it starts with one
+(`node:crypto.createHmac`, `node:crypto.Hash.prototype.update`): the wrapper is set on the
+module's exports and `syncBuiltinESMExports()` makes the module's named imports see it. A key
+marked `construct` is a constructor: `new URL(…)` is marked as a call is, and its wrapper
+constructs (`instanceof URL` and `URL.canParse` read through it). Until prices v5 these were
+plain calls (4 steps): an HMAC that made its key object on every call (8 µs) read as the same as
+one with a key object made once (1 µs), and a `new URL()` per href as cheap as a string slice.
+
+| Native call                                       | Price (v5)                  | Time               |
+| ------------------------------------------------- | --------------------------- | ------------------ |
+| `new URL(input, base)`                            | 3149 + 3.8 n                | 314 ns + 0.38 n    |
+| `createHmac(alg, key)`                            | 7789 (+ 84069 a Buffer key) | 0.78 µs (+ 8.4 µs) |
+| `Hmac.prototype.update` / `Hash.prototype.update` | 518 / 451 + 3.8 n           | 0.37 ns a char     |
+| `Hmac.prototype.digest` / `Hash.prototype.digest` | 2905 / 1035                 | 290 / 103 ns       |
+| `createHash(alg)`                                 | 1918                        | 191 ns             |
+| `hash(alg, data)`                                 | 2061 + 3.97 n               | 206 ns + 0.40 n    |
+| `crypto.getRandomValues(bytes)`                   | 5816 + 0.83 n               | 580 ns             |
 
 The transform marks each call site that may reach a built-in by name (`x.slice(a)`,
 `structuredClone(v)`, `Array.prototype.map.call(xs, f)`). It wraps the receiver the call runs on
