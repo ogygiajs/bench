@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { deserialize, serialize } from 'node:v8';
 import { isDeepStrictEqual } from 'node:util';
 import { INJECTED_OPEN, original_source } from './markers.ts';
-import { clone_with_stand_ins, portable_clone, revive } from './portable.ts';
+import { clone_with_stand_ins, data_children, portable_clone, revive } from './portable.ts';
 import { SIZE_BUDGET, arg_sizes } from '../growth/scale.ts';
 
 /*
@@ -153,17 +153,8 @@ export function deeper_than(v: unknown, limit: number, budget = 200_000): boolea
 		seen.add(x);
 		// a wide value spends the budget: its depth is then left to the clone
 		if (seen.size > budget) return false;
-		let kids: unknown[];
-		try {
-			kids =
-				x instanceof Map
-					? [...x.keys(), ...x.values()]
-					: x instanceof Set
-						? [...x]
-						: Object.values(x);
-		} catch {
-			continue;
-		}
+		const kids = data_children(x);
+		if (kids === null) continue;
 		for (const k of kids) todo.push([k, d + 1]);
 	}
 	return false;

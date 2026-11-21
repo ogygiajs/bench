@@ -1,4 +1,5 @@
 import { builtinModules } from 'node:module';
+import { types } from 'node:util';
 import { runInNewContext } from 'node:vm';
 import { parseSync } from 'oxc-parser';
 
@@ -303,8 +304,61 @@ function tag(v: unknown, seen: Map<unknown, unknown>): unknown {
 	return v;
 }
 
+/**
+ * What a reader that runs none of `x`'s code sees one level down: its own enumerable data values,
+ * a Map's keys and values, a Set's values. Null when `x` is a Proxy or has an own enumerable
+ * getter or setter: reading those runs code the call under test would observe (a proxy that notes
+ * which keys were read), so `x` is opaque and never copied.
+ */
+export function data_children(x: object): unknown[] | null {
+	if (types.isProxy(x)) return null;
+	if (typeof x === 'function' || ArrayBuffer.isView(x) || types.isAnyArrayBuffer(x)) return [];
+	if (types.isMap(x)) {
+		const out: unknown[] = [];
+		map_for_each.call(x, (v: unknown, k: unknown) => out.push(k, v));
+		return out;
+	}
+	if (types.isSet(x)) {
+		const out: unknown[] = [];
+		set_for_each.call(x, (v: unknown) => out.push(v));
+		return out;
+	}
+	const out: unknown[] = [];
+	for (const key of Object.keys(x)) {
+		const d = Object.getOwnPropertyDescriptor(x, key);
+		if (!d) continue;
+		if (!('value' in d)) return null;
+		out.push(d.value);
+	}
+	return out;
+}
+
+const map_for_each = Map.prototype.forEach;
+const set_for_each = Set.prototype.forEach;
+
+/** Whether every value `v` reaches can be read without running its code (data_children). */
+function inert(v: unknown): boolean {
+	const todo: unknown[] = [v];
+	const seen = new Set<object>();
+	while (todo.length > 0) {
+		const x = todo.pop();
+		if (x === null || (typeof x !== 'object' && typeof x !== 'function')) continue;
+		if (seen.has(x)) continue;
+		seen.add(x);
+		const kids = data_children(x);
+		if (kids === null) return false;
+		for (const k of kids) todo.push(k);
+	}
+	return true;
+}
+
+function not_inert(): DOMException {
+	return new DOMException('a proxy or a getter: reading it runs code', 'DataCloneError');
+}
+
 /** structuredClone, or the portable form of an input with functions in it; throws when neither. */
 export function portable_clone(v: unknown): unknown {
+	if (!inert(v)) throw not_inert();
 	try {
 		return structuredClone(v);
 	} catch (e) {
@@ -332,6 +386,7 @@ let stand_ins: { used: boolean } | null = null;
  * which is what it measures. `stand_ins` says whether any function was stood in.
  */
 export function clone_with_stand_ins(v: unknown): { value: unknown; stand_ins: boolean } {
+	if (!inert(v)) throw not_inert();
 	const was = stand_ins;
 	stand_ins = { used: false };
 	try {

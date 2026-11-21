@@ -1,3 +1,5 @@
+import { types } from 'node:util';
+
 /*
  * The generic input scaler (spec 9). `scale_input(ctx, k)` returns a copy of a case's input about k
  * times bigger, growing every collection once (a collection inside a grown one is copied, not grown
@@ -218,7 +220,9 @@ function size_of(v: unknown, seen: Set<unknown>, left: { n: number }): number {
 	if (seen.has(v)) return 0;
 	seen.add(v);
 	let n = 0;
-	if (Array.isArray(v)) {
+	if (types.isProxy(v)) {
+		n += 1;
+	} else if (Array.isArray(v)) {
 		n += v.length;
 		for (let i = 0; i < v.length && left.n > 0; i++) n += size_of(v[i], seen, left);
 	} else if (v instanceof Map) {
