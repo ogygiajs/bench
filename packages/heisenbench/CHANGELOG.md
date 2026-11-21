@@ -1,5 +1,11 @@
 # heisenbench
 
+## 0.4.1
+
+### Patch Changes
+
+- [#81](https://github.com/ogygiajs/bench/pull/81) [`b2313fd`](https://github.com/ogygiajs/bench/commit/b2313fd16819a4c8db7db177fdf81b50b74647f5) Thanks [@PuruVJ](https://github.com/PuruVJ)! - `heisenbench run` and the processes it starts no longer hang at the end of a run with a big report (a deadlock between V8's background compiler and the exit). A timer or socket a bench leaves open is now named on stderr before the run exits, and reports are written in pieces, without one big string in memory.
+
 ## 0.4.0
 
 ### Minor Changes
