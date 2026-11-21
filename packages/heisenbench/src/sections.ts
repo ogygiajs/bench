@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { write_json } from './json-out.ts';
 import { relative, resolve, sep } from 'node:path';
 import type { FileDiff } from './diff/git.ts';
 import { diff_engine, render_engine_markdown } from './engine/diff.ts';
@@ -90,7 +91,7 @@ export function write_section<K extends Section>(
 		};
 	}
 	report[key] = value;
-	writeFileSync(out, JSON.stringify(report, null, '\t') + '\n');
+	write_json(out, report);
 	return report;
 }
 

@@ -1,3 +1,4 @@
+import '../v8-flags.ts';
 import '../warnings.ts';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

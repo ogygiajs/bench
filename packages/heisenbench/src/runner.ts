@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { write_json } from './json-out.ts';
 import { relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from './bench.ts';
@@ -365,6 +365,6 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	if (load_errors.length > 0) report.load_errors = load_errors;
 	if (summary) report.cache = summary;
 	apply_estimates(report);
-	if (opts.out) writeFileSync(opts.out, JSON.stringify(report, null, '\t') + '\n');
+	if (opts.out) write_json(opts.out, report);
 	return report;
 }

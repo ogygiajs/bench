@@ -1,3 +1,4 @@
+import '../v8-flags.ts';
 import { createReadStream, readFileSync, writeFileSync } from 'node:fs';
 import { static_file } from './static.ts';
 import { createServer } from 'node:http';

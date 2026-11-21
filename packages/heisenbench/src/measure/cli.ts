@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { UsageError } from '../usage.ts';
+import { write_json } from '../json-out.ts';
 import { relative, resolve, sep } from 'node:path';
 import type { Report } from '../report.ts';
 import { measure_layers, parse_layers } from './index.ts';
@@ -43,8 +44,16 @@ type Flags = Map<string, string>;
 const num = (flags: Flags, k: string): number | undefined =>
 	flags.has(k) ? Number(flags.get(k)) : undefined;
 
-/** `heisenbench run --measure ...`: run the layers and write the report again with them. */
-export async function measure_run(report: Report, files: string[], flags: Flags): Promise<void> {
+/**
+ * `heisenbench run --measure ...`: run the layers and, unless `out` is null (`--append` writes the
+ * merged report itself), write the report again with them.
+ */
+export async function measure_run(
+	report: Report,
+	files: string[],
+	flags: Flags,
+	out: string | null
+): Promise<void> {
 	const layers = parse_layers(flags.get('measure'));
 	if (layers.length === 0) return;
 	await measure_layers(report, {
@@ -55,10 +64,7 @@ export async function measure_run(report: Report, files: string[], flags: Flags)
 		time: { time_ms: num(flags, 'time-ms') },
 		log: (l) => console.log(l)
 	});
-	writeFileSync(
-		flags.get('out') ?? 'heisenbench-report.json',
-		JSON.stringify(report, null, '\t') + '\n'
-	);
+	if (out !== null) write_json(out, report);
 }
 
 /** `--time time.json` on `heisenbench diff`: the time table to append, or ''. */
