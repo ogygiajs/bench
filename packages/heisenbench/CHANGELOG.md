@@ -1,5 +1,11 @@
 # heisenbench
 
+## 0.4.0
+
+### Minor Changes
+
+- [#79](https://github.com/ogygiajs/bench/pull/79) [`b90764a`](https://github.com/ogygiajs/bench/commit/b90764a50e32250153dc3b025df83d36407ab17a) Thanks [@PuruVJ](https://github.com/PuruVJ)! - Prices v5 give native calls their measured cost instead of a plain call's 4 steps: `new URL()`, `node:crypto` (`createHmac`, with a Buffer key's per-call key object priced apart, `createHash`, `update`, `digest`, `hash`, `timingSafeEqual`, `randomBytes`, `randomUUID`), WebCrypto's `getRandomValues` and `randomUUID`, and Node's module loader (`import()` and `require()` as op kinds of their own), so keeping a key object, a loaded module or a string path in place of a URL parse now shows in steps; a price key can name a `node:` module's export or a constructor, and `calibrate prices --step-ns` keeps the file's step time.
+
 ## 0.3.1
 
 ### Patch Changes
