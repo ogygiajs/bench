@@ -6,7 +6,7 @@ import { clone, input_size } from '../growth/scale.ts';
 import { fit_growth, growth_label, is_superlinear, SUPERLINEAR_POWER } from '../growth/fit.ts';
 import type { GrowthClass } from '../growth/fit.ts';
 import { build_case_report } from '../report.ts';
-import type { CaseReport } from '../report.ts';
+import type { CaseReport, LoadError } from '../report.ts';
 import { GrammarPlan, Rng, arms_of, mutate, mutate_arm, mutate_guided } from './mutate.ts';
 import { Bandit, density_reward } from './bandit.ts';
 import type { ArmStat } from './bandit.ts';
@@ -149,6 +149,8 @@ export interface SearchReport {
 	schema: typeof SEARCH_SCHEMA;
 	options: Required<SearchBudget>;
 	cases: SearchCase[];
+	/** Bench files that did not load: none of their cases was searched, so the run fails. Absent before 0.4.2. */
+	failed?: LoadError[];
 }
 
 export interface SearchBudget {
@@ -790,14 +792,19 @@ function finding_text(s: SearchCase, reasons: FindingReason[]): string {
 
 export async function run_search(opts: SearchOptions): Promise<SearchReport> {
 	const log = opts.log ?? (() => {});
-	const list = await load_cases(opts);
+	const loaded = await load_cases(opts);
 	const m = new Measurer(opts.root);
 	const options = { ...DEFAULTS };
 	for (const k of Object.keys(DEFAULTS) as Array<keyof SearchBudget>) {
 		if (opts[k] !== undefined) (options as Record<string, unknown>)[k] = opts[k];
 	}
-	const report: SearchReport = { schema: SEARCH_SCHEMA, options, cases: [] };
-	for (const c of list) {
+	const report: SearchReport = {
+		schema: SEARCH_SCHEMA,
+		options,
+		cases: [],
+		failed: loaded.failed
+	};
+	for (const c of loaded.cases) {
 		const s = await search_case(c, m, options);
 		report.cases.push(s);
 		log(
@@ -880,6 +887,13 @@ export function render_search(r: SearchReport): string {
 	}
 	if (failed.length > 0) {
 		lines.push('', `**Failed**: ${failed.map((c) => `${code(c.name)} (${c.error})`).join(', ')}`);
+	}
+	const unloaded = r.failed ?? [];
+	if (unloaded.length > 0) {
+		lines.push(
+			'',
+			`**Did not load**: ${unloaded.map((f) => `${code(f.file)} (${f.error})`).join(', ')}`
+		);
 	}
 	return lines.join('\n') + '\n';
 }

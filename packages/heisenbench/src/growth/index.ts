@@ -22,7 +22,7 @@ import type { CacheSummary, CaseWatch, LineRef } from '../cache/index.ts';
 import type { LoadOptions } from './measure.ts';
 import { input_size, scale_input } from './scale.ts';
 import { build_case_report } from '../report.ts';
-import type { CaseReport } from '../report.ts';
+import type { CaseReport, LoadError } from '../report.ts';
 import { StepCapError } from '../runtime/index.ts';
 import { OWN_CODE, package_label } from '../identity.ts';
 import { add_units } from '../units.ts';
@@ -157,6 +157,11 @@ export interface GrowthReport {
 	schema: typeof GROWTH_SCHEMA;
 	sizes: number[];
 	cases: GrowthCase[];
+	/**
+	 * Bench files that did not load: their cases are in no curve, so the run fails. Absent in
+	 * reports from before 0.4.2.
+	 */
+	failed?: LoadError[];
 	/** `--cache`: how many cases were reused, grown and checked (cache/). */
 	cache?: CacheSummary;
 }
@@ -654,15 +659,16 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 				}
 			)
 		: null;
-	const failed = new Set<string>();
+	const failed: LoadError[] = [];
 	// Every run of every size starts from fresh module state, as `heisenbench run` does: a case's
 	// curve does not depend on which cases grew before it in the process.
 	const position = new Map<BenchCase, number>();
 	m.fresh = (c) => fresh_copy(c, root, position.get(c) ?? 0);
 	const load = async (files: readonly string[]): Promise<BenchCase[]> => {
-		const loaded = await import_cases(files, root, log, (f) => failed.add(f));
-		for (const [c, n] of positions(loaded)) position.set(c, n);
-		return opts.scaled ? loaded.filter((c) => c.scale !== undefined) : loaded;
+		const loaded = await import_cases(files, root, log);
+		failed.push(...loaded.failed);
+		for (const [c, n] of positions(loaded.cases)) position.set(c, n);
+		return opts.scaled ? loaded.cases.filter((c) => c.scale !== undefined) : loaded.cases;
 	};
 	const wanted = (name: string): boolean => !opts.filter || name.includes(opts.filter);
 	// the contracts of every module loaded so far (a case can import more as it runs)
@@ -689,7 +695,7 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 		);
 		return g;
 	};
-	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [] };
+	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes, cases: [], failed };
 	if (cache) {
 		const run = await run_incremental(cache, {
 			files: opts.files.map((f) => relative(root, resolve(f)).split(sep).join('/')),
@@ -697,7 +703,7 @@ export async function run_growth(opts: GrowthOptions): Promise<GrowthReport> {
 			wanted,
 			verify: opts.cache?.verify ?? 0,
 			load,
-			failed: (file) => failed.has(file),
+			failed: (file) => failed.some((f) => f.file === file),
 			count: grow,
 			label: (g) => `${g.steps.map((s) => Math.round(s)).join(' / ')} steps`,
 			log
@@ -753,6 +759,7 @@ export interface GrowthDiff {
 	 * shown, never a finding. Absent in diffs from before growth had odds.
 	 */
 	unsure?: Array<{ case: string; text: string }>;
+	/** Cases that failed on either side, then bench files that did not load on either side. */
 	failed: string[];
 }
 
@@ -815,6 +822,8 @@ export function diff_growth(
 			}
 		}
 	}
+	for (const f of [...(base.failed ?? []), ...(pr.failed ?? [])])
+		if (!out.failed.includes(f.file)) out.failed.push(f.file);
 	return out;
 }
 

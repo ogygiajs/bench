@@ -567,7 +567,8 @@ holds each against every curve the reports have of its function. Each curve says
 
 A contract is broken when any curve breaks it, holds when one holds it and none breaks it, and is
 unmeasured when nothing measured its function. The check passes only when every contract holds:
-broken, unsure, unmeasured and a tag that declares nothing all exit 1. The bar is 90%
+broken, unsure, unmeasured and a tag that declares nothing all exit 1, and so does a source file it
+cannot read or a report whose growth did not load a file (both listed in `failed`). The bar is 90%
 (`--contract-odds`), the one the growth layer already uses twice: a superlinear finding needs 90%
 odds of quadratic or worse, and odds under 90% on the likeliest shape are a close call that gets one
 more size counted. A contract that holds is one the growth layer itself calls settled, with at most

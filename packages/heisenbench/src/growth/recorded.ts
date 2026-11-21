@@ -4,8 +4,8 @@ import type { BenchCase } from '../bench.ts';
 import type { FunctionRecord, Sample } from '../coverage/recorder.ts';
 import { revive } from '../coverage/portable.ts';
 import { code } from '../md.ts';
-import { build_case_report } from '../report.ts';
-import type { CaseReport } from '../report.ts';
+import { build_case_report, one_line } from '../report.ts';
+import type { CaseReport, LoadError } from '../report.ts';
 import { MIN_R2, fit_growth, fit_noisy, growth_label, is_superlinear } from './fit.ts';
 import type { GrowthClass } from './fit.ts';
 import {
@@ -171,6 +171,8 @@ export interface RecordedGrowthReport {
 	functions: RecordedGrowth[];
 	/** Recorded functions not grown, by reason (`not replayable`, `too few samples`...). */
 	skipped: Record<string, number>;
+	/** Recorded modules that did not load: none of their functions grew, so the run fails. Absent before 0.4.2. */
+	failed?: LoadError[];
 	/** Counted steps spent replaying. */
 	steps_spent: number;
 }
@@ -660,10 +662,12 @@ export async function run_recorded_growth(o: RecordedGrowthOptions): Promise<Rec
 	const m = new Measurer(root);
 	const cap = o.cap ?? RECORDED_CAP;
 	const budget = { left: o.budget_steps ?? Infinity, spent: 0 };
+	const failed: LoadError[] = [];
 	const report: RecordedGrowthReport = {
 		schema: RECORDED_GROWTH_SCHEMA,
 		functions: [],
 		skipped: {},
+		failed,
 		steps_spent: 0
 	};
 	const skip = (why: string): void => {
@@ -693,7 +697,9 @@ export async function run_recorded_growth(o: RecordedGrowthOptions): Promise<Rec
 				const url = `${pathToFileURL(join(root, mod_id)).href}?${GENERATION}${next_generation()}`;
 				modules.set(mod_id, (await import(url)) as Record<string, unknown>);
 			} catch (e) {
-				log(`recorded growth: ${mod_id} does not load: ${(e as Error).message.split('\n')[0]}`);
+				const error = one_line(e);
+				log(`FAILED   ${mod_id}: does not load: ${error}`);
+				failed.push({ file: mod_id, error });
 				modules.set(mod_id, null);
 			}
 		}
@@ -836,6 +842,15 @@ export function render_recorded_growth(r: RecordedGrowthReport, max = 15): strin
 	const groups = recorded_findings(r);
 	const decided = r.functions.filter((g) => g.confident).length;
 	const of = `${decided} of ${r.functions.length} recorded functions decided`;
+	const failed = r.failed ?? [];
+	if (failed.length > 0) {
+		lines.push(
+			`**${failed.length === 1 ? 'One recorded module does' : `${failed.length} recorded modules do`} not load**, so none of their functions grew:`,
+			''
+		);
+		for (const f of failed) lines.push(`- ${code(f.file)}: ${f.error}`);
+		lines.push('');
+	}
 	if (groups.length === 0) {
 		lines.push(`Nothing grows quadratically or worse with its input (${of}).`, '');
 		return lines.join('\n');

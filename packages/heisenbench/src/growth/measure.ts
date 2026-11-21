@@ -11,6 +11,7 @@ import { Builtins } from '../runtime/builtins.ts';
 import { Determinism } from '../runtime/determinism.ts';
 import type { IoMode } from '../runtime/determinism.ts';
 import { one_line } from '../report.ts';
+import type { LoadError } from '../report.ts';
 import type { CaseWatch } from '../cache/index.ts';
 
 /*
@@ -45,14 +46,24 @@ export function register_loader(opts: Pick<LoadOptions, 'root' | 'deps' | 'svelt
 	return root;
 }
 
-/** Import bench files (paths relative to the cwd or absolute); every case they define. */
+/**
+ * What importing bench files gave: every case they define, and every file that did not load.
+ * One file that does not load costs only its own cases, and is never dropped: a command that
+ * reads bench files puts `failed` in its report and exits 1 when it is not empty.
+ */
+export interface Loaded {
+	cases: BenchCase[];
+	failed: LoadError[];
+}
+
+/** Import bench files (paths relative to the cwd or absolute). */
 export async function import_cases(
 	files: readonly string[],
 	root: string,
-	log: (line: string) => void = console.error,
-	failed?: (file: string) => void
-): Promise<BenchCase[]> {
+	log: (line: string) => void = console.error
+): Promise<Loaded> {
 	const start = cases().length;
+	const failed: LoadError[] = [];
 	for (const f of files) {
 		const abs = resolve(root, f);
 		const file = relative(root, abs).split(sep).join('/');
@@ -60,28 +71,28 @@ export async function import_cases(
 		try {
 			await import_bench_file(pathToFileURL(abs).href);
 		} catch (e) {
-			// One file that does not load costs only its own cases.
 			log(`FAILED   ${file}: ${one_line(e)}`);
-			failed?.(file);
+			failed.push({ file, error: one_line(e) });
 		}
 	}
-	return cases().slice(start);
+	return { cases: cases().slice(start), failed };
 }
 
 /** Register the counting loader (once per process) and import the bench files. */
-export async function load_cases(opts: LoadOptions): Promise<BenchCase[]> {
+export async function load_cases(opts: LoadOptions): Promise<Loaded> {
 	const root = register_loader(opts);
-	let list = await import_cases(
+	const loaded = await import_cases(
 		opts.files.map((f) => resolve(f)),
 		root,
 		opts.log ?? console.error
 	);
+	let list = loaded.cases;
 	if (opts.filter) list = list.filter((c) => c.name.includes(opts.filter!));
 	if (opts.names) {
 		const wanted = new Set(opts.names);
 		list = list.filter((c) => wanted.has(c.name));
 	}
-	return list;
+	return { cases: list, failed: loaded.failed };
 }
 
 export class Measurer {
