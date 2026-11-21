@@ -1,3 +1,4 @@
+import '../v8-flags.ts';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { deserialize, serialize } from 'node:v8';
 import { record_benches } from '../coverage/record-benches.ts';

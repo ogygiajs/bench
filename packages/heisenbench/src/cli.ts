@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import './v8-flags.ts';
 import './warnings.ts';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { exit_on_signals } from './proc.ts';
+import { exit_on_signals, exit_when_idle } from './proc.ts';
 import { UsageError } from './usage.ts';
+import { write_json } from './json-out.ts';
 import { REPORT_SCHEMA, one_line, report_of } from './report.ts';
 import { run_benches } from './runner.ts';
 import { diff_reports } from './diff/index.ts';
@@ -787,13 +789,14 @@ async function main(argv: string[]): Promise<number> {
 		if (source_from !== undefined && flags.has('measure'))
 			throw new UsageError('--source-from counts only: it takes no --measure');
 		const out = flags.get('out') ?? 'heisenbench-report.json';
-		// read before the run writes it: the cases of an earlier run this one adds to
-		const before =
-			flags.has('append') && existing_report_text(out) !== null ? read_report(out) : null;
+		// --append onto a report: checked now, read again only once this run is counted (a big
+		// report is not held through the run), and `out` is written once, merged, at the end
+		const appending = flags.has('append') && existing_report_text(out) !== null;
+		if (appending) read_report(out);
 		const report = await run_benches({
 			files: positional,
 			root: flags.get('root'),
-			out,
+			out: appending ? undefined : out,
 			deps,
 			svelte,
 			filter: flags.get('filter'),
@@ -805,8 +808,8 @@ async function main(argv: string[]): Promise<number> {
 			cache: cache_option(flags)
 		});
 		if (report.cache) print_cache(report.cache, 'run');
-		await measure_run(report, positional, flags);
-		if (before) append_report(out, before);
+		await measure_run(report, positional, flags, appending ? null : out);
+		if (appending) append_report(out, report);
 		if (report.cases.length === 0 && (report.load_errors ?? []).length === 0)
 			console.error(
 				'heisenbench run: no bench cases (no file calls bench(), or --filter matched none)'
@@ -1000,15 +1003,17 @@ async function preload(list: string | undefined): Promise<void> {
 }
 
 /**
- * `run --append`: the cases of the report already in `out` (`before`, the same commit and prices)
- * kept next to the ones this run wrote there, so a server run and a client run of one commit are
- * one report for `diff`. A case of the same name is this run's; its other sections stay.
+ * `run --append`: the cases of the report already in `out` (the same commit and prices) kept next
+ * to this run's (`now`), written to `out`, so a server run and a client run of one commit are one
+ * report for `diff`. A case of the same name is this run's; its other sections stay. The same
+ * bytes as writing `now` to `out` and merging the file back: a key `now` holds as undefined is
+ * one that file would not have, so the earlier report's value stays.
  */
-function append_report(out: string, before: Report): void {
-	const now = read_report(out);
+function append_report(out: string, now: Report): void {
+	const before = read_report(out);
 	if (before.git.sha !== now.git.sha || before.prices.hash !== now.prices.hash)
 		throw new UsageError(
-			`--append: ${out} was counted at another commit or with other prices; count both runs at one commit`
+			`--append: ${out} was counted at another commit or with other prices (it is left as it was); count both runs at one commit`
 		);
 	const names = new Set(now.cases.map((c) => c.name));
 	const files = new Set([
@@ -1021,12 +1026,12 @@ function append_report(out: string, before: Report): void {
 	];
 	const merged: Report = {
 		...before,
-		...now,
+		...(Object.fromEntries(Object.entries(now).filter(([, v]) => v !== undefined)) as Report),
 		cases: [...before.cases.filter((c) => !names.has(c.name)), ...now.cases]
 	};
 	if (load_errors.length > 0) merged.load_errors = load_errors;
 	else delete merged.load_errors;
-	writeFileSync(out, JSON.stringify(merged, null, '\t') + '\n');
+	write_json(out, merged);
 	console.log(`appended to ${out}: ${merged.cases.length} cases in all`);
 }
 
@@ -1105,6 +1110,8 @@ let stray = 0;
 // and the run goes on; the exit code says something went wrong.
 const stray_error = (e: unknown): void => {
 	stray++;
+	// after the end too: a bench's timer that throws while the process winds down
+	process.exitCode = 1;
 	console.error(
 		`${prefix}: an error outside any case: ${debug && e instanceof Error ? e.stack : message_of(e)}`
 	);
@@ -1134,8 +1141,4 @@ try {
 	}
 }
 if (stray > 0 && code === 0) code = 1;
-// Wait for the output to drain, then exit: a timer or socket a bench left open must not keep
-// the process alive after its work is written.
-await new Promise<void>((r) => process.stdout.write('', () => r()));
-await new Promise<void>((r) => process.stderr.write('', () => r()));
-process.exit(code);
+exit_when_idle(code, prefix);

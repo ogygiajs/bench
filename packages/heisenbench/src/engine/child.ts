@@ -1,3 +1,4 @@
+import '../v8-flags.ts';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { relative, resolve, sep } from 'node:path';

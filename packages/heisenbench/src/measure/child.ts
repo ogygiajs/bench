@@ -1,3 +1,4 @@
+import '../v8-flags.ts';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { register_plain } from './plain.ts';
 import { load_cases } from './cases.ts';

@@ -61,6 +61,38 @@ export function exit_on_signals(): void {
 	process.once('exit', () => kill_children());
 }
 
+/** How long a finished CLI waits for its event loop to empty before it exits anyway. */
+export const IDLE_EXIT_MS = 2000;
+
+/**
+ * The CLI's way out once its work is written: exit code `code`, and the process ends when its event
+ * loop is empty, the way Node ends a script (every handle Heisenbench opened is closed by then).
+ * Something a bench left open (a timer, a socket, a server) must not keep it up: after `grace_ms`
+ * it names what is still open and exits. By then the main thread has sat idle for `grace_ms`, so
+ * no compile or GC work started by the run is still in flight (see v8-flags.ts).
+ */
+export function exit_when_idle(code: number, label: string, grace_ms = IDLE_EXIT_MS): void {
+	process.exitCode = code;
+	const t = setTimeout(() => {
+		const counts = new Map<string, number>();
+		for (const r of process.getActiveResourcesInfo()) counts.set(r, (counts.get(r) ?? 0) + 1);
+		// stdout and stderr on a pipe or a terminal are listed, but do not keep the loop up
+		for (const s of [process.stdout, process.stderr]) {
+			const handle = (s as { _handle?: object })._handle;
+			const name = handle ? `${handle.constructor.name}Wrap` : '';
+			const n = counts.get(name) ?? 0;
+			if (n > 1) counts.set(name, n - 1);
+			else counts.delete(name);
+		}
+		const named = [...counts].map(([r, n]) => (n > 1 ? `${r} (${n})` : r)).join(', ');
+		process.stderr.write(
+			`${label}: done, but ${named || 'something'} still kept the process alive after ${grace_ms} ms (a bench left it open); exiting\n`,
+			() => process.exit()
+		);
+	}, grace_ms);
+	t.unref();
+}
+
 /** In a child: exit when the parent that started it is gone. */
 export function watch_parent(): void {
 	const parent = process.ppid;
