@@ -3,7 +3,7 @@ import { Bench } from 'tinybench';
 import { builtin_size, builtin_terms } from '../runtime/builtins.ts';
 import { SIZE_TERMS, load_prices } from '../prices.ts';
 import type { BuiltinModel, BuiltinPrice, Prices, SizeTerm } from '../prices.ts';
-import { INPUTS, builtin_function } from './inputs.ts';
+import { CONSTRUCTORS, INPUTS, builtin_function } from './inputs.ts';
 import { nnls, r_squared } from './nnls.ts';
 
 /*
@@ -235,6 +235,7 @@ export function prices_from_fits(
 			if (per > 0) terms[t as SizeTerm] = per;
 		}
 		if (Object.keys(terms).length > 0) p.terms = terms;
+		if (CONSTRUCTORS.has(key)) p.construct = true;
 		out[key] = p;
 	}
 	return out;
@@ -245,6 +246,7 @@ function same_price(a: BuiltinPrice, b: BuiltinPrice): boolean {
 		a.model === b.model &&
 		a.base === b.base &&
 		a.k === b.k &&
+		a.construct === b.construct &&
 		JSON.stringify(a.terms ?? {}) === JSON.stringify(b.terms ?? {})
 	);
 }

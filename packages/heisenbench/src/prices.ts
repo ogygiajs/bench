@@ -24,7 +24,11 @@ export const OP_KINDS = [
 	'yield',
 	'throw',
 	'alloc',
-	'alloc_word'
+	'alloc_word',
+	// a dynamic `import()`: the loader's resolve and module-job lookup, even for a module it holds
+	'import',
+	// a `require(…)` call: the CommonJS loader's resolve and cache lookup
+	'require'
 ] as const;
 
 export type OpKind = (typeof OP_KINDS)[number];
@@ -72,6 +76,8 @@ export interface BuiltinPrice {
 	model: BuiltinModel;
 	base: number;
 	k: number;
+	/** A constructor (`new URL(…)`): its wrapper constructs, and `new` sites are priced too. */
+	construct?: boolean;
 	/** Steps per unit of each size term (`{ "parts": 48 }`): `base + k f(n) + sum terms[t] * t`. */
 	terms?: Partial<Record<SizeTerm, number>>;
 }
@@ -176,7 +182,9 @@ export function builtin_cost(p: BuiltinPrice, n: number, sizes?: ArrayLike<numbe
 
 /**
  * The method or function name a call site must use for a priced built-in to be attributed to it:
- * `Array.prototype.sort` -> `sort`, `JSON.parse` -> `parse`, `structuredClone` -> `structuredClone`.
+ * `Array.prototype.sort` -> `sort`, `JSON.parse` -> `parse`, `structuredClone` -> `structuredClone`,
+ * `node:crypto.createHmac` -> `createHmac` (a key that starts with a `node:` module names that
+ * module's export: builtins.ts `resolve_owner`), `URL` -> `URL` (a constructor: `new URL(…)`).
  */
 export function builtin_call_name(key: string): string {
 	const dot = key.lastIndexOf('.');

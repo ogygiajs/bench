@@ -1,8 +1,8 @@
 {
-	"version": 4,
-	"note": "Op prices are the seed prices (a step is one simple op). Built-in prices are calibrated: each built-in's time over sizes, in steps of `calibration.step_ns` (two consecutive calibrations agreed; see calibration/results.md). Changing any number changes steps on both sides of a comparison, so PR and base are always counted with the same file.",
+	"version": 5,
+	"note": "Op prices are the seed prices (a step is one simple op), but for `import` and `require` (a dynamic import() and a require() of a module the loader holds, timed like a built-in). A built-in whose key starts with a `node:` module is that module's export; `construct` marks a constructor (`new URL`). Built-in prices are calibrated: each built-in's time over sizes, in steps of `calibration.step_ns` (two consecutive calibrations agreed; see calibration/results.md). Changing any number changes steps on both sides of a comparison, so PR and base are always counted with the same file.",
 	"calibration": {
-		"date": "2026-11-06",
+		"date": "2026-11-21",
 		"step_ns": 0.0997,
 		"machine": {
 			"cpu": "Apple M4 Max",
@@ -33,7 +33,9 @@
 		"yield": 10,
 		"throw": 30,
 		"alloc": 4,
-		"alloc_word": 1
+		"alloc_word": 1,
+		"import": 18176,
+		"require": 576
 	},
 	"dynamic": {
 		"spread_key": 3,
@@ -119,6 +121,19 @@
 		"Map.prototype.delete": { "model": "const", "base": 37.5, "k": 0 },
 		"Set.prototype.add": { "model": "const", "base": 147, "k": 0 },
 		"Set.prototype.has": { "model": "const", "base": 21.5, "k": 0 },
-		"Set.prototype.delete": { "model": "const", "base": 20.5, "k": 0 }
+		"Set.prototype.delete": { "model": "const", "base": 20.5, "k": 0 },
+		"URL": { "model": "n", "base": 3149, "k": 3.796875, "construct": true },
+		"node:crypto.createHmac": { "model": "n", "base": 7789, "k": 84069 },
+		"node:crypto.Hmac.prototype.update": { "model": "n", "base": 518, "k": 3.796875 },
+		"node:crypto.Hmac.prototype.digest": { "model": "const", "base": 2905, "k": 0 },
+		"node:crypto.createHash": { "model": "const", "base": 1918, "k": 0 },
+		"node:crypto.Hash.prototype.update": { "model": "n", "base": 451, "k": 3.765625 },
+		"node:crypto.Hash.prototype.digest": { "model": "const", "base": 1035, "k": 0 },
+		"node:crypto.hash": { "model": "n", "base": 2061, "k": 3.96875 },
+		"node:crypto.timingSafeEqual": { "model": "n", "base": 197, "k": 2.875 },
+		"node:crypto.randomBytes": { "model": "n", "base": 7056, "k": 1.46875 },
+		"node:crypto.randomUUID": { "model": "const", "base": 709, "k": 0 },
+		"Crypto.prototype.getRandomValues": { "model": "n", "base": 5816, "k": 0.828125 },
+		"Crypto.prototype.randomUUID": { "model": "const", "base": 696, "k": 0 }
 	}
 }

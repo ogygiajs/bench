@@ -153,7 +153,9 @@ const OP_GROUP: Record<OpKind, KindGroup> = {
 	concat: 'string_op',
 	iter_init: 'loop',
 	iter_step: 'loop',
-	forin_step: 'loop'
+	forin_step: 'loop',
+	import: 'call',
+	require: 'call'
 };
 
 /** The group a kind of steps belongs to. */

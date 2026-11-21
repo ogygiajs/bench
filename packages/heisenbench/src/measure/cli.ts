@@ -111,6 +111,8 @@ export async function measure_command(
 				sizes: flags.get('sizes')?.split(',').map(Number),
 				out: flags.get('out'),
 				time_ms: num(flags, 'time-ms'),
+				// the step time the file's other prices were made with, kept (else measured again)
+				step_ns: num(flags, 'step-ns'),
 				log
 			});
 			log(

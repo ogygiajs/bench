@@ -170,7 +170,7 @@ Real apps and the measurement-source gate
 
 Calibration and proof (from a clone of github.com/ogygiajs/bench only: the npm package does not
 ship the calibration corpus or the planted cases)
-  heisenbench calibrate prices [--keys a,b] [--sizes 16,64,256] [--out prices.json] [--time-ms 100]
+  heisenbench calibrate prices [--keys a,b] [--sizes 16,64,256] [--out prices.json] [--time-ms 100] [--step-ns 0.0997]
   heisenbench calibrate points [bench files...] [--root dir] [--out points.json] [--time-ms 150] [--repeats 3]
   heisenbench calibrate agree <a.json> <b.json> [--tolerance 3] [--shift 5]
   heisenbench calibrate weights [bench files...] | --points a.json,b.json [--out weights.json]
@@ -501,6 +501,7 @@ const SPECS: Record<string, Spec> = {
 			'sizes',
 			'out',
 			'time-ms',
+			'step-ns',
 			'root',
 			'filter',
 			'repeats',
