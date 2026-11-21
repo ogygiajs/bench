@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { UsageError } from '../usage.ts';
 import { resolve } from 'node:path';
 import type { DiffResult } from '../diff/index.ts';
-import type { Report } from '../report.ts';
+import type { LoadError, Report } from '../report.ts';
 import type { AppReport } from './types.ts';
 import { render_app_diff } from './diff.ts';
 import { build_weights, load_weights_list, write_app_weights } from '../weight/weights.ts';
@@ -115,14 +115,15 @@ export function app_command(
 		const concrete = [...names].filter((n) =>
 			packages.some((p) => p === n || (p.endsWith('/*') && n.startsWith(p.slice(0, -1))))
 		);
-		const inventory = package_inventory(apps, concrete, (l) => console.error(l));
-		const cov = build_coverage(reports, packages, inventory);
+		const unreadable: LoadError[] = [];
+		const inventory = package_inventory(apps, concrete, (l) => console.error(l), unreadable);
+		const cov = build_coverage(reports, packages, inventory, unreadable);
 		writeFileSync(flags.get('out') ?? 'coverage.json', JSON.stringify(cov, null, '\t') + '\n');
 		const md = render_coverage(cov);
 		const md_out = flags.get('md');
 		if (md_out) writeFileSync(md_out, md + '\n');
 		else console.log(md);
-		return 0;
+		return unreadable.length > 0 ? 1 : 0;
 	}
 	return null;
 }

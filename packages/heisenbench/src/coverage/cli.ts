@@ -93,8 +93,14 @@ export async function coverage_command(
 			out,
 			log: (l) => console.log(l)
 		});
-		console.log(`${r.ran} cases ran with the recorder on (${r.failed} failed) -> ${out}`);
-		return r.ran > 0 ? 0 : 1;
+		const unloaded =
+			r.unloaded.length > 0
+				? `; ${r.unloaded.length} bench file${r.unloaded.length === 1 ? '' : 's'} did not load`
+				: '';
+		console.log(
+			`${r.ran} cases ran with the recorder on (${r.failed} failed${unloaded}) -> ${out}`
+		);
+		return r.ran > 0 && r.failed === 0 && r.unloaded.length === 0 ? 0 : 1;
 	}
 	if (cmd === 'replay') {
 		const dir = flags.get('records');

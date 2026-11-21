@@ -5,6 +5,7 @@ import { odds_words, pct } from '../growth/odds.ts';
 import type { GrowthOdds } from '../growth/odds.ts';
 import { round3 } from '../growth/index.ts';
 import type { GrowthReport, LineShare } from '../growth/index.ts';
+import type { LoadError } from '../report.ts';
 import { MIN_STEPS } from '../growth/recorded.ts';
 import type { RecordedGrowthReport } from '../growth/recorded.ts';
 import { contract_rank } from './declare.ts';
@@ -79,6 +80,12 @@ export interface ContractReport {
 	bar: number;
 	contracts: ContractResult[];
 	errors: ContractError[];
+	/**
+	 * Files the check could not see into: bench files or recorded modules the growth reports say
+	 * did not load, and source files that could not be read. A contract they hold is unchecked,
+	 * so any of them fails the check. Absent before 0.4.2.
+	 */
+	failed?: LoadError[];
 	pass: boolean;
 }
 
@@ -200,14 +207,20 @@ function recorded_source(
 /**
  * Every contract checked against the growth sections of `reports` (their growth cases and
  * recorded growth together). `errors`: tags that declare no contract (they fail the check).
+ * `unreadable`: source files the contracts were not read from (they fail the check too).
  */
 export function check_contracts(
 	contracts: readonly Contract[],
 	errors: readonly ContractError[],
 	reports: ReadonlyArray<{ growth?: GrowthReport; recorded_growth?: RecordedGrowthReport }>,
-	o: { bar?: number } = {}
+	o: { bar?: number; unreadable?: readonly LoadError[] } = {}
 ): ContractReport {
 	const bar = o.bar ?? CONTRACT_ODDS;
+	const failed: LoadError[] = [...(o.unreadable ?? [])];
+	for (const r of reports) {
+		for (const f of [...(r.growth?.failed ?? []), ...(r.recorded_growth?.failed ?? [])])
+			if (!failed.some((x) => x.file === f.file)) failed.push(f);
+	}
 	const results: ContractResult[] = contracts.map((c) => {
 		const sources: ContractSource[] = [];
 		for (const r of reports) {
@@ -230,7 +243,8 @@ export function check_contracts(
 		bar,
 		contracts: results,
 		errors: [...errors],
-		pass: errors.length === 0 && results.every((r) => r.verdict === 'holds')
+		failed,
+		pass: errors.length === 0 && failed.length === 0 && results.every((r) => r.verdict === 'holds')
 	};
 }
 
@@ -307,6 +321,8 @@ export function contract_lines(r: ContractReport): string[] {
 	}
 	for (const e of r.errors)
 		out.push(`ERROR    ${e.module}:${e.line} @heisenbench ${e.text}: ${e.error}`);
+	for (const f of r.failed ?? [])
+		out.push(`FAILED   ${f.file}: ${f.error} (what it measures is unchecked)`);
 	return out;
 }
 
@@ -326,7 +342,10 @@ export function render_contracts(r: ContractReport): string {
 		lines.push(
 			`- **error**: ${code(`${e.module}:${e.line}`)} \`@heisenbench ${e.text}\`: ${e.error}`
 		);
-	if (bad.length > 0 || r.errors.length > 0) lines.push('');
+	const failed = r.failed ?? [];
+	for (const f of failed)
+		lines.push(`- **failed**: ${code(f.file)}: ${f.error} (what it measures is unchecked)`);
+	if (bad.length > 0 || r.errors.length > 0 || failed.length > 0) lines.push('');
 	const ok = r.contracts.filter((c) => c.verdict === 'holds');
 	if (ok.length > 0) {
 		lines.push('<details><summary>Contracts that hold</summary>', '');
@@ -350,6 +369,8 @@ export interface ContractsDiff {
 	/** Contracts that did not hold on the base and hold on the PR side. */
 	fixed: ContractResult[];
 	errors: ContractError[];
+	/** Files the PR side's check could not see into (ContractReport `failed`). Absent before 0.4.2. */
+	failed?: LoadError[];
 	bar: number;
 }
 
@@ -367,6 +388,7 @@ export function diff_contracts(
 		failing: pr.contracts.filter((c) => c.verdict !== 'holds'),
 		fixed: [],
 		errors: [...pr.errors],
+		failed: [...(pr.failed ?? [])],
 		bar: pr.bar
 	};
 	for (const c of pr.contracts) {
@@ -382,13 +404,16 @@ export function diff_contracts(
 export function render_contracts_diff(d: ContractsDiff): string {
 	const any =
 		d.added.length + d.removed.length + d.changed.length + d.failing.length + d.fixed.length;
-	if (any + d.errors.length === 0) return '';
+	const failed = d.failed ?? [];
+	if (any + d.errors.length + failed.length === 0) return '';
 	const lines = ['#### Complexity contracts', ''];
 	for (const c of d.failing) lines.push(`- **${c.verdict}**: ${contract_text(c, d.bar, true)}`);
 	for (const e of d.errors)
 		lines.push(
 			`- **error**: ${code(`${e.module}:${e.line}`)} \`@heisenbench ${e.text}\`: ${e.error}`
 		);
+	for (const f of failed)
+		lines.push(`- **failed**: ${code(f.file)}: ${f.error} (what it measures is unchecked)`);
 	const failing = new Set(d.failing.map((c) => c.id));
 	for (const c of d.added)
 		if (!failing.has(c.id)) lines.push(`- new: ${contract_text(c, d.bar, true)}`);

@@ -21,14 +21,22 @@ console.log = () => {};
 console.info = () => {};
 console.debug = () => {};
 if (job.kind === 'record') {
-	await record_benches({
+	const failures: string[] = [];
+	const r = await record_benches({
 		files: job.files,
 		root: job.root,
 		targets: job.targets,
 		out: job.out,
 		scales: job.scales,
-		log: (l) => process.stderr.write(l + '\n')
+		log: (l) => failures.push(l)
 	});
+	// a proof on the inputs of the bench files that loaded is a proof on fewer inputs than asked
+	if (r.unloaded.length > 0 || r.failed > 0) {
+		process.stderr.write(
+			`--bench recorded fewer inputs than its files give (${r.unloaded.length} file(s) did not load, ${r.failed} case(s) threw); the first: ${failures[0]}\n`
+		);
+		process.exit(1);
+	}
 } else {
 	const r = await run_prove(job);
 	writeFileSync(job.out, serialize(r));

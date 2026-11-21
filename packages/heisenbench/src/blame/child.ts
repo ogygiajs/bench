@@ -68,7 +68,7 @@ if (job.list) {
 	writeFileSync(
 		job.out,
 		JSON.stringify(
-			loaded.map((c) => ({ name: c.name, file: c.file, scale: c.scale !== undefined }))
+			loaded.cases.map((c) => ({ name: c.name, file: c.file, scale: c.scale !== undefined }))
 		)
 	);
 } else if (job.growth) {
@@ -79,8 +79,13 @@ if (job.list) {
 	});
 	const wanted = new Set(job.cases);
 	const m = new Measurer(job.root);
-	const report: GrowthReport = { schema: GROWTH_SCHEMA, sizes: job.growth.sizes, cases: [] };
-	for (const c of loaded) {
+	const report: GrowthReport = {
+		schema: GROWTH_SCHEMA,
+		sizes: job.growth.sizes,
+		cases: [],
+		failed: loaded.failed
+	};
+	for (const c of loaded.cases) {
 		if (!wanted.has(c.name)) continue;
 		report.cases.push(await grow_case(c, m, job.growth.sizes, job.growth.cap));
 	}

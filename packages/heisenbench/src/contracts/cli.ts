@@ -11,7 +11,8 @@ import { check_contracts, contract_lines, render_contracts } from './index.ts';
  * complexity contract the source files declare, held against the growth sections of the reports
  * (`heisenbench growth` and `heisenbench growth --recorded` write them). The check is written into
  * `--out` as the `contracts` section, so `heisenbench diff` can show what a PR changed about them.
- * Exit 1 when a contract does not hold, nothing measures it, or a tag declares nothing.
+ * Exit 1 when a contract does not hold, nothing measures it, a tag declares nothing, a source file
+ * cannot be read, or a report's growth did not load a file.
  */
 
 export async function contracts_command(
@@ -37,17 +38,20 @@ export async function contracts_command(
 			`--contract-odds takes a number in (0.5, 1], not ${flags.get('contract-odds')}`
 		);
 	const inv = source_inventory(root, files);
-	for (const e of inv.errors) console.log(`  unreadable: ${e.file}: ${e.error}`);
-	const r = check_contracts(inv.contracts ?? [], inv.contract_errors ?? [], reports, { bar });
+	const r = check_contracts(inv.contracts ?? [], inv.contract_errors ?? [], reports, {
+		bar,
+		unreadable: inv.errors
+	});
 	const out = flags.get('out') ?? 'heisenbench-report.json';
 	write_section(out, 'contracts', r, { root, sha: flags.get('sha') ?? null });
 	const md = flags.get('md');
 	if (md) writeFileSync(md, render_contracts(r));
 	const lines = contract_lines(r);
+	const unchecked = (r.failed ?? []).length;
 	console.log(
 		[
 			...lines,
-			`${r.contracts.filter((c) => c.verdict === 'holds').length} of ${r.contracts.length} contracts hold${r.errors.length > 0 ? `; ${r.errors.length} ${r.errors.length === 1 ? 'tag declares' : 'tags declare'} nothing` : ''}`
+			`${r.contracts.filter((c) => c.verdict === 'holds').length} of ${r.contracts.length} contracts hold${r.errors.length > 0 ? `; ${r.errors.length} ${r.errors.length === 1 ? 'tag declares' : 'tags declare'} nothing` : ''}${unchecked > 0 ? `; ${unchecked} file(s) unchecked` : ''}`
 		].join('\n')
 	);
 	return r.pass ? 0 : 1;

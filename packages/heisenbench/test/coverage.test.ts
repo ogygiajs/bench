@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { installed_packages, package_inventory } from '../src/coverage/inventory.ts';
 import { build_coverage, render_coverage } from '../src/coverage/report.ts';
+import type { CoverageReport } from '../src/coverage/report.ts';
 import type { AppReport } from '../src/app/types.ts';
 import type { FunctionReport } from '../src/report.ts';
 import { temp_dir, write_files } from './helpers.ts';
@@ -160,4 +165,47 @@ test('coverage: reached with calls per unit, loaded but not run, not loaded', ()
 	assert.match(md, /`@x\/core@1\.0\.0\/dist\/build-time\.js`: 2 functions/);
 	// a package outside the list is not counted
 	assert.equal(build_coverage([report], ['other']).functions.length, 0);
+});
+
+test('coverage: a package module that cannot be read fails the report and is named in it', () => {
+	const dir = app_dir();
+	write_files(dir, { 'node_modules/@x/core/dist/broken.js': 'export function (\n' });
+	const report: AppReport = {
+		schema: 'heisenbench-report/1',
+		prices: { version: 1, hash: 'h' },
+		node: 'v26',
+		git: { sha: null, prefix: '' },
+		cases: [],
+		app: { packages: ['@x/*'], ogygia: { '@x/core': '1.0.0' }, scenarios: ['shop'], loaded: {} }
+	};
+	writeFileSync(join(dir, 'app.json'), JSON.stringify(report));
+	const cli = fileURLToPath(new URL('../src/cli.ts', import.meta.url));
+	const r = spawnSync(
+		process.execPath,
+		[
+			cli,
+			'coverage',
+			'app.json',
+			'--app',
+			dir,
+			'--packages',
+			'@x/*',
+			'--out',
+			'cov.json',
+			'--md',
+			'cov.md'
+		],
+		{ cwd: dir, encoding: 'utf8' }
+	);
+	assert.equal(
+		r.status,
+		1,
+		`a module it could not read is missing from every count\n${r.stdout}${r.stderr}`
+	);
+	const cov = JSON.parse(readFileSync(join(dir, 'cov.json'), 'utf8')) as CoverageReport;
+	assert.deepEqual(
+		(cov.unreadable ?? []).map((u) => u.file),
+		['@x/core@1.0.0/dist/broken.js']
+	);
+	assert.match(readFileSync(join(dir, 'cov.md'), 'utf8'), /broken\.js/);
 });

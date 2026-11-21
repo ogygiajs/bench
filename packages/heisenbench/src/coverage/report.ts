@@ -4,6 +4,7 @@ import { is_app_case, unit_key } from '../app/types.ts';
 import { loaded_inventory } from './inventory.ts';
 import { unversioned_module } from '../identity.ts';
 import type { Inventory } from './inventory.ts';
+import type { LoadError } from '../report.ts';
 
 /*
  * The coverage report (spec 8): every function of the packages under test, and whether the
@@ -52,6 +53,11 @@ export interface CoverageReport {
 	packages: Record<string, PackageCoverage>;
 	total: PackageCoverage;
 	functions: CoverageFunction[];
+	/**
+	 * Package modules that did not compile or parse: their functions are in no count, so the
+	 * coverage command fails. Absent before 0.4.2.
+	 */
+	unreadable?: LoadError[];
 }
 
 function package_of_id(id: string): string {
@@ -79,7 +85,8 @@ function summary(list: CoverageFunction[]): PackageCoverage {
 export function build_coverage(
 	reports: readonly AppReport[],
 	packages: readonly string[],
-	all: Inventory = {}
+	all: Inventory = {},
+	unreadable: readonly LoadError[] = []
 ): CoverageReport {
 	// calls per unit, per function id
 	const calls = new Map<string, Record<string, number>>();
@@ -139,7 +146,13 @@ export function build_coverage(
 	const pkgs: Record<string, PackageCoverage> = {};
 	for (const [p, list] of [...by_pkg].sort((a, b) => (a[0] < b[0] ? -1 : 1)))
 		pkgs[p] = summary(list);
-	return { schema: COVERAGE_SCHEMA, packages: pkgs, total: summary(functions), functions };
+	return {
+		schema: COVERAGE_SCHEMA,
+		packages: pkgs,
+		total: summary(functions),
+		functions,
+		unreadable: [...unreadable]
+	};
 }
 
 /** The short markdown summary: % per package, then the biggest functions nothing reached. */
@@ -176,6 +189,12 @@ export function render_coverage(r: CoverageReport, top = 20): string {
 	if (mods.length > 0) {
 		out.push('Modules no scenario loaded (most functions first):', '');
 		for (const [m, n] of mods) out.push(`- \`${m}\`: ${n} functions`);
+		out.push('');
+	}
+	const unreadable = r.unreadable ?? [];
+	if (unreadable.length > 0) {
+		out.push('**Modules Heisenbench could not read** (their functions are in no count):', '');
+		for (const u of unreadable) out.push(`- \`${u.file}\`: ${u.error}`);
 		out.push('');
 	}
 	return out.join('\n');

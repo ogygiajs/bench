@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { cases, set_current_file } from '../bench.ts';
 import { import_bench_file } from '../fresh.ts';
 import { one_line } from '../report.ts';
+import type { LoadError } from '../report.ts';
 import { recorder } from './recorder.ts';
 import { register_record_hooks } from './replay-run.ts';
 
@@ -33,10 +34,15 @@ export interface RecordBenchesOptions {
 	log?: (line: string) => void;
 }
 
-/** Run every case of `files` once with the recorder on; returns how many ran and failed. */
-export async function record_benches(
-	o: RecordBenchesOptions
-): Promise<{ ran: number; failed: number }> {
+/** What a recording ran: cases that ran and that threw, and bench files that did not load. */
+export interface Recorded {
+	ran: number;
+	failed: number;
+	unloaded: LoadError[];
+}
+
+/** Run every case of `files` once with the recorder on. */
+export async function record_benches(o: RecordBenchesOptions): Promise<Recorded> {
 	const root = resolve(o.root);
 	const log = o.log ?? (() => {});
 	register_record_hooks(
@@ -52,13 +58,16 @@ export async function record_benches(
 	const wanted = o.names ? new Set(o.names) : null;
 	recorder.reset();
 	const start = cases().length;
+	const unloaded: LoadError[] = [];
 	for (const f of o.files) {
 		const abs = resolve(f);
-		set_current_file(relative(root, abs).split(sep).join('/'));
+		const file = relative(root, abs).split(sep).join('/');
+		set_current_file(file);
 		try {
 			await import_bench_file(pathToFileURL(abs).href);
 		} catch (e) {
 			log(`FAILED   ${f}: ${one_line(e)}`);
+			unloaded.push({ file, error: one_line(e) });
 		}
 	}
 	let ran = 0;
@@ -82,7 +91,7 @@ export async function record_benches(
 	}
 	recorder.save(o.out);
 	recorder.reset();
-	return { ran, failed };
+	return { ran, failed, unloaded };
 }
 
 export function read_targets(path: string): Record<string, string[]> {

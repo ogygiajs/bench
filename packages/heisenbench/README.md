@@ -436,6 +436,13 @@ writes JSON; `diff` and a few others also write markdown.
 `health`, `growth`, `search`, `audit` and `contracts` write their section into the report given by `--out`, so
 one JSON file per commit holds everything `diff` needs.
 
+A bench file that does not load (it throws on import, or imports a module that is not there) fails
+the command that read it, never quietly makes the run smaller: the command exits 1 and its report
+names the file and the error (`load_errors` in `run`; `failed` in the `growth`, `search`,
+`recorded_growth` and `contracts` sections). The files that load are still counted. `contracts`
+fails too when a report it reads has a file that did not load, `record` and `prove --bench` fail
+when a bench file does not load, and `coverage` lists and fails on a package module it cannot read.
+
 ### Counting only what changed
 
 Counts are the same on every run, so a case whose code and inputs did not change need not be

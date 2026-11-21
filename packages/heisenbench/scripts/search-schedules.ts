@@ -148,7 +148,10 @@ const dir = realpathSync(mkdtempSync(join(tmpdir(), 'heisenbench-schedules-')));
 writeFileSync(join(dir, 'planted.ts'), PLANTED);
 copyFileSync(join(here, '..', 'test', 'search-key', 'pr', 'lib.ts.txt'), join(dir, 'key.ts'));
 writeFileSync(join(dir, 'planted.bench.ts'), BENCHES);
-const list = await load_cases({ files: [join(dir, 'planted.bench.ts')], root: dir });
+const loaded = await load_cases({ files: [join(dir, 'planted.bench.ts')], root: dir });
+if (loaded.failed.length > 0)
+	throw new Error(`planted.bench.ts does not load: ${loaded.failed[0].error}`);
+const list = loaded.cases;
 const m = new Measurer(dir);
 
 interface Run {

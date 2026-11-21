@@ -265,7 +265,7 @@ async function recorded_growth_command(
 	const md_out = flags.get('md');
 	if (md_out) writeFileSync(md_out, md);
 	console.log(md);
-	return 0;
+	return (r.failed ?? []).length > 0 ? 1 : 0;
 }
 
 /**
@@ -946,7 +946,7 @@ async function main(argv: string[]): Promise<number> {
 			});
 			if (r.cache) print_cache(r.cache, 'growth');
 			write_section(out, 'growth', r, info);
-			return r.cases.some((c) => c.error !== null) ? 1 : 0;
+			return (r.failed ?? []).length > 0 || r.cases.some((c) => c.error !== null) ? 1 : 0;
 		}
 		const schedule = flags.get('schedule');
 		if (schedule !== undefined && schedule !== 'bandit' && schedule !== 'fixed')
@@ -967,7 +967,7 @@ async function main(argv: string[]): Promise<number> {
 		write_section(out, 'search', r, info);
 		const md = flags.get('md');
 		if (md) writeFileSync(md, render_search(r));
-		return r.cases.some((c) => c.error !== null) ? 1 : 0;
+		return (r.failed ?? []).length > 0 || r.cases.some((c) => c.error !== null) ? 1 : 0;
 	}
 	if (cmd === 'dts') {
 		const out = flags.get('out');

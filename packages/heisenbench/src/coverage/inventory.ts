@@ -4,6 +4,8 @@ import { join, sep } from 'node:path';
 import type { SourceMapInput } from '@jridgewell/trace-mapping';
 import { module_id, transform } from '../transform/index.ts';
 import { load_prices } from '../prices.ts';
+import { one_line } from '../report.ts';
+import type { LoadError } from '../report.ts';
 import type { LoadedModules } from '../app/types.ts';
 
 /*
@@ -91,12 +93,14 @@ export function installed_packages(
 
 /**
  * Every function of the named packages, from the first of `app_dirs` that installs each one.
- * `.svelte` files are compiled with that app's own Svelte compiler.
+ * `.svelte` files are compiled with that app's own Svelte compiler. `unreadable` gets the modules
+ * that did not compile or parse: none of their functions is in the inventory.
  */
 export function package_inventory(
 	app_dirs: string | readonly string[],
 	packages: readonly string[],
-	log: (line: string) => void = () => {}
+	log: (line: string) => void = () => {},
+	unreadable: LoadError[] = []
 ): Inventory {
 	const apps = typeof app_dirs === 'string' ? [app_dirs] : app_dirs;
 	const inv: Inventory = {};
@@ -152,7 +156,9 @@ export function package_inventory(
 					);
 				}
 			} catch (e) {
-				log(`  inventory: ${id}: ${(e as Error).message.split('\n')[0]}`);
+				const error = one_line(e);
+				log(`  inventory: ${id}: ${error}`);
+				unreadable.push({ file: id, error });
 			}
 		}
 	}
