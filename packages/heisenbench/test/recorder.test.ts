@@ -320,3 +320,72 @@ export function read(w) {
 		compileModule(r.code, { filename: 'wire.svelte.js', generate: 'client' })
 	);
 });
+
+test('recording runs none of an input or output getter or proxy trap: the code sees what it would unrecorded', async () => {
+	recorder.reset();
+	const dir = temp_dir('heisenbench-rec-traps-');
+	const source = `
+export function take(event) {
+	return 1;
+}
+export function give(made) {
+	return made;
+}
+`;
+	const r = record_transform(source, { filename: join(dir, 't.js'), id: 'pkg/t.js' });
+	write_files(dir, { 't.js': r.code });
+	const m = (await import(pathToFileURL(join(dir, 't.js')).href)) as {
+		take: (event: unknown) => number;
+		give: (made: unknown) => unknown;
+	};
+	const ran: string[] = [];
+	const locals = new Proxy(
+		{ user: 'ada' },
+		{
+			get(t, k, rcv) {
+				ran.push(`get ${String(k)}`);
+				return Reflect.get(t, k, rcv);
+			},
+			has(t, k) {
+				ran.push(`has ${String(k)}`);
+				return Reflect.has(t, k);
+			},
+			ownKeys(t) {
+				ran.push('ownKeys');
+				return Reflect.ownKeys(t);
+			},
+			getPrototypeOf(t) {
+				ran.push('getPrototypeOf');
+				return Reflect.getPrototypeOf(t);
+			},
+			getOwnPropertyDescriptor(t, k) {
+				ran.push(`descriptor ${String(k)}`);
+				return Reflect.getOwnPropertyDescriptor(t, k);
+			}
+		}
+	);
+	const event = {
+		url: '/a',
+		locals,
+		get cookie() {
+			ran.push('get cookie');
+			return 'id=1';
+		}
+	};
+	assert.equal(m.take(event), 1);
+	assert.equal(m.take({ nested: [{ locals }] }), 1);
+	const made = {
+		get reads() {
+			ran.push('get reads');
+			return 'cookie:id';
+		}
+	};
+	assert.equal(m.give(made), made);
+	assert.deepEqual(ran, []);
+	const recs = new Map(recorder.records().map((x) => [x.id.split(' > ').slice(1).join(' > '), x]));
+	// no sample holds a copy the call never had (a getter's value frozen, a proxy flattened)
+	assert.deepEqual(recs.get('take')?.samples, []);
+	assert.equal(recs.get('take')?.uncloneable, 2);
+	assert.deepEqual(recs.get('give')?.samples, []);
+	assert.equal(recs.get('give')?.uncloneable, 1);
+});
