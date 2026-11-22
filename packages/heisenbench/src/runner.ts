@@ -234,9 +234,26 @@ export async function run_case(
 			watchdog.disarm();
 		}
 	};
+	const outside = async <T>(what: string, f: () => T | Promise<T>): Promise<T> => {
+		rt.cap = rt.s[0] + CEILING.steps;
+		try {
+			return await within(Promise.resolve(f()), what);
+		} catch (e) {
+			if (rt.s[0] > rt.cap)
+				throw runaway(
+					case_,
+					CEILING.steps,
+					`the ceiling of every run, in ${what}`,
+					rt.spin >= 0 ? rt.describe(rt.spin) : null
+				);
+			throw e;
+		} finally {
+			rt.cap = Infinity;
+		}
+	};
 	const run_once = async (mode: IoMode, cap: number, rule: string): Promise<RunResult> => {
-		const c = fresh ? await within(fresh(), 'loading a fresh copy of the bench file') : case_;
-		const ctx = c.setup ? await within(Promise.resolve(c.setup()), 'setup') : undefined;
+		const c = fresh ? await outside('loading a fresh copy of the bench file', fresh) : case_;
+		const ctx = c.setup ? await outside('setup', () => c.setup?.()) : undefined;
 		watch?.before_window();
 		rt.reset();
 		rt.cap = cap;
@@ -268,7 +285,7 @@ export async function run_case(
 			failure = runaway(case_, cap, rule, rt.spin >= 0 ? rt.describe(rt.spin) : null);
 		const snap = rt.snapshot();
 		watch?.after_window(snap);
-		if (c.teardown) await within(Promise.resolve(c.teardown(ctx)), 'teardown');
+		if (c.teardown) await outside('teardown', () => c.teardown?.(ctx));
 		det.drain_finalizers();
 		if (failure) throw failure;
 		return { snap, timers: settled.timers, runaway: settled.runaway };
