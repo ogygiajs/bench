@@ -33,11 +33,13 @@ export class StepCapError extends Error {
 	override name = 'StepCapError';
 	cap: number;
 	steps: number;
+	fid: number;
 
-	constructor(cap: number, steps: number) {
+	constructor(cap: number, steps: number, fid = -1) {
 		super(`heisenbench: the run went past its step cap of ${cap} steps`);
 		this.cap = cap;
 		this.steps = steps;
+		this.fid = fid;
 	}
 }
 
@@ -193,6 +195,7 @@ export class Runtime {
 	 * unless the caller sets one (the slow-input search does, per input).
 	 */
 	cap = Infinity;
+	spin = -1;
 
 	price_spread_key: number;
 	price_spread_element: number;
@@ -289,7 +292,21 @@ export class Runtime {
 
 	/** The run went past the step cap. */
 	over(): never {
-		throw new StepCapError(this.cap, this.s[0]);
+		if (this.spin < 0) this.spin = this.spinning();
+		throw new StepCapError(this.cap, this.s[0], this.spin);
+	}
+
+	spinning(): number {
+		const since = this.s[0] * 0.9;
+		for (let i = this.depth - 1; i >= 0; i--)
+			if (this.start[this.stack[i]] <= since) return this.stack[i];
+		return this.depth > 0 ? this.stack[this.depth - 1] : -1;
+	}
+
+	describe(fid: number): string {
+		const m = this.modules[this.fn_module[fid]];
+		const f = m.meta.functions[fid - m.f];
+		return `${f.path} (${m.meta.id}:${f.line})`;
 	}
 
 	enter(fid: number): number {
@@ -646,6 +663,7 @@ export class Runtime {
 		this.rx_n = 0;
 		this.site = -1;
 		this.bdepth = -1;
+		this.spin = -1;
 	}
 
 	snapshot(): Snapshot {
