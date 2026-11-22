@@ -103,6 +103,16 @@ test('run: an async case that spins after an await is stopped the same way', () 
 	assert.equal(cases_of(dir).get('after')!.error, null);
 });
 
+test('run: a case whose setup loops forever is stopped at the step ceiling too, and says it was in setup', () => {
+	const dir = project(
+		`bench('spins in setup', () => 1, { setup: () => ({ n: spin_forever() }) });`
+	);
+	const r = run_script(dir, { steps: 5e6 });
+	assert.equal(r.code, 1, r.out + r.err);
+	assert.match(r.out, /FAILED {3}spins in setup: .*HB_RUNAWAY.*in setup.*spin_forever/);
+	assert.equal(cases_of(dir).get('after')!.error, null);
+});
+
 test('run: a replay that counts far more than its own recording is stopped at a multiple of the recorded count', () => {
 	const dir = project(`const g = globalThis as { hb_runs?: number };
 bench('grows on replay', () => spin_after_records((g.hb_runs = (g.hb_runs ?? 0) + 1) === 1 ? 100 : 1e9));`);
