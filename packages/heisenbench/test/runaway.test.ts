@@ -94,7 +94,9 @@ process.exitCode = r.cases.some((c) => c.error !== null) ? 1 : 0;
 }
 
 test('run: an async case that spins after an await is stopped the same way', () => {
-	const dir = project(`bench('spins later', async () => { await Promise.resolve(); return spin_forever(); });`);
+	const dir = project(
+		`bench('spins later', async () => { await Promise.resolve(); return spin_forever(); });`
+	);
 	const r = run_script(dir, { steps: 5e6 });
 	assert.equal(r.code, 1, r.out + r.err);
 	assert.match(r.out, /FAILED {3}spins later: .*HB_RUNAWAY.*spin_forever/);
@@ -112,8 +114,9 @@ bench('grows on replay', () => spin_after_records((g.hb_runs = (g.hb_runs ?? 0) 
 
 test('run: a case that spins in code nothing counts is stopped by the wall-clock backstop, named', () => {
 	const dir = project(`bench('spins uncounted', () => { for (;;) {} });`);
+	const started = Date.now();
 	const r = run_script(dir, { wall_ms: 1500 });
-	assert.notEqual(r.signal, 'SIGKILL', `the backstop never fired\n${r.out}${r.err}`);
+	assert.ok(Date.now() - started < 30_000, `the backstop never fired\n${r.out}${r.err}`);
 	assert.match(r.err, /HB_STALLED/);
 	assert.match(r.err, /spins uncounted/);
 	assert.match(r.err, /spin\.bench\.ts/);

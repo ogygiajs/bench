@@ -2,6 +2,7 @@ import { execFileSync } from 'node:child_process';
 import { write_json } from './json-out.ts';
 import { relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { cases, set_current_file } from './bench.ts';
 import type { BenchCase } from './bench.ts';
 import { register_heisenbench } from './loader/register.ts';
@@ -148,6 +149,55 @@ function within<T>(p: Promise<T>, what: string): Promise<T> {
 	return Promise.race([p, limit]).finally(() => real_clear_timeout(timer));
 }
 
+export const CEILING = {
+	steps: 4e9,
+	replay_factor: 10,
+	replay_floor: 1e6,
+	wall_ms: 2 * OUTSIDE_LIMIT_MS
+};
+
+const WATCHDOG = `const { parentPort } = require('node:worker_threads');
+const { writeSync } = require('node:fs');
+let timer;
+parentPort.on('message', (m) => {
+	clearTimeout(timer);
+	if (m) timer = setTimeout(() => {
+		writeSync(2, m.text);
+		process.kill(process.pid, 'SIGKILL');
+	}, m.ms);
+});
+`;
+
+class Watchdog {
+	#worker: Worker | null = null;
+
+	arm(text: string, ms: number): void {
+		if (!this.#worker) {
+			this.#worker = new Worker(WATCHDOG, { eval: true });
+			this.#worker.unref();
+		}
+		this.#worker.postMessage({ text, ms });
+	}
+
+	disarm(): void {
+		this.#worker?.postMessage(null);
+	}
+
+	async close(): Promise<void> {
+		const w = this.#worker;
+		this.#worker = null;
+		if (w) await w.terminate();
+	}
+}
+
+const watchdog = new Watchdog();
+
+function runaway(case_: BenchCase, steps: number, rule: string, spinning: string | null): Error {
+	return new Error(
+		`heisenbench HB_RUNAWAY: case "${case_.name}" in ${case_.file} went past ${steps} steps (${rule}) and was stopped: it would not have ended on its own${spinning ? `; it was spinning in ${spinning}` : ''}`
+	);
+}
+
 interface RunResult {
 	snap: Snapshot;
 	timers: number;
@@ -173,11 +223,23 @@ export async function run_case(
 	stable: boolean;
 }> {
 	const rt = builtins.runtime;
-	const once = async (mode: IoMode): Promise<RunResult> => {
+	const once = async (mode: IoMode, cap: number, rule: string): Promise<RunResult> => {
+		watchdog.arm(
+			`heisenbench HB_STALLED: case "${case_.name}" in ${case_.file} ran ${CEILING.wall_ms / 1000} s on the real clock without ending, in code Heisenbench does not count (counted code stops at its step ceiling); the run was stopped\n`,
+			CEILING.wall_ms
+		);
+		try {
+			return await run_once(mode, cap, rule);
+		} finally {
+			watchdog.disarm();
+		}
+	};
+	const run_once = async (mode: IoMode, cap: number, rule: string): Promise<RunResult> => {
 		const c = fresh ? await within(fresh(), 'loading a fresh copy of the bench file') : case_;
 		const ctx = c.setup ? await within(Promise.resolve(c.setup()), 'setup') : undefined;
 		watch?.before_window();
 		rt.reset();
+		rt.cap = cap;
 		det.open(mode);
 		builtins.install();
 		let failure: unknown = null;
@@ -200,7 +262,10 @@ export async function run_case(
 		} finally {
 			builtins.uninstall();
 			det.close();
+			rt.cap = Infinity;
 		}
+		if (rt.s[0] > cap)
+			failure = runaway(case_, cap, rule, rt.spin >= 0 ? rt.describe(rt.spin) : null);
 		const snap = rt.snapshot();
 		watch?.after_window(snap);
 		if (c.teardown) await within(Promise.resolve(c.teardown(ctx)), 'teardown');
@@ -208,9 +273,17 @@ export async function run_case(
 		if (failure) throw failure;
 		return { snap, timers: settled.timers, runaway: settled.runaway };
 	};
-	await once('record');
-	const a = await once('replay');
-	const b = await once('replay');
+	const recorded = (await once('record', CEILING.steps, 'the ceiling of every run')).snap.steps;
+	const replay_cap = Math.min(
+		CEILING.steps,
+		Math.max(recorded * CEILING.replay_factor, recorded + CEILING.replay_floor)
+	);
+	const rule =
+		replay_cap < CEILING.steps
+			? `${CEILING.replay_factor}x the ${Math.round(recorded)} steps its recording run counted`
+			: 'the ceiling of every run';
+	const a = await once('replay', replay_cap, rule);
+	const b = await once('replay', replay_cap, rule);
 	return { a, b, stable: same_counts(a.snap, b.snap) };
 }
 
@@ -364,6 +437,7 @@ export async function run_benches(opts: RunOptions): Promise<Report> {
 	};
 	if (load_errors.length > 0) report.load_errors = load_errors;
 	if (summary) report.cache = summary;
+	await watchdog.close();
 	apply_estimates(report);
 	if (opts.out) write_json(opts.out, report);
 	return report;
