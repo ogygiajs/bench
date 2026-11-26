@@ -156,11 +156,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # A PR counts and times what its changes reach; a full run also takes real bytes and leaks of
-    # every case (about 15 s a case).
+    # A PR counts and times what its changes reach, on its head and its base; one that reaches every
+    # bench file counts all of them twice, past 45 minutes (#90), so a PR has a main run's limit (a
+    # newer push still cancels it). A full run also takes real bytes and leaks of every case (about
+    # 15 s a case).
     # The nightly run also has the worst-case search over every case (30 minutes at most) and the
     # mutation score (75 minutes at most, its own budget).
-    timeout-minutes: ${{ github.event.action == 'ogygia-heisenbench' && 45 || github.event_name == 'schedule' && 240 || 120 }}
+    timeout-minutes: ${{ github.event_name == 'schedule' && 240 || 120 }}
     steps:
       # No token in .git/config: everything after the install runs ogygia's code.
       - uses: actions/checkout@v7
